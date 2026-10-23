@@ -2,6 +2,7 @@ package com.uniview.viewer;
 
 import android.os.ParcelFileDescriptor;
 
+import java.io.Closeable;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -22,32 +23,30 @@ public final class SharedFiles {
     private SharedFiles() {}
 
     private static final class Entry {
-        final ParcelFileDescriptor pfd;
-        final FileInputStream fis;
+        final Closeable owner;
         final FileChannel channel;
         final String name;
         final long size;
 
-        Entry(ParcelFileDescriptor pfd, FileInputStream fis, FileChannel channel, String name, long size) {
-            this.pfd = pfd;
-            this.fis = fis;
+        Entry(Closeable owner, FileChannel channel, String name, long size) {
+            this.owner = owner;
             this.channel = channel;
             this.name = name;
             this.size = size;
         }
 
         void close() {
-            try {
-                channel.close();
-            } catch (Throwable ignored) {
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (Throwable ignored) {
+                }
             }
-            try {
-                fis.close();
-            } catch (Throwable ignored) {
-            }
-            try {
-                pfd.close();
-            } catch (Throwable ignored) {
+            if (owner != null) {
+                try {
+                    owner.close();
+                } catch (Throwable ignored) {
+                }
             }
         }
     }
@@ -63,15 +62,11 @@ public final class SharedFiles {
         return sb.toString();
     }
 
-    public static String register(ParcelFileDescriptor pfd, String name, long size) {
-        if (pfd == null) {
-            throw new IllegalArgumentException("pfd cannot be null");
-        }
-        FileInputStream fis = new FileInputStream(pfd.getFileDescriptor());
-        FileChannel channel = fis.getChannel();
-        Entry entry = new Entry(pfd, fis, channel, name, size);
+    static String register(Closeable owner, FileChannel channel, String name, long size) {
+        Entry entry = new Entry(owner, channel, name, size);
         List<Entry> toClose = new ArrayList<>();
         String token;
+        // The 65th open closes the oldest file; a tab still showing it gets 404s and reports a read error.
         synchronized (REGISTRY) {
             while (REGISTRY.size() >= MAX_ENTRIES) {
                 Iterator<Map.Entry<String, Entry>> it = REGISTRY.entrySet().iterator();
@@ -91,6 +86,36 @@ public final class SharedFiles {
         return token;
     }
 
+    public static String register(ParcelFileDescriptor pfd, String name, long size) throws IOException {
+        if (pfd == null) {
+            throw new IllegalArgumentException("pfd cannot be null");
+        }
+        FileInputStream fis = new FileInputStream(pfd.getFileDescriptor());
+        FileChannel channel = fis.getChannel();
+        try {
+            channel.position(0);
+        } catch (IOException e) {
+            try {
+                fis.close();
+            } catch (Throwable ignored) {
+            }
+            throw e;
+        }
+        Closeable owner = () -> {
+            try {
+                fis.close();
+            } catch (Throwable ignored) {
+            }
+            try {
+                pfd.close();
+            } catch (Throwable ignored) {
+            }
+        };
+        return register(owner, channel, name, size);
+    }
+
+    // A read racing a close may throw ClosedChannelException; the web client turns
+    // it into a 500, which the page reports as a read error.
     public static byte[] read(String token, long start, long end) throws IOException {
         Entry entry;
         synchronized (REGISTRY) {
@@ -149,14 +174,16 @@ public final class SharedFiles {
         }
     }
 
-    public static long size(String token) {
-        return getSize(token);
-    }
-
     public static String getName(String token) {
         synchronized (REGISTRY) {
             Entry entry = REGISTRY.get(token);
             return entry != null ? entry.name : null;
+        }
+    }
+
+    static int openCount() {
+        synchronized (REGISTRY) {
+            return REGISTRY.size();
         }
     }
 }

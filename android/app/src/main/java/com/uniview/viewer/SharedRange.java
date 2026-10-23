@@ -1,5 +1,7 @@
 package com.uniview.viewer;
 
+import java.net.URI;
+
 final class SharedRange {
     static final long MAX_SPAN = 8L * 1024 * 1024;
     final int status;
@@ -12,6 +14,58 @@ final class SharedRange {
         this.start = start;
         this.end = end;
         this.close = close;
+    }
+
+    static boolean isSharedUrl(String localUrl, String requestUrl) {
+        if (localUrl == null || requestUrl == null) {
+            return false;
+        }
+        URI localUri;
+        URI reqUri;
+        try {
+            localUri = new URI(localUrl);
+            reqUri = new URI(requestUrl);
+        } catch (Exception e) {
+            return false;
+        }
+        String localScheme = localUri.getScheme();
+        String reqScheme = reqUri.getScheme();
+        if (localScheme == null || reqScheme == null || !localScheme.equalsIgnoreCase(reqScheme)) {
+            return false;
+        }
+        String localHost = localUri.getHost();
+        String reqHost = reqUri.getHost();
+        if (localHost == null || reqHost == null || !localHost.equalsIgnoreCase(reqHost)) {
+            return false;
+        }
+        if (effectivePort(localUri) != effectivePort(reqUri)) {
+            return false;
+        }
+        if (reqUri.getUserInfo() != null || reqUri.getRawUserInfo() != null) {
+            return false;
+        }
+        String rawPath = reqUri.getRawPath();
+        if (rawPath == null || !rawPath.startsWith("/_uniview_shared/")) {
+            return false;
+        }
+        return true;
+    }
+
+    private static int effectivePort(URI uri) {
+        int port = uri.getPort();
+        if (port != -1) {
+            return port;
+        }
+        String scheme = uri.getScheme();
+        if (scheme != null) {
+            if ("https".equalsIgnoreCase(scheme)) {
+                return 443;
+            }
+            if ("http".equalsIgnoreCase(scheme)) {
+                return 80;
+            }
+        }
+        return -1;
     }
 
     static SharedRange parse(String query, long size) {

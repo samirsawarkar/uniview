@@ -116,8 +116,6 @@ public class MainActivity extends BridgeActivity {
             if (pfd != null) {
                 long size = pfd.getStatSize();
                 if (size >= 0) {
-                    FileInputStream fis = new FileInputStream(pfd.getFileDescriptor());
-                    fis.getChannel().position(0);
                     String token = SharedFiles.register(pfd, name, size);
                     pfd = null;
                     String js = "(function(t,n,s,m){if(window.__univiewOpenShared){window.__univiewOpenShared(t,n,s,m)}else{"

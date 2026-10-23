@@ -22,6 +22,14 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    // JVM unit tests write temp files inside the build folder, not the system temp folder.
+    testOptions {
+        unitTests.all {
+            def tmp = layout.buildDirectory.dir("tmp/unit-tests").get().asFile
+            doFirst { tmp.mkdirs() }
+            systemProperty "java.io.tmpdir", tmp.absolutePath
+        }
+    }
 }
 
 repositories {

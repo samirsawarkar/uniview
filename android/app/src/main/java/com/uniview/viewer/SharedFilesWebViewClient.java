@@ -34,19 +34,17 @@ public class SharedFilesWebViewClient extends BridgeWebViewClient {
             return super.shouldInterceptRequest(view, request);
         }
         String localUrl = bridge.getLocalUrl();
-        if (localUrl == null) {
-            return super.shouldInterceptRequest(view, request);
-        }
-        String expectedHost = Uri.parse(localUrl).getHost();
-        if (expectedHost == null || !expectedHost.equalsIgnoreCase(uri.getHost())) {
-            return super.shouldInterceptRequest(view, request);
-        }
-        String path = uri.getPath();
-        if (path == null || !path.startsWith("/_uniview_shared/")) {
+        if (!SharedRange.isSharedUrl(localUrl, uri.toString())) {
             return super.shouldInterceptRequest(view, request);
         }
 
-        String token = path.substring("/_uniview_shared/".length());
+        // Subresource fetches are never main-frame requests, so isForMainFrame()
+        // is not a usable check; a cross-origin frame cannot read the response
+        // (no CORS headers are sent) and tokens are 128-bit random.
+        String path = uri.getPath();
+        String token = (path != null && path.startsWith("/_uniview_shared/"))
+                ? path.substring("/_uniview_shared/".length())
+                : "";
         if (!TOKEN_PATTERN.matcher(token).matches()) {
             return response(404, "Not Found", new byte[0]);
         }

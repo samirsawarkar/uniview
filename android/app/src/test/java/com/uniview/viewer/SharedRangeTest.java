@@ -178,4 +178,38 @@ public class SharedRangeTest {
         assertEquals(100, r.end);
         assertFalse(r.close);
     }
+
+    @Test
+    public void testIsSharedUrlAccepted() {
+        String token = "0123456789abcdef0123456789abcdef";
+        String localUrl = "https://localhost";
+
+        assertTrue(SharedRange.isSharedUrl(localUrl, "https://localhost/_uniview_shared/" + token + "?start=0&end=1"));
+        assertTrue(SharedRange.isSharedUrl(localUrl, "https://localhost:443/_uniview_shared/" + token + "?start=0&end=1"));
+        assertTrue(SharedRange.isSharedUrl("https://localhost:443", "https://localhost/_uniview_shared/" + token + "?start=0&end=1"));
+        assertTrue(SharedRange.isSharedUrl(localUrl, "HTTPS://LOCALHOST/_uniview_shared/" + token + "?start=0&end=1"));
+        assertTrue(SharedRange.isSharedUrl("HTTPS://LOCALHOST", "https://localhost/_uniview_shared/" + token + "?start=0&end=1"));
+    }
+
+    @Test
+    public void testIsSharedUrlRejected() {
+        String token = "0123456789abcdef0123456789abcdef";
+        String localUrl = "https://localhost";
+
+        assertFalse(SharedRange.isSharedUrl(localUrl, "http://localhost/_uniview_shared/" + token + "?start=0&end=1"));
+        // Same effective port, different scheme.
+        assertFalse(SharedRange.isSharedUrl(localUrl, "http://localhost:443/_uniview_shared/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "https://localhost:8443/_uniview_shared/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "https://evil.example/_uniview_shared/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "https://localhost.evil.example/_uniview_shared/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "https://user@localhost/_uniview_shared/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "https://localhost/other/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "https://localhost/_uniview_sharedX/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(null, "https://localhost/_uniview_shared/" + token + "?start=0&end=1"));
+        assertFalse(SharedRange.isSharedUrl(localUrl, null));
+        assertFalse(SharedRange.isSharedUrl(null, null));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "http://:invalid"));
+        assertFalse(SharedRange.isSharedUrl("http://:invalid", "https://localhost/_uniview_shared/" + token));
+        assertFalse(SharedRange.isSharedUrl(localUrl, "not a url"));
+    }
 }
