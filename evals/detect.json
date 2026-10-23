@@ -1,0 +1,357 @@
+{
+  "command": [
+    "node",
+    "scripts/detect-cli.mjs"
+  ],
+  "cases": [
+    {
+      "name": "report.pdf is pdf",
+      "args": [
+        "fixtures/generated/report.pdf"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"pdf\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "charter.docx is docx",
+      "args": [
+        "fixtures/generated/charter.docx"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"docx\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "sales.xlsx is sheet",
+      "args": [
+        "fixtures/generated/sales.xlsx"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"sheet\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "people.csv is sheet",
+      "args": [
+        "fixtures/generated/people.csv"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"sheet\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "deck.pptx is pptx",
+      "args": [
+        "fixtures/generated/deck.pptx"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"pptx\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "book.epub is epub",
+      "args": [
+        "fixtures/generated/book.epub"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"epub\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "bundle.zip is zip",
+      "args": [
+        "fixtures/generated/bundle.zip"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"zip\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "notes.md is markdown",
+      "args": [
+        "fixtures/generated/notes.md"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"markdown\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "data.json is json",
+      "args": [
+        "fixtures/generated/data.json"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"json\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "app.ts is text",
+      "args": [
+        "fixtures/generated/app.ts"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"text\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "pixel.png is image",
+      "args": [
+        "fixtures/generated/pixel.png"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"image\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "shape.svg is image",
+      "args": [
+        "fixtures/generated/shape.svg"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"image\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "photo.tif is tiff",
+      "args": [
+        "fixtures/generated/photo.tif"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"tiff\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "tone.wav is audio",
+      "args": [
+        "fixtures/generated/tone.wav"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"audio\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "sans.ttf is font",
+      "args": [
+        "fixtures/generated/sans.ttf"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"font\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "minutes.doc is legacy-office",
+      "args": [
+        "fixtures/generated/minutes.doc"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"legacy-office\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "random.bin is binary",
+      "args": [
+        "fixtures/generated/random.bin"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"binary\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "unicode.txt is text",
+      "args": [
+        "fixtures/generated/unicode.txt"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"text\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "broken.pdf is pdf",
+      "args": [
+        "fixtures/generated/broken.pdf"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"pdf\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "missing argument fails with usage",
+      "args": [],
+      "expect": {
+        "exit_code": 2
+      }
+    }
+  ]
+}
