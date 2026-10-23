@@ -179,7 +179,8 @@ Every row is a deterministic automated test (unit, JVM, or Playwright/Electron e
 
 Scout `scout-fa4e0d6e` (2026-10-23): **OK** — `@hyperjump/json-schema` (MIT), `diff`/jsdiff (BSD-3-Clause), `markdown-it` (MIT), DOMPurify (already bundled). **Not used**: the official MCP TypeScript SDK (licence NOASSERTION; would need a CTO exception — replaced by a minimal in-house server), `ajv` (code generation, CSP-incompatible), `node-ipc` (supply-chain history; Node `net` is used). Already bundled `marked` stays for the existing Markdown viewer only.
 
-## CEO decisions still open
+## CEO decisions (2026-10-24)
 
-1. "Always allow" for an agent (convenient; keyed by an enrolled key) — keep, or only "this session"? Plan default: keep both.
-2. Decisions on the phone (Phase 2?) — Phase 1 shows and verifies only.
+1. Agent approval offers both "Allow for this session" and "Always allow" (enrolled key).
+2. Review decisions on the phone are deferred to Phase 2; Phase 1 phones show and verify only.
+3. Build order: P13 (split into P13a schema/validator, P13b restricted Markdown, P13c viewer) and P14a (receipt schema) first.
