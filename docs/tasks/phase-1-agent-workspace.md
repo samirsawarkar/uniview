@@ -44,7 +44,7 @@ Grants are scoped to a **view scope** (a tab opened by an agent, a view, or a re
 
 ### View spec v1 (P13)
 
-Normative JSON Schema (draft 2020-12) in `shared/schemas/view-1.json` with positive and negative fixtures in `fixtures/viewspec/`; validated with **@hyperjump/json-schema** (scout OK: MIT, no eval) on all platforms; `validateViewSpec(json) → {ok:true, spec} | {ok:false, errors:[{code, path, message}]}` with stable `code`s (`schema`, `too_large`, `too_deep`, `too_many_nodes`, `bad_path`, `unsupported_version`).
+Normative JSON Schema (draft 2020-12) in `shared/schemas/view-1.json` with positive and negative fixtures in `fixtures/viewspec/`; validated with **@hyperjump/json-schema** (scout OK: MIT, no eval) on all platforms; `validateViewSpec(json) → {ok:true, spec} | {ok:false, errors:[{code, path, message}]}` with stable `code`s (`schema`, `too_large`, `invalid_json`, `too_deep`, `too_many_nodes`, `bad_path`, `unsupported_version`). Error `path`s are RFC 6901 JSON Pointers (`~` → `~0`, `/` → `~1`). Every "KiB" limit counts UTF-8 bytes (checked after schema validation); `relPath` values must be relative and contain no `..` segment at all (stricter than root containment; rejected as `bad_path`). Chart points count every supplied value (sum of `series[].values` lengths).
 
 Top level: `{ "uniview": "view/1", "title": string ≤ 200, "agent"?: { "name" ≤ 80, "model"? ≤ 80 }, "body": Node[] }`. Every object has `additionalProperties: false`.
 
