@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Detection } from "../core/types";
 import { CorruptFileError } from "../core/errors";
 import { Loading, Spacer, Toolbar, readAllChecked, useLoad, useReady } from "./common";
-import { DEFAULT_COL_W, parseSpreadsheet, type ParsedSheet } from "./sheet-parse";
+import { DEFAULT_COL_W, parseSpreadsheet, type ParsedSheet, type SheetMerge } from "./sheet-parse";
 import type { SheetWorkerRequest, SheetWorkerResponse } from "./sheet.worker";
 import type { ViewerProps } from "./types";
 
@@ -10,10 +10,11 @@ const ROW_H = 24;
 const HEADER_H = 24;
 const ROWNUM_W = 56;
 
-interface Grid {
+export interface Grid {
   name: string;
   rows: number;
   cols: number;
+  merges?: SheetMerge[];
   cell(r: number, c: number): string;
   colWidth(c: number): number;
 }
@@ -23,24 +24,33 @@ function toGrid(s: ParsedSheet): Grid {
     name: s.name,
     rows: s.rows,
     cols: s.cols,
+    merges: s.merges,
     cell: (r, c) => s.cells[r]?.[c] ?? "",
     colWidth: (c) => s.colWidths[c] ?? DEFAULT_COL_W,
   };
 }
 
-function parseWorkbook(
+export function parseWorkbook(
   buf: ArrayBuffer,
   detection: Detection,
   signal: AbortSignal,
 ): Promise<ParsedSheet[]> {
   if (typeof Worker === "undefined") {
-    return Promise.resolve(parseSpreadsheet(buf, detection));
+    return Promise.resolve().then(() => {
+      if (signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      return parseSpreadsheet(buf, detection);
+    });
   }
 
   let worker: Worker;
   try {
     worker = new Worker(new URL("./sheet.worker.ts", import.meta.url), { type: "module" });
   } catch {
+    if (signal.aborted) {
+      return Promise.reject(new DOMException("Aborted", "AbortError"));
+    }
     try {
       return Promise.resolve(parseSpreadsheet(buf, detection));
     } catch (err) {
@@ -137,7 +147,7 @@ function colName(c: number): string {
 }
 
 /** Renders only the visible window of cells, so million-row sheets scroll smoothly. */
-function VirtualGrid({ grid }: { grid: Grid }) {
+export function VirtualGrid({ grid }: { grid: Grid }) {
   const ref = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ top: 0, left: 0, w: 800, h: 600 });
   const offsets = useMemo(() => {
@@ -168,8 +178,47 @@ function VirtualGrid({ grid }: { grid: Grid }) {
   c1 = Math.min(grid.cols, c1 + 2);
 
   const cells = [];
+  const merges = grid.merges ?? [];
+  const covered = new Set<string>();
+
+  for (let i = 0; i < merges.length; i++) {
+    const m = merges[i]!;
+    const r0m = Math.min(m.s.r, m.e.r);
+    const r1m = Math.max(m.s.r, m.e.r);
+    const c0m = Math.min(m.s.c, m.e.c);
+    const c1m = Math.max(m.s.c, m.e.c);
+    if (r0m < r1 && r1m >= r0 && c0m < c1 && c1m >= c0) {
+      const v = grid.cell(r0m, c0m);
+      const startX = offsets[c0m] ?? 0;
+      const endX = offsets[Math.min(grid.cols, c1m + 1)] ?? totalW;
+      const w = endX - startX;
+      const h = (r1m - r0m + 1) * ROW_H;
+      cells.push(
+        <div
+          key={`m:${r0m}:${c0m}`}
+          className={`cell ${/^-?[\d,.]+%?$/.test(v) ? "num" : ""}`}
+          style={{ top: r0m * ROW_H, left: startX, width: w, height: h }}
+          title={v && v.length > 30 ? v : undefined}
+        >
+          {v}
+        </div>,
+      );
+
+      const rStart = Math.max(r0, r0m);
+      const rEnd = Math.min(r1 - 1, r1m);
+      const cStart = Math.max(c0, c0m);
+      const cEnd = Math.min(c1 - 1, c1m);
+      for (let r = rStart; r <= rEnd; r++) {
+        for (let c = cStart; c <= cEnd; c++) {
+          covered.add(`${r}:${c}`);
+        }
+      }
+    }
+  }
+
   for (let r = r0; r < r1; r++) {
     for (let c = c0; c < c1; c++) {
+      if (covered.has(`${r}:${c}`)) continue;
       const v = grid.cell(r, c);
       if (!v) continue;
       cells.push(

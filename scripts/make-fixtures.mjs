@@ -4,7 +4,7 @@ import UTIF from "utif2";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as XLSX from "xlsx";
-import { makeDocx, makeEpub, makePdf, makePng, makePptx, makeZip } from "./fixture-builders.mjs";
+import { makeDocx, makeEpub, makeHardDocx, makeHardPptx, makeHardXlsx, makePdf, makePng, makePptx, makeZip } from "./fixture-builders.mjs";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "generated");
 mkdirSync(out, { recursive: true });
@@ -39,6 +39,9 @@ write("report.pdf", makePdf("Hello from UniView"));
 write("charter.docx", makeDocx());
 write("deck.pptx", makePptx());
 write("sales.xlsx", XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
+write("hard.docx", makeHardDocx());
+write("hard.pptx", makeHardPptx());
+write("hard.xlsx", makeHardXlsx());
 write("big.xlsx", XLSX.write(wbBig, { type: "buffer", bookType: "xlsx" }));
 write("people.csv", "name,city,score\nAnna,Zürich,91\nBo,Ōsaka,88\n");
 write("book.epub", makeEpub());

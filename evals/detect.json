@@ -352,6 +352,63 @@
       "expect": {
         "exit_code": 2
       }
+    },
+    {
+      "name": "detect hard docx",
+      "command": "node scripts/detect-cli.mjs",
+      "args": [
+        "fixtures/generated/hard.docx"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"docx\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "detect hard pptx",
+      "command": "node scripts/detect-cli.mjs",
+      "args": [
+        "fixtures/generated/hard.pptx"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"pptx\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
+    },
+    {
+      "name": "detect hard xlsx",
+      "command": "node scripts/detect-cli.mjs",
+      "args": [
+        "fixtures/generated/hard.xlsx"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"kind\":\"sheet\""
+        ],
+        "json_keys": [
+          "kind",
+          "label",
+          "ext",
+          "by"
+        ]
+      }
     }
   ]
 }

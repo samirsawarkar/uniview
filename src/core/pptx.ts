@@ -28,6 +28,7 @@ export interface Run {
   font?: string;
   baseline?: number; // percent, superscript > 0
   isBreak?: boolean;
+  link?: string;
 }
 
 export interface Paragraph {
@@ -310,7 +311,7 @@ function readRels(pkg: ZipPackage, part: string): Rels {
     const id = attr(r, "Id");
     const target = attr(r, "Target");
     if (!id || !target) continue;
-    const external = attr(r, "TargetMode") === "External";
+    const external = attr(r, "TargetMode") === "External" || /^[a-z][a-z0-9+.-]*:/i.test(target);
     rels.set(id, { target: external ? target : resolvePath(part, target), type: attr(r, "Type") ?? "", external });
   }
   return rels;
@@ -419,7 +420,7 @@ function fontName(latin: Element | undefined, theme: Theme): string | undefined 
   return tf;
 }
 
-function readRunProps(rPr: Element | undefined, ctx: Ctx): Partial<Run> {
+function readRunProps(rPr: Element | undefined, ctx: Ctx, rels?: Rels): Partial<Run> {
   if (!rPr) return {};
   const out: Partial<Run> = {};
   const sz = numAttr(rPr, "sz");
@@ -438,6 +439,16 @@ function readRunProps(rPr: Element | undefined, ctx: Ctx): Partial<Run> {
   if (font) out.font = font;
   const baseline = numAttr(rPr, "baseline");
   if (baseline) out.baseline = baseline / 1000;
+  const hlink = kid(rPr, "hlinkClick");
+  if (hlink) {
+    const rid = attr(hlink, "id");
+    const rel = rid && rels ? rels.get(rid) : undefined;
+    if (rel) out.link = rel.target;
+    else {
+      const action = attr(hlink, "action");
+      if (action) out.link = action;
+    }
+  }
   return out;
 }
 
@@ -506,7 +517,7 @@ function readBodyProps(bodyPr: Element | undefined, inherited?: Partial<TextBody
 }
 
 /** Text body of a shape. `levels` holds inherited paragraph styles from lowest to highest priority. */
-function readTextBody(txBody: Element | undefined, ctx: Ctx, levels: ListStyle[], inheritedBody?: Partial<TextBody>): TextBody | undefined {
+function readTextBody(txBody: Element | undefined, ctx: Ctx, levels: ListStyle[], inheritedBody?: Partial<TextBody>, rels?: Rels): TextBody | undefined {
   if (!txBody) return undefined;
   const bodyPr = kid(txBody, "bodyPr");
   const props = readBodyProps(bodyPr, inheritedBody);
@@ -523,13 +534,14 @@ function readTextBody(txBody: Element | undefined, ctx: Ctx, levels: ListStyle[]
     const runs: Run[] = [];
     for (const r of Array.from(p.children)) {
       if (r.localName === "r" || r.localName === "fld") {
-        const rp = merge(style, readRunProps(kid(r, "rPr"), ctx));
+        const rp = merge(style, readRunProps(kid(r, "rPr"), ctx, rels));
         const text = kid(r, "t")?.textContent ?? "";
         runs.push({
           text,
           sizePt: (rp.sizePt ?? 18) * fontScale,
           bold: rp.bold, italic: rp.italic, color: rp.color, font: rp.font,
           underline: (rp as Run).underline, strike: (rp as Run).strike, baseline: (rp as Run).baseline,
+          link: (rp as Run).link,
         });
       } else if (r.localName === "br") {
         runs.push({ text: "\n", isBreak: true, sizePt: (style.sizePt ?? 18) * fontScale });
@@ -707,7 +719,7 @@ function readShape(sp: Element, scope: SlideScope, t: Transform, out: SlideEleme
   const levels = textLevelsFor(ph, scope, layoutShape, masterShape);
   if (fontRefColor) levels.unshift([...Array(9)].map(() => ({ color: fontRefColor })));
   const inheritedBody = { ...masterShape?.body, ...layoutShape?.body };
-  const text = readTextBody(kid(sp, "txBody"), scope.ctx, levels, inheritedBody);
+  const text = readTextBody(kid(sp, "txBody"), scope.ctx, levels, inheritedBody, scope.rels);
   const geomEl = kid(spPr, "prstGeom");
   const geom = attr(geomEl, "prst") ?? (kid(spPr, "custGeom") ? "rect" : "rect");
   const gd = descendants(geomEl, "gd")[0];
@@ -766,7 +778,7 @@ function readTable(frame: Element, box: Box, scope: SlideScope, out: SlideElemen
       const border = (k: string) => readLine(kid(tcPr, k), scope.ctx) ?? undefined;
       const levels: ListStyle[] = [scope.masterText.other];
       if (firstRow && ri === 0) levels.push([...Array(9)].map(() => ({ color: "#FFFFFF", bold: true })));
-      const text = readTextBody(kid(tc, "txBody"), scope.ctx, levels) ?? { paragraphs: [], anchor: "top", insetsPt: [7.2, 3.6, 7.2, 3.6], wrap: true, vertical: false };
+      const text = readTextBody(kid(tc, "txBody"), scope.ctx, levels, undefined, scope.rels) ?? { paragraphs: [], anchor: "top", insetsPt: [7.2, 3.6, 7.2, 3.6], wrap: true, vertical: false };
       const marL = numAttr(tcPr, "marL"), marR = numAttr(tcPr, "marR"), marT = numAttr(tcPr, "marT"), marB = numAttr(tcPr, "marB");
       text.insetsPt = [marL !== undefined ? marL / EMU_PER_PT : 7.2, marT !== undefined ? marT / EMU_PER_PT : 3.6, marR !== undefined ? marR / EMU_PER_PT : 7.2, marB !== undefined ? marB / EMU_PER_PT : 3.6];
       const anchor = attr(tcPr, "anchor");
@@ -776,7 +788,7 @@ function readTable(frame: Element, box: Box, scope: SlideScope, out: SlideElemen
         fill,
         gridSpan: numAttr(tc, "gridSpan") ?? 1,
         rowSpan: numAttr(tc, "rowSpan") ?? 1,
-        merged: attr(tc, "hMerge") === "1" || attr(tc, "vMerge") === "1",
+        merged: attr(tc, "hMerge") === "1" || attr(tc, "hMerge") === "true" || attr(tc, "vMerge") === "1" || attr(tc, "vMerge") === "true",
         borders: { l: border("lnL"), r: border("lnR"), t: border("lnT"), b: border("lnB") },
       };
     });
@@ -984,7 +996,7 @@ export function parsePptx(data: ArrayBuffer | Uint8Array): Presentation {
       }
       const tree = kid(cSld, "spTree");
       if (tree) walkTree(tree, scope, IDENTITY, elements);
-      slides.push({ index: i, background, elements, notes: notesText(pkg, rels), hidden: attr(doc.documentElement, "show") === "0" });
+      slides.push({ index: i, background, elements, notes: notesText(pkg, rels), hidden: attr(doc.documentElement, "show") === "0" || attr(doc.documentElement, "show") === "false" });
     } catch (err) {
       warnings.push(`Slide ${i + 1} could not be read: ${(err as Error).message}`);
       slides.push({ index: i, background: { color: "#FFFFFF" }, elements: [{ type: "placeholder", x: 0, y: 0, w: widthPt, h: heightPt, rot: 0, flipH: false, flipV: false, label: "This slide could not be read" }], hidden: false });

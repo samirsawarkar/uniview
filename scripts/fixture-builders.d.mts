@@ -5,3 +5,6 @@ export function makeDocx(): Uint8Array;
 export function makeEpub(): Uint8Array;
 export function makePdf(text?: string): Uint8Array;
 export function makeZip(): Uint8Array;
+export function makeHardPptx(): Uint8Array;
+export function makeHardDocx(): Uint8Array;
+export function makeHardXlsx(): Uint8Array;
