@@ -21,6 +21,8 @@ export interface FileSource {
   /** A URL media elements can stream from (blob: or uniview-file:). */
   url(): Promise<string>;
   release(): void;
+  /** A fresh source for the same file with its current size; absent when the shell cannot reopen it. */
+  reopen?(): Promise<FileSource>;
 }
 
 export interface ShellBridge {

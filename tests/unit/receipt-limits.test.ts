@@ -67,11 +67,11 @@ describe("Fix 1: Character limits vs byte limits", () => {
     );
   });
 
-  // Catches mutation: files[].path byte check wrongly rejects path > 2 KiB but <= 4096 characters
   it("accepts 4096-character absolute path and rejects 4097-character path", async () => {
+    // Catches mutation: files[].path byte check wrongly rejects path > 4096 bytes but <= 4096 characters
     const validReceipt = makeBaseReceipt();
     validReceipt.files[0] = {
-      path: "/" + "a".repeat(4095),
+      path: "/" + "é".repeat(4095),
       sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       role: "created"
     };
@@ -80,7 +80,7 @@ describe("Fix 1: Character limits vs byte limits", () => {
 
     const invalidReceipt = makeBaseReceipt();
     invalidReceipt.files[0] = {
-      path: "/" + "a".repeat(4096),
+      path: "/" + "é".repeat(4096),
       sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       role: "created"
     };

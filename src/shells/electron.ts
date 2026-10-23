@@ -51,6 +51,7 @@ function toSource(f: GrantedFile): FileSource {
     // Served by the main process with HTTP range support, so media streams instead of loading whole.
     url: async () => `uniview-file://${f.token}/${encodeURIComponent(f.name)}`,
     release() {},
+    reopen: async () => toSource(await api().openPath(f.path)),
   };
   tokens.set(source, f.token);
   return source;

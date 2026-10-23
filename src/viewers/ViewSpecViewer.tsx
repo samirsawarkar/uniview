@@ -58,8 +58,20 @@ export default function ViewSpecViewer({
 
   // The previous content stays on screen until the new bytes are validated.
   const handleReload = async () => {
-    const r = await readSpec(source);
-    if (mounted.current) setLoaded(r);
+    if (!source.reopen) return;
+    try {
+      const fresh = await source.reopen();
+      try {
+        const r = await readSpec(fresh);
+        if (mounted.current) setLoaded(r);
+      } finally {
+        fresh.release();
+      }
+    } catch (err: unknown) {
+      if (mounted.current) {
+        setLoaded(failed("read_error", err instanceof Error ? err.message : String(err)));
+      }
+    }
   };
 
   if (loading) {
@@ -80,13 +92,15 @@ export default function ViewSpecViewer({
           ))}
         </ul>
         <div className="vs-error-actions">
-          <button
-            type="button"
-            className="vs-reload"
-            onClick={() => void handleReload()}
-          >
-            Reload
-          </button>
+          {source.reopen && (
+            <button
+              type="button"
+              className="vs-reload"
+              onClick={() => void handleReload()}
+            >
+              Reload
+            </button>
+          )}
           {onFallback && (
             <button
               type="button"
@@ -117,13 +131,15 @@ export default function ViewSpecViewer({
             : "View from an agent"}
         </div>
         <h1 className="vs-title">{title}</h1>
-        <button
-          type="button"
-          className="vs-reload"
-          onClick={() => void handleReload()}
-        >
-          Reload
-        </button>
+        {source.reopen && (
+          <button
+            type="button"
+            className="vs-reload"
+            onClick={() => void handleReload()}
+          >
+            Reload
+          </button>
+        )}
       </header>
       <div className="vs-body">
         {spec.body.map((node, i) => (
