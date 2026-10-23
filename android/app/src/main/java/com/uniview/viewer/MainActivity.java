@@ -45,6 +45,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(LanHttpPlugin.class);
         super.onCreate(savedInstanceState);
         getBridge().setWebViewClient(new SharedFilesWebViewClient(getBridge()));
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
