@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolve, sep } from "node:path";
 // @ts-expect-error plain ESM module without types
-import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame } from "../../electron/lib/core.mjs";
+import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame, isLanHost } from "../../electron/lib/core.mjs";
 
 describe("parseRange", () => {
   it("handles open, closed, suffix and clamped ranges", () => {
@@ -92,5 +92,16 @@ describe("isAppFrame (IPC sender validation)", () => {
     expect(isAppFrame(blob)).toBe(false);
     expect(isAppFrame(null)).toBe(false);
     expect(isAppFrame(undefined)).toBe(false);
+  });
+});
+
+describe("isLanHost (remote client transport)", () => {
+  it("allows only local-network addresses", () => {
+    for (const h of ["192.168.1.5", "10.0.0.2", "172.16.4.1", "172.31.255.255", "127.0.0.1", "169.254.3.3", "100.64.1.1", "::1", "fd12:3456::1", "fe80::1", "studio-pc.local"]) {
+      expect(isLanHost(h)).toBe(true);
+    }
+    for (const h of ["8.8.8.8", "172.32.0.1", "192.169.1.1", "example.com", "evil.local.example.com", "2001:4860::8888", "256.1.1.1", "", "localhost"]) {
+      expect(isLanHost(h)).toBe(false);
+    }
   });
 });

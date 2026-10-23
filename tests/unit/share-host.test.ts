@@ -7,10 +7,11 @@ import { join } from "node:path";
 import { request } from "node:http";
 // @ts-expect-error plain ESM modules without types
 import { ShareHost, resolveInRoot } from "../../electron/lib/share-host.mjs";
-// @ts-expect-error plain ESM modules without types
 import { RemoteHost, pairWithOffer, RemoteError } from "../../shared/remote-client.mjs";
-// @ts-expect-error plain ESM modules without types
-import * as P from "../../shared/remote-protocol.mjs";
+import * as Proto from "../../shared/remote-protocol.mjs";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const P = Proto as any;
 
 /** Node HTTP transport, like the Electron main-process transport. */
 function transport(host: string, port: number, path: string, body: Uint8Array, type: string) {
@@ -69,7 +70,7 @@ describe("ShareHost <-> RemoteHost", () => {
     expect(record.hostName).toBe("Test PC");
     const info = await client.info();
     expect(info.roots.map((r: { name: string }) => r.name)).toEqual(["Shared"]);
-    const root = info.roots[0].id;
+    const root = info.roots[0]!.id;
     const top = await client.list(root, "");
     expect(top.map((e: { name: string }) => e.name)).toContain("Docs");
     expect(top.map((e: { name: string }) => e.name)).not.toContain(".hidden");
@@ -84,7 +85,7 @@ describe("ShareHost <-> RemoteHost", () => {
 
   it("refuses paths outside the share", async () => {
     const { client } = await pairNewDevice();
-    const root = (await client.info()).roots[0].id;
+    const root = (await client.info()).roots[0]!.id;
     await expect(client.read(root, "../secret/passwords.txt", 0, 10)).rejects.toThrow(/not available/);
     await expect(client.read(root, "escape/passwords.txt", 0, 10)).rejects.toThrow(/not available/);
     await expect(client.list(root, "Docs/../../secret")).rejects.toThrow(/not available/);

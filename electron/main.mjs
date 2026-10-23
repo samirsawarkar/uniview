@@ -5,6 +5,7 @@ import { open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { setupRemote, thumbnailPng } from "./lib/remote-main.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -21,9 +22,12 @@ let win = null;
 let rendererReady = false;
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: "uniview", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true } },
+  { scheme: "uniview", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true, allowServiceWorkers: true } },
   { scheme: "uniview-file", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
+
+// Separate profiles (and so separate single-instance locks) for tests that run a host and a client side by side.
+if (!app.isPackaged && process.env.UNIVIEW_USER_DATA) app.setPath("userData", process.env.UNIVIEW_USER_DATA);
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -165,6 +169,11 @@ function registerIpc() {
     const entry = grants.get(token);
     if (entry) shell.showItemInFolder(entry.path);
   });
+  ipcMain.handle("uniview:thumb", guard(async (_e, token, size) => {
+    const entry = grants.get(token);
+    if (!entry) return null;
+    return thumbnailPng(entry.path, Math.max(32, Math.min(512, Number(size) || 256)));
+  }));
   ipcMain.on("uniview:ready", (e) => {
     if (!fromApp(e)) return;
     rendererReady = true;
@@ -191,6 +200,7 @@ async function start() {
   protocol.handle("uniview-file", serveFile);
   lockDown(session.defaultSession);
   registerIpc();
+  await setupRemote({ fromApp, getWindow: () => win });
   buildMenu();
 
   app.on("web-contents-created", (_e, contents) => {

@@ -2,27 +2,157 @@
   "appId": "com.uniview.viewer",
   "productName": "UniView",
   "copyright": "Copyright © 2026 Samir",
-  "directories": { "output": "release", "buildResources": "build" },
-  "files": ["dist/**/*", "electron/**/*", "package.json", "!**/*.map"],
+  "directories": {
+    "output": "release",
+    "buildResources": "build"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "shared/**/*",
+    "package.json",
+    "!**/*.map"
+  ],
   "asar": true,
   "npmRebuild": false,
-  "electronLanguages": ["en-US"],
+  "electronLanguages": [
+    "en-US"
+  ],
   "fileAssociations": [
-    { "ext": ["pdf"], "name": "PDF document", "role": "Viewer" },
-    { "ext": ["docx", "docm", "dotx"], "name": "Word document", "role": "Viewer" },
-    { "ext": ["xlsx", "xlsm", "xlsb", "xls", "ods", "csv", "tsv"], "name": "Spreadsheet", "role": "Viewer" },
-    { "ext": ["pptx", "pptm", "ppsx", "potx"], "name": "PowerPoint presentation", "role": "Viewer" },
-    { "ext": ["epub"], "name": "EPUB book", "role": "Viewer" },
-    { "ext": ["md", "markdown"], "name": "Markdown document", "role": "Viewer" },
-    { "ext": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tif", "tiff", "avif", "ico"], "name": "Image", "role": "Viewer" },
-    { "ext": ["mp4", "m4v", "mov", "webm", "mkv", "ogv"], "name": "Video", "role": "Viewer" },
-    { "ext": ["mp3", "m4a", "aac", "wav", "ogg", "opus", "flac"], "name": "Audio", "role": "Viewer" },
-    { "ext": ["zip", "cbz"], "name": "ZIP archive", "role": "Viewer" },
-    { "ext": ["json", "txt", "log", "ttf", "otf", "woff", "woff2"], "name": "Document", "role": "Viewer" }
+    {
+      "ext": [
+        "pdf"
+      ],
+      "name": "PDF document",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "docx",
+        "docm",
+        "dotx"
+      ],
+      "name": "Word document",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "xlsx",
+        "xlsm",
+        "xlsb",
+        "xls",
+        "ods",
+        "csv",
+        "tsv"
+      ],
+      "name": "Spreadsheet",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "pptx",
+        "pptm",
+        "ppsx",
+        "potx"
+      ],
+      "name": "PowerPoint presentation",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "epub"
+      ],
+      "name": "EPUB book",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "md",
+        "markdown"
+      ],
+      "name": "Markdown document",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "bmp",
+        "svg",
+        "tif",
+        "tiff",
+        "avif",
+        "ico"
+      ],
+      "name": "Image",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "mp4",
+        "m4v",
+        "mov",
+        "webm",
+        "mkv",
+        "ogv"
+      ],
+      "name": "Video",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "mp3",
+        "m4a",
+        "aac",
+        "wav",
+        "ogg",
+        "opus",
+        "flac"
+      ],
+      "name": "Audio",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "zip",
+        "cbz"
+      ],
+      "name": "ZIP archive",
+      "role": "Viewer"
+    },
+    {
+      "ext": [
+        "json",
+        "txt",
+        "log",
+        "ttf",
+        "otf",
+        "woff",
+        "woff2"
+      ],
+      "name": "Document",
+      "role": "Viewer"
+    }
   ],
   "win": {
     "icon": "build/icon.png",
-    "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }]
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
   },
   "nsis": {
     "oneClick": false,
@@ -32,12 +162,28 @@
     "createStartMenuShortcut": true,
     "artifactName": "UniView-Setup-${version}.${ext}"
   },
-  "portable": { "artifactName": "UniView-Portable-${version}.${ext}" },
+  "portable": {
+    "artifactName": "UniView-Portable-${version}.${ext}"
+  },
   "mac": {
     "icon": "build/icon.png",
     "category": "public.app-category.productivity",
-    "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+    "target": [
+      {
+        "target": "dmg",
+        "arch": [
+          "arm64",
+          "x64"
+        ]
+      }
+    ],
     "hardenedRuntime": true
   },
-  "linux": { "icon": "build/icon.png", "target": ["AppImage"], "category": "Office" }
+  "linux": {
+    "icon": "build/icon.png",
+    "target": [
+      "AppImage"
+    ],
+    "category": "Office"
+  }
 }

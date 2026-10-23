@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-// @ts-expect-error plain ESM module without types
-import * as P from "../../shared/remote-protocol.mjs";
+import * as Proto from "../../shared/remote-protocol.mjs";
+
+// The tests exercise internals the app-facing declarations do not list.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const P = Proto as any;
 
 async function pairedPair() {
   const host = await P.generateIdentity(true);

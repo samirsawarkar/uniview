@@ -2,6 +2,7 @@ import type { ShellBridge } from "../core/types";
 import { createElectronBridge, hasElectronApi } from "./electron";
 import { createWebBridge } from "./web";
 import { blobSource } from "./sources";
+import { capacitorTransport } from "./capacitor-transport";
 
 let bridge: ShellBridge | undefined;
 
@@ -14,7 +15,11 @@ function isCapacitor(): boolean {
 export function getBridge(): ShellBridge {
   if (bridge) return bridge;
   if (hasElectronApi()) bridge = createElectronBridge();
-  else bridge = createWebBridge(isCapacitor() ? "capacitor" : "web");
+  else if (isCapacitor()) {
+    bridge = createWebBridge("capacitor");
+    bridge.remoteTransport = capacitorTransport;
+    bridge.canScanQr = !!navigator.mediaDevices?.getUserMedia;
+  } else bridge = createWebBridge("web");
   installNativeOpenHook();
   return bridge;
 }

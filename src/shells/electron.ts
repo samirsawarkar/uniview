@@ -1,4 +1,4 @@
-import type { FileSource, ShellBridge } from "../core/types";
+import type { FileSource, RemoteTransport, ShareApi, ShellBridge } from "../core/types";
 import { AccessDeniedError } from "../core/errors";
 import { nextId } from "./sources";
 
@@ -10,6 +10,9 @@ export interface ElectronApi {
   reveal(token: string): void;
   onOpenFiles(cb: (files: GrantedFile[]) => void): () => void;
   ready(): void;
+  thumbnail(token: string, size: number): Promise<Uint8Array | null>;
+  share: ShareApi;
+  remotePost(host: string, port: number, path: string, body: Uint8Array, type: string): Promise<{ status: number; body: Uint8Array }>;
 }
 
 export interface GrantedFile {
@@ -54,8 +57,18 @@ function toSource(f: GrantedFile): FileSource {
 }
 
 export function createElectronBridge(): ShellBridge {
+  const remoteTransport: RemoteTransport = (host, port, path, body, type) => api().remotePost(host, port, path, body, type);
   return {
     kind: "electron",
+    remoteTransport,
+    share: api().share,
+    canScanQr: false,
+    thumbnail: async (source, size) => {
+      const token = tokens.get(source);
+      if (!token) return null;
+      const png = await api().thumbnail(token, size).catch(() => null);
+      return png ? new Blob([png as BlobPart], { type: "image/png" }) : null;
+    },
     pickFiles: async () => (await api().pickFiles()).map(toSource),
     openPath: async (path) => toSource(await api().openPath(path)),
     onExternalOpen: (cb) => api().onOpenFiles((files) => cb(files.map(toSource))),

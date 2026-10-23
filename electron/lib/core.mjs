@@ -103,3 +103,17 @@ export function checkReadArgs(start, end, size, max) {
 export function isAppFrame(frame) {
   return !!frame && frame === frame.top && typeof frame.url === "string" && frame.url.startsWith("uniview://app/");
 }
+
+/** Only local-network addresses may be contacted: private IPv4, loopback, link-local, ULA IPv6, or *.local names. */
+export function isLanHost(host) {
+  if (typeof host !== "string" || host.length > 253) return false;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (v4.slice(1).some((x) => Number(x) > 255)) return false;
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  const v6 = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (v6.includes(":")) return v6 === "::1" || /^f[cd][0-9a-f]{2}:/.test(v6) || /^fe[89ab][0-9a-f]:/.test(v6);
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)*\.local$/i.test(host);
+}

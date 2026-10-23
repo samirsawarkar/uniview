@@ -6,11 +6,20 @@ import { formatBytes } from "../core/errors";
 import { TabView } from "./TabView";
 import { badgeFor, KindBadge } from "./badges";
 import { loadRecents, rememberRecent, forgetRecent, type Recent } from "./recents";
+import { SharingPanel } from "./remote/SharingPanel";
+import { PairDialog } from "./remote/PairDialog";
+import { RemoteBrowser, type RemoteLocation } from "./remote/RemoteBrowser";
+import { forgetHost, loadHosts } from "../remote/store";
+import { disconnect } from "../remote/connections";
+import type { HostRecord } from "../../shared/remote-client.mjs";
+
+type Page = { kind: "sharing" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
 interface Tab {
   id: string;
-  source: FileSource | null; // null = home tab
+  source: FileSource | null; // null = home tab (or a page)
   detection?: Detection;
+  page?: Page;
 }
 
 const homeTab = (): Tab => ({ id: `home-${Math.random().toString(36).slice(2)}`, source: null });
@@ -28,6 +37,8 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [recents, setRecents] = useState<Recent[]>(() => loadRecents());
   const [notice, setNotice] = useState<string | null>(null);
+  const [hosts, setHosts] = useState<HostRecord[]>(() => loadHosts());
+  const [pairing, setPairing] = useState(false);
   const dragDepth = useRef(0);
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
 
@@ -57,6 +68,30 @@ export function App() {
       return next;
     });
   }, [activeId]);
+
+  /** Open (or focus) a page tab: Sharing, or a remote computer's folders. */
+  const openPage = useCallback((page: Page, replaceActive = false) => {
+    const t: Tab = { id: `page-${Math.random().toString(36).slice(2)}`, source: null, page };
+    setTabs((prev) => {
+      if (page.kind === "sharing") {
+        const existing = prev.find((x) => x.page?.kind === "sharing");
+        if (existing) {
+          setActiveId(existing.id);
+          return prev;
+        }
+      }
+      const i = prev.findIndex((x) => x.id === activeId);
+      const next = [...prev];
+      if (i >= 0 && (replaceActive ? !next[i]!.source && !next[i]!.page : false)) next.splice(i, 1, t);
+      else next.splice(i + 1, 0, t);
+      setActiveId(t.id);
+      return next;
+    });
+  }, [activeId]);
+
+  const navigateRemote = useCallback((tabId: string, location: RemoteLocation) => {
+    setTabs((prev) => prev.map((t) => (t.id === tabId && t.page?.kind === "remote" ? { ...t, page: { ...t.page, location } } : t)));
+  }, []);
 
   const newTab = useCallback(() => {
     const t = homeTab();
@@ -143,9 +178,11 @@ export function App() {
   }, [bridge, openFiles]);
 
   useEffect(() => {
-    const t = active.source ? active.source.name : "New tab";
+    const t = active.source ? active.source.name : pageTitle(active, hosts);
     document.title = `${t} – UniView`;
   }, [active]);
+
+  const hostFor = (hostId: string) => hosts.find((h) => h.hostId === hostId);
 
   const onDetected = useCallback((id: string, d: Detection) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, detection: d } : t))), []);
   const onReady = useCallback((tab: Tab, ms: number) => {
@@ -166,8 +203,8 @@ export function App() {
               onClick={() => setActiveId(t.id)}
               title={t.source ? `${t.source.path ?? t.source.name}\n${t.detection?.label ?? ""} · ${formatBytes(t.source.size)}` : "New tab"}
             >
-              {t.source ? <KindBadge kind={t.detection?.kind} small /> : <span className="tab-home" aria-hidden>⌂</span>}
-              <span className="tab-title">{t.source?.name ?? "New tab"}</span>
+              {t.source ? <KindBadge kind={t.detection?.kind} small /> : <span className="tab-home" aria-hidden>{t.page?.kind === "sharing" ? "⇄" : t.page?.kind === "remote" ? "🖥" : "⌂"}</span>}
+              <span className="tab-title">{t.source?.name ?? pageTitle(t, hosts)}</span>
               <button className="tab-close" aria-label={`Close ${t.source?.name ?? "tab"}`} onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>×</button>
             </div>
           ))}
@@ -195,6 +232,16 @@ export function App() {
           <div key={t.id} className="tab-panel" hidden={t.id !== activeId} role="tabpanel">
             {t.source ? (
               <TabView source={t.source} onDetected={(d) => onDetected(t.id, d)} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} />
+            ) : t.page?.kind === "sharing" && bridge.share ? (
+              <SharingPanel share={bridge.share} />
+            ) : t.page?.kind === "remote" && bridge.remoteTransport && hostFor(t.page.hostId) ? (
+              <RemoteBrowser
+                record={hostFor(t.page.hostId)!}
+                transport={bridge.remoteTransport}
+                location={t.page.location}
+                onNavigate={(loc) => navigateRemote(t.id, loc)}
+                onOpen={(f) => openFiles(f, false)}
+              />
             ) : (
               <Home
                 recents={recents}
@@ -202,11 +249,31 @@ export function App() {
                 onPick={pick}
                 onReopen={(r) => r.path && void openPath(r.path)}
                 onForget={(r) => setRecents(forgetRecent(r))}
+                hosts={bridge.remoteTransport ? hosts : null}
+                onConnect={() => setPairing(true)}
+                onBrowse={(h) => openPage({ kind: "remote", hostId: h.hostId, location: { path: "" } }, true)}
+                onForgetHost={(h) => {
+                  disconnect(h.hostId);
+                  setHosts(forgetHost(h.hostId));
+                }}
+                onShare={bridge.share ? () => openPage({ kind: "sharing" }, true) : undefined}
               />
             )}
           </div>
         ))}
       </main>
+      {pairing && bridge.remoteTransport && (
+        <PairDialog
+          transport={bridge.remoteTransport}
+          canScan={!!bridge.canScanQr}
+          onClose={() => setPairing(false)}
+          onPaired={(h) => {
+            setPairing(false);
+            setHosts(loadHosts());
+            openPage({ kind: "remote", hostId: h.hostId, location: { path: "" } }, true);
+          }}
+        />
+      )}
       {dragging && (
         <div className="drop-overlay" aria-hidden>
           <div className="drop-card">Drop files to open them</div>
@@ -287,12 +354,28 @@ function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenP
   );
 }
 
-function Home({ recents, canReopen, onPick, onReopen, onForget }: {
+function pageTitle(t: Tab, hosts: HostRecord[]): string {
+  if (t.page?.kind === "sharing") return "Sharing";
+  if (t.page?.kind === "remote") {
+    const p = t.page;
+    const host = hosts.find((h) => h.hostId === p.hostId)?.hostName ?? "Computer";
+    const leaf = p.location.path.split("/").filter(Boolean).pop() ?? p.location.root?.name;
+    return leaf ? `${leaf} – ${host}` : host;
+  }
+  return "New tab";
+}
+
+function Home({ recents, canReopen, onPick, onReopen, onForget, hosts, onConnect, onBrowse, onForgetHost, onShare }: {
   recents: Recent[];
   canReopen: boolean;
   onPick: () => void;
   onReopen: (r: Recent) => void;
   onForget: (r: Recent) => void;
+  hosts: HostRecord[] | null;
+  onConnect: () => void;
+  onBrowse: (h: HostRecord) => void;
+  onForgetHost: (h: HostRecord) => void;
+  onShare?: () => void;
 }) {
   return (
     <div className="home">
@@ -308,6 +391,32 @@ function Home({ recents, canReopen, onPick, onReopen, onForget }: {
           <span key={k} className="format-chip"><KindBadge kind={k} small /> {badgeFor(k).name}</span>
         ))}
       </div>
+      {(hosts || onShare) && (
+        <section className="recents computers" aria-label="Your computers">
+          <div className="section-head">
+            <h2>Your computers</h2>
+            <div className="row">
+              {onShare && <button onClick={onShare} data-testid="open-sharing">Share this computer…</button>}
+              {hosts && <button onClick={onConnect} data-testid="connect-computer">Connect a computer…</button>}
+            </div>
+          </div>
+          {hosts && hosts.length > 0 ? (
+            <ul>
+              {hosts.map((h) => (
+                <li key={h.hostId}>
+                  <button className="recent" onClick={() => onBrowse(h)} data-testid="browse-host">
+                    <span className="recent-name">🖥 {h.hostName}</span>
+                    <span className="muted small ellipsis">Browse shared folders · end-to-end encrypted</span>
+                  </button>
+                  <button className="link small" onClick={() => onForgetHost(h)} aria-label={`Forget ${h.hostName}`}>Forget</button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            hosts && <p className="muted small">Open files on your other computer without copying them. Connect over your local network; no account or cloud.</p>
+          )}
+        </section>
+      )}
       {recents.length > 0 && (
         <section className="recents">
           <h2>Recent</h2>
