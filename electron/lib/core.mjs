@@ -98,3 +98,8 @@ export function checkReadArgs(start, end, size, max) {
   if (start > size) return "range starts past the end of the file";
   return null;
 }
+
+/** True only for the app's own top-level page; subframes, other origins and missing frames are refused. */
+export function isAppFrame(frame) {
+  return !!frame && frame === frame.top && typeof frame.url === "string" && frame.url.startsWith("uniview://app/");
+}

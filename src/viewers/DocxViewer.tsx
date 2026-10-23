@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { renderAsync } from "docx-preview";
 import { CorruptFileError } from "../core/errors";
+import { assertZipWithinBudget } from "../core/zip";
 import { Loading, Spacer, Toolbar, readAllChecked, useLoad, useReady } from "./common";
 import type { ViewerProps } from "./types";
 
 export default function DocxViewer({ source, onReady }: ViewerProps) {
-  const data = useLoad((signal) => readAllChecked(source, signal), [source]);
+  const data = useLoad(async (signal) => {
+    const buf = await readAllChecked(source, signal);
+    // docx-preview inflates the archive itself without limits; prove it is not a bomb first.
+    assertZipWithinBudget(buf);
+    return buf;
+  }, [source]);
   const body = useRef<HTMLDivElement>(null);
   const styles = useRef<HTMLDivElement>(null);
   const [rendered, setRendered] = useState(false);

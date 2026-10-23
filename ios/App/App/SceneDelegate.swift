@@ -65,7 +65,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
         let base = bridge.config.localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let fileURL = base + "/_capacitor_file_" + path
+        // Encode each segment so names with "#", "?" or "%" are not cut off as a fragment or query.
+        var segmentAllowed = CharacterSet.urlPathAllowed
+        segmentAllowed.remove(charactersIn: "/?#%;")
+        let encodedPath = path.split(separator: "/", omittingEmptySubsequences: true)
+            .map { String($0).addingPercentEncoding(withAllowedCharacters: segmentAllowed) ?? "_" }
+            .joined(separator: "/")
+        let fileURL = base + "/_capacitor_file_/" + encodedPath
         guard let args = try? JSONSerialization.data(withJSONObject: [fileURL, name, ""]),
               let json = String(data: args, encoding: .utf8) else { return }
         let js = "(function(a){var u=a[0],n=a[1],m=a[2];if(window.__univiewOpenUrl){window.__univiewOpenUrl(u,n,m)}else{(window.__univiewPending=window.__univiewPending||[]).push({url:u,name:n,mime:m})}})(\(json))"
@@ -73,7 +79,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private static func safeName(_ name: String) -> String {
-        let bad = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
+        let bad = CharacterSet(charactersIn: "/\\:*?\"<>|#%").union(.controlCharacters)
         var cleaned = name.components(separatedBy: bad).joined(separator: "_")
         if cleaned.hasPrefix(".") { cleaned = "_" + cleaned }
         if cleaned.isEmpty { cleaned = "shared-file" }

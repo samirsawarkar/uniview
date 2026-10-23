@@ -54,3 +54,35 @@ describe("EPUB stylesheet cannot inject markup (finding 6)", () => {
     expect(doc.body.textContent).not.toContain("pwned");
   });
 });
+
+describe("TIFF decode limits (re-review finding 3)", () => {
+  /** A minimal TIFF whose tags declare a huge image but carry no pixel data. */
+  function hugeTiff(w: number, h: number): ArrayBuffer {
+    const b = new ArrayBuffer(8 + 2 + 3 * 12 + 4);
+    const v = new DataView(b);
+    v.setUint16(0, 0x4949, true);
+    v.setUint16(2, 42, true);
+    v.setUint32(4, 8, true);
+    v.setUint16(8, 3, true);
+    const entry = (i: number, tag: number, type: number, value: number) => {
+      const o = 10 + i * 12;
+      v.setUint16(o, tag, true);
+      v.setUint16(o + 2, type, true);
+      v.setUint32(o + 4, 1, true);
+      if (type === 3) v.setUint16(o + 8, value, true);
+      else v.setUint32(o + 8, value, true);
+    };
+    entry(0, 256, 4, w);
+    entry(1, 257, 4, h);
+    entry(2, 259, 3, 1);
+    return b;
+  }
+
+  it("reads declared dimensions without decoding, then refuses oversized pages", async () => {
+    const { tiffPages, decodeTiffPage } = await import("../../src/viewers/TiffViewer");
+    const buf = hugeTiff(60000, 60000);
+    const pages = tiffPages(buf);
+    expect(pages[0]).toMatchObject({ width: 60000, height: 60000 });
+    expect(() => decodeTiffPage(buf, pages[0]!)).toThrow(/64-megapixel/);
+  });
+});

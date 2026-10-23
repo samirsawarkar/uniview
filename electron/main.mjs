@@ -5,7 +5,7 @@ import { open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, parseRange, safeJoin } from "./lib/core.mjs";
+import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DIST = join(here, "..", "dist");
@@ -118,8 +118,7 @@ function lockDown(ses) {
 
 /** IPC is accepted only from the app's own top-level page, never from a subframe or other origin. */
 function fromApp(event) {
-  const frame = event.senderFrame;
-  return !!frame && frame === frame.top && typeof frame.url === "string" && frame.url.startsWith("uniview://app/");
+  return isAppFrame(event.senderFrame);
 }
 
 function guard(handler) {

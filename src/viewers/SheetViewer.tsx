@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { CorruptFileError } from "../core/errors";
-import { decodeText } from "../core/zip";
+import { assertZipWithinBudget, decodeText } from "../core/zip";
 import { Loading, Spacer, Toolbar, readAllChecked, useLoad, useReady } from "./common";
 import type { ViewerProps } from "./types";
 
@@ -42,6 +42,9 @@ function toGrid(ws: XLSX.WorkSheet, name: string): Grid {
 export default function SheetViewer({ source, detection, onReady }: ViewerProps) {
   const book = useLoad(async (signal) => {
     const buf = await readAllChecked(source, signal, 256 * 1024 * 1024);
+    // SheetJS inflates .xlsx/.ods itself without limits; prove the archive is not a bomb first.
+    const head = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+    if (head[0] === 0x50 && head[1] === 0x4b) assertZipWithinBudget(buf);
     try {
       const isText = detection.ext === "csv" || detection.ext === "tsv" || detection.by === "content";
       // SheetJS reads raw bytes as Latin-1 unless there is a BOM; decode UTF-8 first so accents survive.

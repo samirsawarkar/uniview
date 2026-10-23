@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CorruptFileError } from "../core/errors";
+import { CorruptFileError, ViewerError } from "../core/errors";
+import { loadFont } from "./loaders";
 import { Loading, Spacer, Toolbar, readAllChecked, useLoad, useReady } from "./common";
 import type { ViewerProps } from "./types";
 
@@ -8,20 +9,14 @@ const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!?
 
 export default function FontViewer({ source, onReady }: ViewerProps) {
   const family = useLoad(async (signal) => {
-    const buf = await readAllChecked(source, signal, 64 * 1024 * 1024);
     const name = `uv-font-${source.id}`;
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    let face: FontFace;
     try {
-      face = new FontFace(name, buf);
-      await face.load();
+      const face = await loadFont((sig) => readAllChecked(source, sig, 64 * 1024 * 1024), (buf) => new FontFace(name, buf), document.fonts, signal);
+      return { name, face };
     } catch (err) {
+      if (signal.aborted || err instanceof ViewerError) throw err;
       throw new CorruptFileError(`This font could not be loaded: ${(err as Error).message}`);
     }
-    // Register only if the tab is still open, so a closed tab never leaves a font behind.
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    document.fonts.add(face);
-    return { name, face };
   }, [source]);
   const [text, setText] = useState(SAMPLE);
   useEffect(() => () => void (family && document.fonts.delete(family.face)), [family]);

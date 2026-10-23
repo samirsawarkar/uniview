@@ -1,5 +1,7 @@
 import { _electron as electron, expect, test } from "@playwright/test";
 import { join } from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 
 const FX = join(process.cwd(), "fixtures", "generated");
 
@@ -40,16 +42,25 @@ test("desktop shell opens argv files, streams media and blocks the network", asy
     }, join(FX, "pixel.png"));
     expect(img).toBe(320);
 
-    // The session itself refuses remote hosts, independent of the page CSP.
-    const sessionFetch = await app.evaluate(async ({ session }) => {
-      try {
-        await session.defaultSession.fetch("https://example.com/");
-        return "reached";
-      } catch {
-        return "blocked";
-      }
-    });
-    expect(sessionFetch).toBe("blocked");
+    // The session itself refuses other hosts, independent of the page CSP. Use a server this test proves is
+    // reachable, so "blocked" can only mean the policy refused it (not that the network was down).
+    const server = createServer((_req, res) => res.end("reachable"));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      expect(await (await fetch(`http://127.0.0.1:${port}/`)).text()).toBe("reachable");
+      const viaSession = await app.evaluate(async ({ session }, url) => {
+        try {
+          await session.defaultSession.fetch(url);
+          return "reached";
+        } catch (err) {
+          return String((err as Error).message);
+        }
+      }, `http://127.0.0.1:${port}/`);
+      expect(viaSession).toMatch(/ERR_BLOCKED_BY_CLIENT/);
+    } finally {
+      server.close();
+    }
 
     // An unknown token is refused.
     const forged = await page.evaluate(async () => (await fetch(`uniview-file://${"a".repeat(32)}/x`).catch(() => null))?.status ?? "error");

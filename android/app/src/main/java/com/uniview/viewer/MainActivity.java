@@ -78,7 +78,7 @@ public class MainActivity extends BridgeActivity {
             String name = displayName(uri);
             File dir = new File(getCacheDir(), "shared/" + System.currentTimeMillis());
             if (!dir.mkdirs() && !dir.isDirectory()) throw new IllegalStateException("cannot create cache folder");
-            File out = new File(dir, safeName(name));
+            File out = new File(dir, ShareFiles.safeName(name));
             ContentResolver resolver = getContentResolver();
             long total = 0;
             try (InputStream in = resolver.openInputStream(uri); OutputStream os = new FileOutputStream(out)) {
@@ -91,7 +91,7 @@ public class MainActivity extends BridgeActivity {
                     os.write(buf, 0, n);
                 }
             }
-            String url = getBridge().getLocalUrl() + "/_capacitor_file_" + out.getAbsolutePath();
+            String url = ShareFiles.localFileUrl(getBridge().getLocalUrl(), out.getAbsolutePath());
             String js = "(function(u,n,m){if(window.__univiewOpenUrl){window.__univiewOpenUrl(u,n,m)}else{"
                     + "(window.__univiewPending=window.__univiewPending||[]).push({url:u,name:n,mime:m})}})("
                     + JSONObject.quote(url) + "," + JSONObject.quote(name) + "," + JSONObject.quote(mime == null ? "" : mime) + ")";
@@ -117,13 +117,6 @@ public class MainActivity extends BridgeActivity {
         }
         String last = uri.getLastPathSegment();
         return last != null && !last.isEmpty() ? last : "shared-file";
-    }
-
-    private static String safeName(String name) {
-        // Regex [\\/:*?"<>|\u0000-\u001f]: path separators, reserved characters and controls.
-        String n = name.replaceAll("[\\\\/:*?\"<>|\\u0000-\\u001f]", "_");
-        if (n.startsWith(".")) n = "_" + n;
-        return n.length() > 120 ? n.substring(n.length() - 120) : n;
     }
 
     /** Shared copies are temporary; drop ones from earlier sessions. */

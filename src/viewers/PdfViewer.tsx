@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
-import { CorruptFileError } from "../core/errors";
+import { CorruptFileError, ViewerError } from "../core/errors";
+import { loadPdf } from "./loaders";
 import { Loading, Spacer, Toolbar, readAllChecked, useLoad, useReady } from "./common";
 import type { ViewerProps } from "./types";
 
@@ -14,32 +15,26 @@ type Zoom = "fit" | number;
 
 export default function PdfViewer({ source, onReady }: ViewerProps) {
   const doc = useLoad(async (signal) => {
-    const data = new Uint8Array(await readAllChecked(source, signal));
-    // A read that finished after the tab closed must not start a worker nobody will destroy.
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    const task = pdfjs.getDocument({
-      data,
-      cMapUrl: asset("cmaps/"),
-      cMapPacked: true,
-      standardFontDataUrl: asset("standard_fonts/"),
-      wasmUrl: asset("wasm/"),
-      iccUrl: asset("iccs/"),
-      enableXfa: false,
-      stopAtErrors: false,
-    });
-    signal.addEventListener("abort", () => void task.destroy());
     try {
-      const doc = await task.promise;
-      if (signal.aborted) {
-        void task.destroy();
-        throw new DOMException("Aborted", "AbortError");
-      }
-      return { doc, task };
+      return await loadPdf(
+        (sig) => readAllChecked(source, sig),
+        (data) =>
+          pdfjs.getDocument({
+            data,
+            cMapUrl: asset("cmaps/"),
+            cMapPacked: true,
+            standardFontDataUrl: asset("standard_fonts/"),
+            wasmUrl: asset("wasm/"),
+            iccUrl: asset("iccs/"),
+            enableXfa: false,
+            stopAtErrors: false,
+          }),
+        signal,
+      );
     } catch (err) {
-      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const name = (err as Error).name;
-      if (name === "PasswordException") throw new CorruptFileError("This PDF is password-protected. UniView V1 cannot open protected PDFs yet.");
-      throw new CorruptFileError(`This PDF could not be read: ${(err as Error).message}`);
+      if (signal.aborted || !(err instanceof Error) || err instanceof ViewerError) throw err;
+      if (err.name === "PasswordException") throw new CorruptFileError("This PDF is password-protected. UniView V1 cannot open protected PDFs yet.");
+      throw new CorruptFileError(`This PDF could not be read: ${err.message}`);
     }
   }, [source]);
 

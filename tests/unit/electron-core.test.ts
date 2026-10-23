@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolve, sep } from "node:path";
 // @ts-expect-error plain ESM module without types
-import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs } from "../../electron/lib/core.mjs";
+import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame } from "../../electron/lib/core.mjs";
 
 describe("parseRange", () => {
   it("handles open, closed, suffix and clamped ranges", () => {
@@ -74,5 +74,23 @@ describe("misc", () => {
     expect(checkReadArgs(0, 2000, 3000, 1000)).toMatch(/limited/);
     expect(checkReadArgs(500, 600, 100, 1000)).toMatch(/past the end/);
     expect(checkReadArgs(0.5, 1, 100, 1000)).toBe("invalid range");
+  });
+});
+
+describe("isAppFrame (IPC sender validation)", () => {
+  it("accepts only the app's top-level page", () => {
+    const top: { url: string; top?: unknown } = { url: "uniview://app/index.html" };
+    top.top = top;
+    expect(isAppFrame(top)).toBe(true);
+    const sub = { url: "uniview://app/index.html", top };
+    expect(isAppFrame(sub)).toBe(false);
+    const foreign: { url: string; top?: unknown } = { url: "https://evil.example/" };
+    foreign.top = foreign;
+    expect(isAppFrame(foreign)).toBe(false);
+    const blob: { url: string; top?: unknown } = { url: "blob:uniview://app/123" };
+    blob.top = blob;
+    expect(isAppFrame(blob)).toBe(false);
+    expect(isAppFrame(null)).toBe(false);
+    expect(isAppFrame(undefined)).toBe(false);
   });
 });
