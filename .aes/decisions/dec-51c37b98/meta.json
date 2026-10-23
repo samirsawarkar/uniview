@@ -1,0 +1,77 @@
+{
+  "abort_reason": null,
+  "aborted": false,
+  "agents": [
+    "claude",
+    "codex",
+    "agy",
+    "pi"
+  ],
+  "id": "dec-51c37b98",
+  "labels_to_agents": {
+    "round_1": {
+      "Perspective A": "codex",
+      "Perspective B": "claude",
+      "Perspective C": "pi",
+      "Perspective D": "agy"
+    },
+    "round_2": {
+      "Perspective A": "agy",
+      "Perspective B": "pi",
+      "Perspective C": "codex",
+      "Perspective D": "claude"
+    }
+  },
+  "missing_agents": [],
+  "mode": "delphi",
+  "per_agent_status": {
+    "round_1": {
+      "agy": "succeeded",
+      "claude": "succeeded",
+      "codex": "succeeded",
+      "pi": "succeeded"
+    },
+    "round_2": {
+      "agy": "succeeded",
+      "claude": "succeeded",
+      "codex": "succeeded",
+      "pi": "succeeded"
+    }
+  },
+  "question": "How many working days (unit: working days of 8 hours, counted from 2026-10-24) until UniView is production ready on Windows and Android? Production ready = Phase 1 agent review workspace complete and Codex-accepted (remaining packets: P13f in flight, P14b Review tab with file verification/persistence/phone resolution, P15 local bridge with mutual HMAC auth and path policy, P16 CLI, P17 hand-written MCP stdio server + Agents panel + approval dialogs, P18 docs/packaging/QA/security), signed Windows installer and Android release build passing full device QA. Exclude external waits (code-signing certificate issuance, Google Play review/closed testing) and iOS. Context: plan docs/tasks/phase-1-agent-workspace.md; pace so far ~7 reviewed packets per working session, most packets need 2-3 Codex review rounds; agy writes code, Claude integrates test-first with mutation checks, Codex reviews.",
+  "roster": {
+    "round_1": {
+      "Perspective A": "codex",
+      "Perspective B": "claude",
+      "Perspective C": "pi",
+      "Perspective D": "agy"
+    },
+    "round_2": {
+      "Perspective A": "agy",
+      "Perspective B": "pi",
+      "Perspective C": "codex",
+      "Perspective D": "claude"
+    }
+  },
+  "rounds": 2,
+  "state": "completed",
+  "status": "completed",
+  "status_per_round": {
+    "round_1": {
+      "agy": "succeeded",
+      "claude": "succeeded",
+      "codex": "succeeded",
+      "pi": "succeeded"
+    },
+    "round_2": {
+      "agy": "succeeded",
+      "claude": "succeeded",
+      "codex": "succeeded",
+      "pi": "succeeded"
+    }
+  },
+  "timestamps": {
+    "finished_at": "2026-10-23T21:48:48+00:00",
+    "started_at": "2026-10-23T21:39:54+00:00"
+  }
+}
