@@ -4,6 +4,7 @@ import { chromium } from "@playwright/test";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getHeapMeasurement } from "./bench-metrics.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FX = join(root, "fixtures", "generated");
@@ -61,16 +62,8 @@ try {
       cold.push(await openAndMeasure(page, name, 0));
       const maxTask = await page.evaluate(() => Math.round(window.__maxLongTask || 0));
       coldTasks.push(maxTask);
-      try {
-        const client = await page.context().newCDPSession(page);
-        await client.send("Performance.enable");
-        const { metrics } = await client.send("Performance.getMetrics");
-        const heap = metrics.find((m) => m.name === "JSHeapUsedSize");
-        if (heap) coldHeaps.push(heap.value / (1024 * 1024));
-        await client.detach();
-      } catch {
-        /* CDP session error ignored */
-      }
+      const heapMB = await getHeapMeasurement(page);
+      if (typeof heapMB === "number") coldHeaps.push(heapMB);
       await page.close();
     }
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -78,10 +71,10 @@ try {
     await openAndMeasure(page, name, 0);
     for (let i = 1; i <= runs; i++) warm.push(await openAndMeasure(page, name, i));
     await page.close();
-    const heapMB = coldHeaps.length ? pct(coldHeaps, 50).toFixed(1) : "0.0";
+    const heapDisplay = coldHeaps.length ? `${pct(coldHeaps, 50).toFixed(1)} MB` : "N/A";
     const taskMs = coldTasks.length ? Math.round(pct(coldTasks, 50)) : 0;
-    results.push({ name, size: statSync(join(FX, name)).size, cold, warm, heap: heapMB, longestTask: taskMs });
-    console.log(`${name.padEnd(14)} cold p50 ${pct(cold, 50)} ms  warm p50 ${pct(warm, 50)} ms  heap ${heapMB} MB  longest task ${taskMs} ms`);
+    results.push({ name, size: statSync(join(FX, name)).size, cold, warm, heap: heapDisplay, longestTask: taskMs });
+    console.log(`${name.padEnd(14)} cold p50 ${pct(cold, 50)} ms  warm p50 ${pct(warm, 50)} ms  heap ${heapDisplay}  longest task ${taskMs} ms`);
   }
 } finally {
   await browser.close();
@@ -111,7 +104,7 @@ const lines = [
   "",
   "| File | Size | Cold p50 | Cold p95 | Warm p50 | Warm p95 | Heap after open | Longest task |",
   "|---|---:|---:|---:|---:|---:|---:|---:|",
-  ...results.map((r) => `| ${r.name} | ${(r.size / 1024).toFixed(1)} KB | ${pct(r.cold, 50)} ms | ${pct(r.cold, 95)} ms | ${pct(r.warm, 50)} ms | ${pct(r.warm, 95)} ms | ${r.heap} MB | ${r.longestTask} ms |`),
+  ...results.map((r) => `| ${r.name} | ${(r.size / 1024).toFixed(1)} KB | ${pct(r.cold, 50)} ms | ${pct(r.cold, 95)} ms | ${pct(r.warm, 50)} ms | ${pct(r.warm, 95)} ms | ${r.heap} | ${r.longestTask} ms |`),
   "",
   ...(electronLine ? [electronLine, ""] : []),
   "Targets from docs/SPEC.md: warm p50 under 300 ms for files under 5 MB; app start under 1.5 s.",
