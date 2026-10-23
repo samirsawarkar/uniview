@@ -197,7 +197,7 @@ describe("receipt schema & fixtures", () => {
     });
     expect(exactDup.ok).toBe(false);
     if (!exactDup.ok) {
-      expect(exactDup.errors.some((e) => e.code === "schema" && e.message.includes("Duplicate"))).toBe(true);
+      expect(exactDup.errors.some((e) => e.code === "schema" && e.message.startsWith("duplicate of /files/"))).toBe(true);
     }
 
     const windowsCaseDup = await validateReceipt({
@@ -217,7 +217,7 @@ describe("receipt schema & fixtures", () => {
     });
     expect(windowsCaseDup.ok).toBe(false);
     if (!windowsCaseDup.ok) {
-      expect(windowsCaseDup.errors.some((e) => e.code === "schema" && e.message.includes("Duplicate"))).toBe(true);
+      expect(windowsCaseDup.errors.some((e) => e.code === "schema" && e.message.startsWith("duplicate of /files/"))).toBe(true);
     }
   });
 

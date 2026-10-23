@@ -305,6 +305,7 @@ function isAbsolutePath(p) {
   if (typeof p !== "string" || p.length === 0) return false;
   if (p.startsWith("/")) return true;
   if (/^[a-zA-Z]:[\\/]/.test(p)) return true;
+  if (p.startsWith("\\\\")) return true;
   return false;
 }
 
@@ -321,10 +322,121 @@ function isValidRelativePath(p) {
 
 function normalizePathForComparison(p) {
   if (typeof p !== "string") return p;
-  if (/^[a-zA-Z]:/.test(p) || p.includes("\\")) {
-    return p.replace(/\\/g, "/").toLowerCase();
+
+  const isWindows = /^[a-zA-Z]:([\\/]|$)/.test(p) || p.startsWith("\\\\");
+  let normalized = p;
+  if (isWindows) {
+    normalized = normalized.replace(/\\/g, "/").toLowerCase();
   }
-  return p;
+
+  let root = "";
+  let rest = normalized;
+
+  if (isWindows) {
+    const driveMatch = rest.match(/^[a-zA-Z]:(?:\/|$)/);
+    if (driveMatch) {
+      root = driveMatch[0].endsWith("/") ? driveMatch[0] : driveMatch[0] + "/";
+      rest = rest.slice(driveMatch[0].length);
+    } else {
+      const uncMatch = rest.match(/^\/\/([^/]+)\/([^/]+)(?:\/|$)/);
+      if (uncMatch) {
+        root = uncMatch[0].endsWith("/") ? uncMatch[0] : uncMatch[0] + "/";
+        rest = rest.slice(uncMatch[0].length);
+      }
+    }
+  }
+
+  if (!root && rest.startsWith("/")) {
+    root = "/";
+    rest = rest.replace(/^\/+/, "");
+  }
+
+  const rawSegments = rest.split("/");
+  const stack = [];
+  for (const seg of rawSegments) {
+    if (seg === "" || seg === ".") {
+      continue;
+    }
+    if (seg === "..") {
+      if (stack.length > 0) {
+        stack.pop();
+      }
+    } else {
+      stack.push(seg);
+    }
+  }
+
+  const joined = stack.join("/");
+  if (!root) {
+    return joined;
+  }
+  if (stack.length === 0) {
+    return root;
+  }
+  return root === "/" ? "/" + joined : root + joined;
+}
+
+/**
+ * Hyperjump's BASIC output lists failures as { keyword, instanceLocation: "#/a/b" };
+ * report each with its JSON Pointer and the failing keyword's name.
+ */
+function pushSchemaErrors(output, errors) {
+  if (!Array.isArray(output.errors)) return;
+  for (const err of output.errors) {
+    if (errors.length >= 100) return;
+    const keyword = String(err.keyword ?? "").split("/").pop() || "schema";
+    errors.push({
+      code: "schema",
+      path: String(err.instanceLocation ?? "").replace(/^#/, ""),
+      message: `validation failed (${keyword})`
+    });
+  }
+}
+
+function isValidDateTime(val) {
+  if (typeof val !== "string") return false;
+  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?(Z|[+-]([0-9]{2}):([0-9]{2}))$/.exec(val);
+  if (!match) return false;
+
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  const hour = parseInt(match[4], 10);
+  const minute = parseInt(match[5], 10);
+  const second = parseInt(match[6], 10);
+
+  if (month < 1 || month > 12) return false;
+
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+  const daysInMonths = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const maxDay = daysInMonths[month - 1];
+  if (day < 1 || day > maxDay) return false;
+
+  if (hour < 0 || hour > 23) return false;
+  if (minute < 0 || minute > 59) return false;
+  if (second < 0 || second > 60) return false;
+
+  if (match[7] !== "Z") {
+    const offsetHour = parseInt(match[8], 10);
+    const offsetMinute = parseInt(match[9], 10);
+    if (offsetHour < 0 || offsetHour > 23) return false;
+    if (offsetMinute < 0 || offsetMinute > 59) return false;
+  }
+
+  return true;
+}
+
+function checkCalendarDateTime(val, path, errors) {
+  if (typeof val === "string") {
+    const shapePattern = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$/;
+    if (shapePattern.test(val) && !isValidDateTime(val)) {
+      errors.push({
+        code: "schema",
+        path,
+        message: "not a valid date-time"
+      });
+    }
+  }
 }
 
 function utf8ByteCount(str) {
@@ -488,17 +600,7 @@ export async function validateReceipt(input) {
     const validator = await getReceiptValidator();
     const output = await validator(parsed, BASIC);
     if (!output.valid) {
-      if (Array.isArray(output.errors) && output.errors.length > 0) {
-        for (const err of output.errors) {
-          if (err.instanceLocation !== undefined && err.error) {
-            errors.push({
-              code: "schema",
-              path: err.instanceLocation,
-              message: err.error
-            });
-          }
-        }
-      }
+      pushSchemaErrors(output, errors);
       if (errors.length === 0) {
         errors.push({
           code: "schema",
@@ -535,22 +637,17 @@ export async function validateReceipt(input) {
     }
   };
 
-  if (parsed.agent && typeof parsed.agent === "object") {
-    checkUtf8Limit(parsed.agent.name, RECEIPT_LIMITS.MAX_AGENT_NAME_LENGTH, "/agent/name", "agent.name");
-    checkUtf8Limit(parsed.agent.model, RECEIPT_LIMITS.MAX_AGENT_MODEL_LENGTH, "/agent/model", "agent.model");
-    checkUtf8Limit(parsed.agent.run, RECEIPT_LIMITS.MAX_AGENT_RUN_LENGTH, "/agent/run", "agent.run");
+  if (parsed.createdAt !== undefined) {
+    checkCalendarDateTime(parsed.createdAt, "/createdAt", errors);
   }
 
   checkUtf8Limit(parsed.task, RECEIPT_LIMITS.MAX_TASK_BYTES, "/task", "task");
   checkUtf8Limit(parsed.summary, RECEIPT_LIMITS.MAX_SUMMARY_BYTES, "/summary", "summary");
-  checkUtf8Limit(parsed.view, RECEIPT_LIMITS.MAX_VIEW_LENGTH, "/view", "view");
-  checkUtf8Limit(parsed.viewRelPath, RECEIPT_LIMITS.MAX_VIEW_REL_PATH_LENGTH, "/viewRelPath", "viewRelPath");
 
   if (Array.isArray(parsed.checks)) {
     for (let i = 0; i < parsed.checks.length; i++) {
       const c = parsed.checks[i];
       if (c && typeof c === "object") {
-        checkUtf8Limit(c.name, RECEIPT_LIMITS.MAX_CHECK_NAME_LENGTH, `/checks/${i}/name`, `checks[${i}].name`);
         checkUtf8Limit(c.evidence, RECEIPT_LIMITS.MAX_CHECK_EVIDENCE_BYTES, `/checks/${i}/evidence`, `checks[${i}].evidence`);
       }
     }
@@ -560,20 +657,16 @@ export async function validateReceipt(input) {
     for (let i = 0; i < parsed.sources.length; i++) {
       const s = parsed.sources[i];
       if (s && typeof s === "object") {
-        checkUtf8Limit(s.title, RECEIPT_LIMITS.MAX_SOURCE_TITLE_LENGTH, `/sources/${i}/title`, `sources[${i}].title`);
         checkUtf8Limit(s.ref, RECEIPT_LIMITS.MAX_SOURCE_REF_BYTES, `/sources/${i}/ref`, `sources[${i}].ref`);
       }
     }
   }
 
   if (Array.isArray(parsed.files)) {
-    const seenPaths = new Set();
+    const seenPaths = new Map();
     for (let i = 0; i < parsed.files.length; i++) {
       const f = parsed.files[i];
       if (f && typeof f === "object") {
-        checkUtf8Limit(f.path, RECEIPT_LIMITS.MAX_PATH_LENGTH, `/files/${i}/path`, `files[${i}].path`);
-        checkUtf8Limit(f.relPath, RECEIPT_LIMITS.MAX_REL_PATH_LENGTH, `/files/${i}/relPath`, `files[${i}].relPath`);
-
         if (typeof f.path === "string") {
           if (!isAbsolutePath(f.path)) {
             errors.push({
@@ -584,13 +677,14 @@ export async function validateReceipt(input) {
           } else {
             const normalized = normalizePathForComparison(f.path);
             if (seenPaths.has(normalized)) {
+              const prevIdx = seenPaths.get(normalized);
               errors.push({
                 code: "schema",
                 path: `/files/${i}/path`,
-                message: `Duplicate file path: ${f.path}`
+                message: `duplicate of /files/${prevIdx}/path`
               });
             } else {
-              seenPaths.add(normalized);
+              seenPaths.set(normalized, i);
             }
           }
         }
@@ -679,17 +773,7 @@ export async function validateDecision(value) {
     const validator = await getDecisionValidator();
     const output = await validator(parsed, BASIC);
     if (!output.valid) {
-      if (Array.isArray(output.errors) && output.errors.length > 0) {
-        for (const err of output.errors) {
-          if (err.instanceLocation !== undefined && err.error) {
-            errors.push({
-              code: "schema",
-              path: err.instanceLocation,
-              message: err.error
-            });
-          }
-        }
-      }
+      pushSchemaErrors(output, errors);
       if (errors.length === 0) {
         errors.push({
           code: "schema",
@@ -706,14 +790,22 @@ export async function validateDecision(value) {
     });
   }
 
-  if (parsed && typeof parsed.comment === "string") {
-    const commentBytes = utf8ByteCount(parsed.comment);
-    if (commentBytes > RECEIPT_LIMITS.MAX_DECISION_COMMENT_BYTES) {
-      errors.push({
-        code: "schema",
-        path: "/comment",
-        message: `comment exceeds byte limit of ${RECEIPT_LIMITS.MAX_DECISION_COMMENT_BYTES} bytes (got ${commentBytes})`
-      });
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    if (parsed.decidedAt !== undefined) {
+      checkCalendarDateTime(parsed.decidedAt, "/decidedAt", errors);
+    }
+    if (parsed.verifiedAt !== undefined) {
+      checkCalendarDateTime(parsed.verifiedAt, "/verifiedAt", errors);
+    }
+    if (typeof parsed.comment === "string") {
+      const commentBytes = utf8ByteCount(parsed.comment);
+      if (commentBytes > RECEIPT_LIMITS.MAX_DECISION_COMMENT_BYTES) {
+        errors.push({
+          code: "schema",
+          path: "/comment",
+          message: `comment exceeds byte limit of ${RECEIPT_LIMITS.MAX_DECISION_COMMENT_BYTES} bytes (got ${commentBytes})`
+        });
+      }
     }
   }
 

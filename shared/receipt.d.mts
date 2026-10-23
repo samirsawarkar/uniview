@@ -85,11 +85,13 @@ export interface ReceiptValidationError {
 export interface ReceiptValidationSuccess {
   ok: true;
   receipt: Receipt;
+  errors?: undefined;
 }
 
 export interface DecisionValidationSuccess {
   ok: true;
   decision: Decision;
+  errors?: undefined;
 }
 
 export interface ValidationFailure {
