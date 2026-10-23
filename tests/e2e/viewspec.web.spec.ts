@@ -60,5 +60,10 @@ test.describe("viewspec viewer e2e", () => {
     await openFile(page, invalidPath);
 
     await expect(page.locator("text=This view could not be shown")).toBeVisible();
+
+    // "Open as JSON" switches this tab to the JSON viewer (TabView's override).
+    await page.getByRole("button", { name: "Open as JSON" }).click();
+    await expect(page.getByTestId("json-tree")).toBeVisible();
+    await expect(page.locator("text=This view could not be shown")).toHaveCount(0);
   });
 });

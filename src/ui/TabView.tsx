@@ -61,7 +61,7 @@ export function TabView({ source, onDetected, onReady, onOpen, active = true }: 
   return (
     <ViewerBoundary key={`${source.id}:${kind}`} source={source} onFallback={setOverride} fallbackUsed={override}>
       <Suspense fallback={<Loading />}>
-        <Viewer source={source} detection={override ? { ...base, kind } : base} onOpen={onOpen} onReady={() => onReady(performance.now() - started)} active={active} />
+        <Viewer source={source} detection={override ? { ...base, kind } : base} onOpen={onOpen} onReady={() => onReady(performance.now() - started)} active={active} onFallback={setOverride} />
       </Suspense>
     </ViewerBoundary>
   );

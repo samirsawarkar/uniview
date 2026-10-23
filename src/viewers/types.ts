@@ -1,4 +1,4 @@
-import type { Detection, FileSource } from "../core/types";
+import type { Detection, FileSource, FormatKind } from "../core/types";
 
 export interface ViewerProps {
   source: FileSource;
@@ -9,6 +9,8 @@ export interface ViewerProps {
   onOpen: (files: FileSource[]) => void;
   /** This viewer's tab is the visible one; default true. */
   active?: boolean;
+  /** Show this tab with another viewer. */
+  onFallback?: (kind: FormatKind) => void;
 }
 
 /** Size above which in-memory parsers refuse and offer the hex view instead. */

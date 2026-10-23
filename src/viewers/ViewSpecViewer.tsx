@@ -1,96 +1,52 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import type { ViewerProps } from "./types";
 import { validateViewSpec } from "../../shared/viewspec.mjs";
 import type { ViewSpec, ValidationError } from "../../shared/viewspec.d.mts";
 import { sanitizeLabel } from "./agent-markdown";
 import { ViewNodeRenderer } from "./viewspec-nodes";
 
+const MAX_BYTES = 2 * 1024 * 1024;
+
+type Loaded = { spec: ViewSpec; errors: null } | { spec: null; errors: ValidationError[] };
+
+function failed(code: string, message: string): Loaded {
+  return { spec: null, errors: [{ code, path: "", message } as ValidationError] };
+}
+
+/** Reads and validates the spec bytes once; used for the first view and for Reload. */
+async function readSpec(source: ViewerProps["source"]): Promise<Loaded> {
+  if (source.size > MAX_BYTES) return failed("too_large", `File exceeds 2 MiB limit (${source.size} bytes)`);
+  try {
+    const bytes = await source.readAll();
+    if (bytes.byteLength > MAX_BYTES) return failed("too_large", `File exceeds 2 MiB limit (${bytes.byteLength} bytes)`);
+    const result = await validateViewSpec(new TextDecoder("utf-8").decode(bytes));
+    return result.ok ? { spec: result.spec, errors: null } : { spec: null, errors: result.errors };
+  } catch (err: unknown) {
+    return failed("read_error", err instanceof Error ? err.message : String(err));
+  }
+}
+
 export default function ViewSpecViewer({
   source,
   onReady,
+  onFallback,
 }: ViewerProps): React.ReactElement {
-  const [loading, setLoading] = useState(true);
-  const [spec, setSpec] = useState<ViewSpec | null>(null);
-  const [errorInfo, setErrorInfo] = useState<{
-    errors: ValidationError[];
-    rawText: string;
-  } | null>(null);
-  const [showJson, setShowJson] = useState(false);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const loading = loaded === null;
+  const spec = loaded?.spec ?? null;
+  const errorInfo = loaded?.errors ? { errors: loaded.errors } : null;
+  const mounted = useRef(true);
 
   useEffect(() => {
+    mounted.current = true;
     let cancelled = false;
-
-    async function load() {
-      const MAX_BYTES = 2 * 1024 * 1024;
-      if (typeof source.size === "number" && source.size > MAX_BYTES) {
-        if (!cancelled) {
-          setErrorInfo({
-            errors: [
-              {
-                code: "too_large",
-                path: "",
-                message: `File exceeds 2 MiB limit (${source.size} bytes)`,
-              },
-            ],
-            rawText: "",
-          });
-          setLoading(false);
-        }
-        return;
-      }
-
-      try {
-        const bytes = await source.readAll();
-        if (cancelled) return;
-
-        if (bytes.byteLength > MAX_BYTES) {
-          setErrorInfo({
-            errors: [
-              {
-                code: "too_large",
-                path: "",
-                message: `File exceeds 2 MiB limit (${bytes.byteLength} bytes)`,
-              },
-            ],
-            rawText: "",
-          });
-          setLoading(false);
-          return;
-        }
-
-        const text = new TextDecoder("utf-8").decode(bytes);
-        const result = await validateViewSpec(text);
-        if (cancelled) return;
-
-        if (!result.ok) {
-          setErrorInfo({ errors: result.errors, rawText: text });
-        } else {
-          setSpec(result.spec);
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setErrorInfo({
-            errors: [
-              {
-                code: "read_error",
-                path: "",
-                message: err?.message || String(err),
-              },
-            ],
-            rawText: "",
-          });
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void load();
-
+    setLoaded(null);
+    void readSpec(source).then((r) => {
+      if (!cancelled) setLoaded(r);
+    });
     return () => {
       cancelled = true;
+      mounted.current = false;
     };
   }, [source]);
 
@@ -99,6 +55,12 @@ export default function ViewSpecViewer({
       onReady?.();
     }
   }, [loading, onReady]);
+
+  // The previous content stays on screen until the new bytes are validated.
+  const handleReload = async () => {
+    const r = await readSpec(source);
+    if (mounted.current) setLoaded(r);
+  };
 
   if (loading) {
     return <div className="vs-loading">Loading view…</div>;
@@ -117,18 +79,22 @@ export default function ViewSpecViewer({
             </li>
           ))}
         </ul>
-        <div className="vs-raw-toggle">
+        <div className="vs-error-actions">
           <button
             type="button"
-            className="vs-toggle-btn"
-            onClick={() => setShowJson((v) => !v)}
+            className="vs-reload"
+            onClick={() => void handleReload()}
           >
-            Show as JSON
+            Reload
           </button>
-          {showJson && (
-            <pre className="vs-raw-json">
-              {errorInfo.rawText.slice(0, 256 * 1024)}
-            </pre>
+          {onFallback && (
+            <button
+              type="button"
+              className="vs-open-json"
+              onClick={() => onFallback("json")}
+            >
+              Open as JSON
+            </button>
           )}
         </div>
       </div>
@@ -151,6 +117,13 @@ export default function ViewSpecViewer({
             : "View from an agent"}
         </div>
         <h1 className="vs-title">{title}</h1>
+        <button
+          type="button"
+          className="vs-reload"
+          onClick={() => void handleReload()}
+        >
+          Reload
+        </button>
       </header>
       <div className="vs-body">
         {spec.body.map((node, i) => (

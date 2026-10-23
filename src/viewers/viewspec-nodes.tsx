@@ -471,10 +471,10 @@ export function ChartRenderer({ node }: { node: ChartNode }): React.ReactElement
                       vIdx * groupWidth +
                       startOffset +
                       sIdx * (barW + barPad);
-                    const barY = getY(Math.max(0, v));
+                    const barY = getY(v);
                     const zeroY = getY(0);
+                    const yPos = Math.min(barY, zeroY);
                     const barH = Math.max(1, Math.abs(zeroY - barY));
-                    const yPos = v >= 0 ? barY : zeroY;
                     return (
                       <rect
                         key={vIdx}

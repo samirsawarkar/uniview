@@ -211,35 +211,21 @@ describe("ViewSpecViewer", () => {
     expect(container?.querySelector("table")).not.toBeNull();
   });
 
-  it("invalid fixture shows error view with its code and Show as JSON toggle works", async () => {
+  it("invalid fixture shows error view with its code and path", async () => {
     const invalidData = JSON.stringify({
       uniview: "invalid/version",
       title: "Bad Spec",
     });
 
-    const source = makeSource(invalidData);
-    await renderAndWait(source);
+    await renderAndWait(makeSource(invalidData));
 
     expect(container?.textContent).toContain("This view could not be shown");
-    expect(container?.querySelector(".vs-raw-json")).toBeNull();
-
-    const toggleBtn = Array.from(container?.querySelectorAll("button") ?? []).find(
-      (b) => b.textContent?.includes("Show as JSON")
+    expect(container?.querySelector(".vs-err-code")?.textContent).toBe("unsupported_version");
+    // Without onFallback there is nowhere to switch to, so no "Open as JSON" button.
+    const openJson = Array.from(container?.querySelectorAll("button") ?? []).find((b) =>
+      b.textContent?.includes("Open as JSON")
     );
-    expect(toggleBtn).toBeDefined();
-
-    await act(async () => {
-      toggleBtn!.click();
-    });
-
-    const rawPre = container?.querySelector(".vs-raw-json");
-    expect(rawPre).not.toBeNull();
-    expect(rawPre?.textContent).toContain("invalid/version");
-
-    await act(async () => {
-      toggleBtn!.click();
-    });
-    expect(container?.querySelector(".vs-raw-json")).toBeNull();
+    expect(openJson).toBeUndefined();
   });
 
   it("agent name with bidi override character is sanitized in the header", async () => {
