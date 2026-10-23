@@ -139,9 +139,12 @@ function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v));
 }
 
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace(/^#/, "").padStart(6, "0").slice(-6);
-  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+/** Parse "#RRGGBB", "RRGGBB" or an "rgba(r, g, b, a)" produced by an earlier alpha modifier. */
+function parseColor(input: string): [number, number, number, number] {
+  const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(input.trim());
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] !== undefined ? Number(m[4]) : 1];
+  const h = input.replace(/^#/, "").padStart(6, "0").slice(-6);
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), 1];
 }
 
 function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
@@ -174,9 +177,8 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 }
 
 /** Apply DrawingML color transforms (lumMod, lumOff, tint, shade, alpha...) to a hex color. */
-export function applyColorMods(hex: string, mods: Element[]): string {
-  let [r, g, b] = hexToRgb(hex);
-  let alpha = 1;
+export function applyColorMods(color: string, mods: Element[]): string {
+  let [r, g, b, alpha] = parseColor(color);
   for (const m of mods) {
     const v = (numAttr(m, "val") ?? 100000) / 100000;
     switch (m.localName) {
@@ -234,7 +236,7 @@ export function readColor(el: Element | undefined, ctx: Ctx): string | undefined
         const name = attr(c, "val") ?? "";
         if (name === "phClr") {
           if (!ctx.phClr) return undefined;
-          return c.children.length ? applyColorMods(ctx.phClr.startsWith("#") ? ctx.phClr : ctx.phClr, Array.from(c.children)) : ctx.phClr;
+          return c.children.length ? applyColorMods(ctx.phClr, Array.from(c.children)) : ctx.phClr;
         }
         const mapped = ctx.clrMap[name] ?? name;
         base = ctx.theme.colors[mapped] ?? ctx.theme.colors[name];

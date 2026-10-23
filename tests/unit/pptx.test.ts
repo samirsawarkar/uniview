@@ -97,3 +97,17 @@ function lumMod(val: number): Element {
   el.setAttribute("val", String(val));
   return el;
 }
+
+describe("applyColorMods on an already transparent color (pi review P3)", () => {
+  it("keeps alpha and applies further modifiers", () => {
+    const mk = (name: string, val: number) => {
+      const el = document.createElementNS("http://schemas.openxmlformats.org/drawingml/2006/main", name);
+      el.setAttribute("val", String(val));
+      return el;
+    };
+    const half = applyColorMods("FF0000", [mk("alpha", 50000)]);
+    expect(half).toBe("rgba(255, 0, 0, 0.5)");
+    expect(applyColorMods(half, [mk("lumMod", 50000)])).toBe("rgba(128, 0, 0, 0.5)");
+    expect(applyColorMods("#00FF00", [])).toBe("#00FF00");
+  });
+});

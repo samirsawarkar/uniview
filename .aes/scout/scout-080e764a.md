@@ -126,3 +126,6 @@ Only rows marked OK may be built on. Anything else needs a CTO exception or is r
 
 utif2 on npm (MIT, 4.1.0, 2023) is the maintained-API fork of UTIF.js; the upstream repo above is OK. Accepted: small, MIT, used only for TIFF decoding.
 - **DefinitelyTyped (NOASSERTION):** the repo licence file is MIT; each @types package, including @types/react, declares MIT on npm (verified). Dev-only typings, never shipped. Exception granted.
+
+| unjs/uqr | 778 | MIT | 2026-04-03 | false | OK | QR code generation (pairing) |
+| cozmo/jsQR | 4042 | Apache-2.0 | 2026-05-15 | false | OK | QR code scanning from the camera |

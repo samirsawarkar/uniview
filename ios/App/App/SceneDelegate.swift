@@ -54,12 +54,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private func handToPage(path: String, name: String, attempt: Int) {
+        // Wait for the bridge, its web view and the UI page; at a cold start the copy can finish before any
+        // of them exist, and a script run before the page loads would land in a document about to be replaced.
         guard let bridgeVC = window?.rootViewController as? CAPBridgeViewController,
               let bridge = bridgeVC.bridge,
-              let web = bridgeVC.webView else { return }
-        // Wait for the UI page; a script run before it loads would land in a document about to be replaced.
-        if web.isLoading || web.url == nil {
-            if attempt < 50 {
+              let web = bridgeVC.webView,
+              !web.isLoading, web.url != nil else {
+            if attempt < 75 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.handToPage(path: path, name: name, attempt: attempt + 1) }
             }
             return
