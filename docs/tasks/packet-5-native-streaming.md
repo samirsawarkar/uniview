@@ -43,3 +43,8 @@ No iOS changes; no change to the remote protocol; no new dependencies.
 ## Acceptance checks (the CTO runs them)
 
 `npx tsc --noEmit`, `npm test`, `npm run build`, Android `testDebugUnitTest assembleDebug`, then on the Realme phone: open a large video and a PDF through VIEW and confirm via `adb shell du` on the app cache that nothing was copied, the video seeks, the PDF renders, and closing the tab releases the descriptor.
+
+## Result (2026-10-23, Realme RMX, debug build)
+
+- A 174 MB MP4 and a PDF opened through VIEW: the app cache did not grow (no copy), the video seeked to 3:20 and played from there, the PDF rendered, and closing the video tab closed its descriptor (checked in `/proc/<pid>/fd`).
+- Found while testing: a cold-start VIEW opened the file twice (also on the old copy path, where the second read failed with "could not be read"). Capacitor's `BridgeActivity.load()` already passes the launch intent to `onNewIntent`, and `onCreate` handled it again. `handle` now ignores an Intent object it has already handled; opening the same file again on purpose still opens a second tab. Covered on the page side by `tests/e2e/native-open.web.spec.ts`.

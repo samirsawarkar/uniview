@@ -3,6 +3,7 @@ import { createElectronBridge, hasElectronApi } from "./electron";
 import { createWebBridge } from "./web";
 import { blobSource } from "./sources";
 import { capacitorTransport } from "./capacitor-transport";
+import { sharedSource } from "./native-shared";
 
 let bridge: ShellBridge | undefined;
 
@@ -31,9 +32,11 @@ export function getBridge(): ShellBridge {
 export function installNativeOpenHook(): void {
   const w = window as unknown as {
     __univiewOpenUrl?: (url: string, name: string, mime?: string) => Promise<void>;
+    __univiewOpenShared?: (token: string, name: string, size: number, mime: string) => void;
     __univiewOpen?: (files: unknown[]) => void;
     __univiewOpenError?: (message: string) => void;
     __univiewPending?: { url: string; name: string; mime?: string }[];
+    __univiewPendingShared?: { token: string; name: string; size: number; mime: string }[];
     __univiewPendingErrors?: string[];
   };
   w.__univiewOpenUrl = async (url, name, mime) => {
@@ -49,10 +52,21 @@ export function installNativeOpenHook(): void {
       w.__univiewOpenError?.(`Could not open "${name}". The shared file could not be read.`);
     }
   };
+  w.__univiewOpenShared = (token, name, size, mime) => {
+    try {
+      w.__univiewOpen?.([sharedSource(token, name, size, mime)]);
+    } catch {
+      w.__univiewOpenError?.(`Could not open "${name}".`);
+    }
+  };
   // Files that arrived before the page finished loading.
   const pending = w.__univiewPending ?? [];
   w.__univiewPending = [];
   for (const p of pending) void w.__univiewOpenUrl(p.url, p.name, p.mime);
+
+  const pendingShared = w.__univiewPendingShared ?? [];
+  w.__univiewPendingShared = [];
+  for (const p of pendingShared) w.__univiewOpenShared(p.token, p.name, p.size, p.mime);
 
   // Errors that arrived before the page finished loading.
   const pendingErrors = w.__univiewPendingErrors ?? [];

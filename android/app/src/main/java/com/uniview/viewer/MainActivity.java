@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.util.Log;
 import android.webkit.WebView;
@@ -17,6 +18,7 @@ import com.getcapacitor.WebViewListener;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -38,10 +40,13 @@ public class MainActivity extends BridgeActivity {
     private final List<String> waiting = new ArrayList<>();
     private boolean pageLoaded = false;
     private volatile boolean destroyed = false;
+    // BridgeActivity.load() already passes the launch intent to onNewIntent.
+    private Intent lastHandled;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getBridge().setWebViewClient(new SharedFilesWebViewClient(getBridge()));
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
@@ -76,6 +81,7 @@ public class MainActivity extends BridgeActivity {
     public void onDestroy() {
         destroyed = true;
         io.shutdownNow();
+        SharedFiles.closeAll();
         super.onDestroy();
     }
 
@@ -87,7 +93,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void handle(Intent intent) {
-        if (intent == null) return;
+        if (intent == null || intent == lastHandled) return;
+        lastHandled = intent;
         Uri uri = null;
         String action = intent.getAction();
         if (Intent.ACTION_VIEW.equals(action)) {
@@ -102,9 +109,39 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void deliver(Uri uri, String mime) {
+        String name = displayName(uri);
+        ParcelFileDescriptor pfd = null;
+        try {
+            pfd = getContentResolver().openFileDescriptor(uri, "r");
+            if (pfd != null) {
+                long size = pfd.getStatSize();
+                if (size >= 0) {
+                    FileInputStream fis = new FileInputStream(pfd.getFileDescriptor());
+                    fis.getChannel().position(0);
+                    String token = SharedFiles.register(pfd, name, size);
+                    pfd = null;
+                    String js = "(function(t,n,s,m){if(window.__univiewOpenShared){window.__univiewOpenShared(t,n,s,m)}else{"
+                            + "(window.__univiewPendingShared=window.__univiewPendingShared||[]).push({token:t,name:n,size:s,mime:m})}})("
+                            + JSONObject.quote(token) + ","
+                            + JSONObject.quote(name) + ","
+                            + Long.toString(size) + ","
+                            + JSONObject.quote(mime == null ? "" : mime) + ")";
+                    postScript(js);
+                    return;
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (pfd != null) {
+                try {
+                    pfd.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
         File dir = null;
         File out = null;
-        String name = displayName(uri);
         try {
             dir = new File(getCacheDir(), "shared/" + java.util.UUID.randomUUID());
             if (!dir.mkdirs() && !dir.isDirectory()) throw new IllegalStateException("cannot create cache folder");
