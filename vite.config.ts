@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // base "./" lets the same build load from file://, uniview://app/ and the Capacitor WebView.

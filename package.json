@@ -18,7 +18,9 @@
     "bench": "node scripts/bench.mjs",
     "electron": "electron .",
     "dist:win": "npm run build && electron-builder --win --config electron-builder.json",
-    "cap:sync": "npm run build && cap sync android"
+    "cap:sync": "npm run build && cap sync android",
+    "predev": "node scripts/copy-assets.mjs",
+    "prebuild": "node scripts/copy-assets.mjs"
   },
   "dependencies": {
     "docx-preview": "0.4.1",
