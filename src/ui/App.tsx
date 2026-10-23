@@ -10,9 +10,9 @@ import { SharingPanel } from "./remote/SharingPanel";
 import { PairDialog } from "./remote/PairDialog";
 import { RemoteBrowser, type RemoteLocation } from "./remote/RemoteBrowser";
 import { forgetHost, loadHosts } from "../remote/store";
-import { connect, disconnect } from "../remote/connections";
-import { remoteSource } from "../remote/source";
-import type { HostRecord, RemoteEntry } from "../../shared/remote-client.mjs";
+import { disconnect } from "../remote/connections";
+import { reopenRemoteRecent } from "../remote/reopen-recent";
+import type { HostRecord } from "../../shared/remote-client.mjs";
 
 type Page = { kind: "sharing" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
@@ -125,45 +125,12 @@ export function App() {
 
   const reopenRecent = useCallback(async (r: Recent) => {
     if (r.remote) {
-      if (!bridge.remoteTransport) {
-        setNotice("Remote browsing is not supported on this device.");
-        return;
-      }
-      const hostRecord = hosts.find((h) => h.hostId === r.remote!.hostId);
-      if (!hostRecord) {
-        setNotice(`Can't reach ${r.name}: this computer is no longer paired.`);
-        return;
-      }
-      try {
-        const host = await connect(hostRecord, bridge.remoteTransport);
-        const st = await host.stat(r.remote.rootId, r.remote.path);
-        if (st.mtime !== r.remote.mtime || st.size !== r.size) {
-          setNotice(`"${r.name}" on ${hostRecord.hostName} has changed since it was last opened.`);
-          return;
-        }
-        const entry: RemoteEntry = {
-          name: r.name,
-          dir: false,
-          size: st.size,
-          mtime: st.mtime,
-        };
-        const source = remoteSource({
-          host,
-          hostName: hostRecord.hostName,
-          root: r.remote.rootId,
-          rootName: r.remote.rootName,
-          path: r.remote.path,
-          entry,
-        });
-        openFiles([source]);
-      } catch (err) {
-        const msg = (err as Error).message || "";
-        if (msg.includes("not available") || msg.includes("no longer shared") || /not found|enoent/i.test(msg)) {
-          setNotice(`"${r.name}" was removed from ${hostRecord.hostName}.`);
-        } else {
-          setNotice(`Can't reach ${hostRecord.hostName}: ${msg}`);
-        }
-      }
+      await reopenRemoteRecent(r, {
+        hosts,
+        transport: bridge.remoteTransport,
+        onNotice: setNotice,
+        onOpen: (source) => openFiles([source]),
+      });
       return;
     }
     if (r.path) {

@@ -48,6 +48,15 @@ test("a paired client browses, opens and streams a host's shared folder", async 
     await expect(c.locator(".tab.active")).toContainText("deck.pptx");
     await expect(c.locator(".tab-panel:not([hidden]) .pptx-main [data-testid=slide]").first()).toContainText("Quarterly Review", { timeout: 20_000 });
 
+    // Reopen remote recent from home tab after closing the presentation tab.
+    await c.locator(".tab", { hasText: "deck.pptx" }).locator(".tab-close").click();
+    await expect(c.locator(".tab", { hasText: "deck.pptx" })).toHaveCount(0);
+    await c.locator(".tab-new").click();
+    await expect(c.locator(".home")).toBeVisible();
+    await c.locator(".home .recent", { hasText: "deck.pptx" }).click();
+    await expect(c.locator(".tab.active")).toContainText("deck.pptx");
+    await expect(c.locator(".tab-panel:not([hidden]) .pptx-main [data-testid=slide]").first()).toContainText("Quarterly Review", { timeout: 20_000 });
+
     // Stream audio: it plays through the service worker without downloading the file first.
     await c.locator(".tab", { hasText: "generated" }).click();
     await entries.getByRole("button", { name: /tone\.wav/ }).click();
