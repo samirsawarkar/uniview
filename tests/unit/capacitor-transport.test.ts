@@ -30,7 +30,7 @@ describe("capacitorTransport (LAN-only security)", () => {
         expect.objectContaining({
           url: "http://192.168.1.50:8080/v1/rpc",
           method: "POST",
-          headers: { "Content-Type": contentType },
+          headers: { "Content-Type": "application/octet-stream" },
           data: "AQIDBA==",
           dataType: "file",
           responseType: "arraybuffer",
@@ -98,6 +98,44 @@ describe("capacitorTransport (LAN-only security)", () => {
       expect(CapacitorHttp.request).toHaveBeenLastCalledWith(
         expect.objectContaining({ url: "http://[fe80::1]:8080/v1/pair" })
       );
+    });
+  });
+
+  describe("Android CapacitorHttp body encoding behavior", () => {
+    it("delivers binary bytes to the server even when caller requests application/json", async () => {
+      let receivedServerBytes: Uint8Array | null = null;
+
+      vi.mocked(CapacitorHttp.request).mockImplementation(async (options: any) => {
+        const headerContentType = options.headers?.["Content-Type"] ?? "";
+        if (typeof headerContentType === "string" && headerContentType.includes("application/json")) {
+          // Android setRequestBody writes data as a literal UTF-8 string when Content-Type contains application/json
+          receivedServerBytes = new TextEncoder().encode(options.data as string);
+        } else if (options.dataType === "file") {
+          // For non-JSON with dataType: "file", Android base64-decodes the bytes
+          const binaryStr = atob(options.data as string);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+          receivedServerBytes = bytes;
+        } else {
+          receivedServerBytes = new TextEncoder().encode(options.data as string);
+        }
+        return {
+          status: 200,
+          data: "b2s=",
+        } as any;
+      });
+
+      // 1. JSON payload sent with contentType = "application/json"
+      const jsonBytes = new TextEncoder().encode(JSON.stringify({ v: 1 }));
+      await capacitorTransport("192.168.1.50", 8080, "/v1/pair", jsonBytes, "application/json");
+      expect(receivedServerBytes).not.toBeNull();
+      expect(new TextDecoder().decode(receivedServerBytes!)).toBe('{"v":1}');
+
+      // 2. Binary payload [0, 255, 1, 128] sent as "application/octet-stream"
+      const binaryPayload = new Uint8Array([0, 255, 1, 128]);
+      await capacitorTransport("192.168.1.50", 8080, "/v1/rpc", binaryPayload, "application/octet-stream");
+      expect(receivedServerBytes).not.toBeNull();
+      expect(Array.from(receivedServerBytes!)).toEqual([0, 255, 1, 128]);
     });
   });
 

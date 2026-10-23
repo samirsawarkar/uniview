@@ -11,13 +11,33 @@ const MAX_BODY = 64 * 1024;
 const LOG_SIZE = 200;
 const HIDDEN = new Set(["desktop.ini", "thumbs.db", ".ds_store", "$recycle.bin", "system volume information"]);
 
+const VIRTUAL_IFACE_RE = /vEthernet|WSL|Hyper-V|VirtualBox|VMware|VMnet|docker|br-|veth|virbr|vboxnet|utun|tailscale|ZeroTier|Loopback/i;
+
+function privateTier(ip) {
+  if (typeof ip !== "string") return -1;
+  if (ip.startsWith("192.168.")) return 0;
+  if (ip.startsWith("10.")) return 1;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return 2;
+  return -1;
+}
+
 /** LAN IPv4 addresses a phone can reach. */
-export function lanAddresses() {
-  const out = [];
-  for (const list of Object.values(networkInterfaces())) {
-    for (const a of list ?? []) if (a.family === "IPv4" && !a.internal && !a.address.startsWith("169.254.")) out.push(a.address);
+export function lanAddresses(ifaces = networkInterfaces()) {
+  const filtered = [[], [], []];
+  const fallback = [[], [], []];
+  for (const [name, list] of Object.entries(ifaces ?? {})) {
+    const isVirtual = VIRTUAL_IFACE_RE.test(name);
+    for (const a of list ?? []) {
+      if (!a || a.family !== "IPv4" || a.internal) continue;
+      const tier = privateTier(a.address);
+      if (tier === -1) continue;
+      fallback[tier].push(a.address);
+      if (!isVirtual) filtered[tier].push(a.address);
+    }
   }
-  return out;
+  const primary = [...filtered[0], ...filtered[1], ...filtered[2]];
+  if (primary.length > 0) return primary;
+  return [...fallback[0], ...fallback[1], ...fallback[2]];
 }
 
 /** Resolve a client path inside a shared folder, following symlinks, refusing anything outside it. */

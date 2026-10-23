@@ -31,13 +31,14 @@ async function postJson(transport, host, port, path, obj) {
 export async function pairWithOffer(offerText, { transport, device, deviceName }) {
   const offer = P.parseOffer(offerText);
   const req = await P.pairRequest(offer, device, deviceName);
-  let lastError = null;
+  let httpError = null;
+  let connError = null;
   for (const host of offer.hosts) {
     let res;
     try {
       res = await postJson(transport, host, offer.port, "/v1/pair", req.body);
     } catch (err) {
-      lastError = err;
+      connError = err;
       continue;
     }
     if (res.status === 200) {
@@ -47,8 +48,9 @@ export async function pairWithOffer(offerText, { transport, device, deviceName }
     if (res.status === 403) throw new RemoteError(res.json?.error ?? "The computer's owner declined this device.", "declined");
     if (res.status === 410) throw new RemoteError(res.json?.error ?? "This pairing code has expired.", "expired");
     if (res.status === 401) throw new RemoteError("This pairing code was not accepted. Show a new code on the computer.", "unauthorized");
-    lastError = new RemoteError(`The computer answered with an error (${res.status}).`);
+    httpError = new RemoteError(`The computer answered with an error (${res.status}).`);
   }
+  const lastError = httpError ?? connError;
   throw new RemoteError(
     `Could not reach ${offer.name}. Make sure both devices are on the same Wi-Fi network and sharing is turned on.${lastError?.message ? ` (${lastError.message})` : ""}`,
     "unreachable",
@@ -76,14 +78,15 @@ export class RemoteHost {
   async #openSession() {
     const kst = await this.#kst();
     const hosts = [this.#host, ...this.record.hosts.filter((h) => h !== this.#host)];
-    let lastError = null;
+    let httpError = null;
+    let connError = null;
     for (const host of hosts) {
       const req = await P.sessionRequest(kst, this.record.deviceId);
       let res;
       try {
         res = await postJson(this.transport, host, this.record.port, "/v1/session", req.body);
       } catch (err) {
-        lastError = err;
+        connError = err;
         continue;
       }
       if (res.status === 200) {
@@ -91,9 +94,13 @@ export class RemoteHost {
         return req.finish(res.json);
       }
       if (res.status === 401) throw new RemoteError(`${this.record.hostName} no longer trusts this device. Pair again.`, "unpaired");
-      lastError = new RemoteError(`${this.record.hostName} answered with an error (${res.status}).`);
+      httpError = new RemoteError(`${this.record.hostName} answered with an error (${res.status}).`);
     }
-    throw new RemoteError(`${this.record.hostName} is not reachable. Check that it is on, sharing is turned on, and you are on the same network.`, "unreachable");
+    const lastError = httpError ?? connError;
+    throw new RemoteError(
+      `${this.record.hostName} is not reachable. Check that it is on, sharing is turned on, and you are on the same network.${lastError?.message ? ` (${lastError.message})` : ""}`,
+      "unreachable",
+    );
   }
 
   async #ensureSession() {
