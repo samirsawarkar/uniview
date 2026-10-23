@@ -114,6 +114,56 @@ export async function staticKey(ownPrivate, peerPublicRaw, hostPublicRaw, device
   return hkdf(await ecdh(ownPrivate, peerPublicRaw), "uniview-v1-static", concat(hostPublicRaw, devicePublicRaw));
 }
 
+export async function helloRequest() {
+  const ephemeral = await generateIdentity(false);
+  const nonce = randomBytes(16);
+  const ePub = b64u(ephemeral.publicRaw);
+  return {
+    body: {
+      v: PROTOCOL_VERSION,
+      ePub,
+      nonce: b64u(nonce),
+    },
+    async verify(hostPubRaw, hostId, json) {
+      try {
+        if (!json || typeof json !== "object") return false;
+        if (json.app !== "uniview" || json.hostId !== hostId) return false;
+        if (typeof json.proof !== "string") return false;
+        const hostPubBytes = hostPubRaw instanceof Uint8Array ? hostPubRaw : unb64u(hostPubRaw);
+        const proof = unb64u(json.proof);
+        if (proof.length !== 32) return false;
+        const shared = await ecdh(ephemeral.privateKey, hostPubBytes);
+        const K = await hkdf(shared, "uniview-v1-hello", concat(hostPubBytes, ephemeral.publicRaw));
+        return await hmacOk(K, proof, "uniview-hello", hostPubBytes, ephemeral.publicRaw, nonce);
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+export async function helloResponse(hostIdentity, hostId, body) {
+  try {
+    if (!body || typeof body !== "object") return null;
+    if (typeof body.ePub !== "string" || typeof body.nonce !== "string") return null;
+    const ePubRaw = unb64u(body.ePub);
+    const nonce = unb64u(body.nonce);
+    if (ePubRaw.length !== 65 || ePubRaw[0] !== 4) return null;
+    if (nonce.length !== 16) return null;
+    const shared = await ecdh(hostIdentity.privateKey, ePubRaw);
+    const K = await hkdf(shared, "uniview-v1-hello", concat(hostIdentity.publicRaw, ePubRaw));
+    const proof = await hmac(K, "uniview-hello", hostIdentity.publicRaw, ePubRaw, nonce);
+    return {
+      app: "uniview",
+      v: PROTOCOL_VERSION,
+      hostId,
+      proof: b64u(proof),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ------------------------------------------------------------------ pairing offer
 
 export function makeOffer({ hosts, port, hostPub, secret, name }) {

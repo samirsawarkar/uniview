@@ -40,8 +40,10 @@ export function shouldRetryAfterTransportError(elapsedMs: number): boolean;
 export function discoverHost(opts: {
   transport: RemoteTransport;
   hostId: string;
-  knownHosts: string[];
+  hostPub: Uint8Array | string;
+  knownHosts: readonly string[];
   port: number;
   timeoutMs?: number;
   concurrency?: number;
+  deadlineMs?: number;
 }): Promise<string | null>;

@@ -114,7 +114,7 @@ export class ShareHost {
    * @param {() => number} [opts.now]
    */
   constructor(opts) {
-    this.#opts = { now: () => Date.now(), onChange: () => {}, thumbnail: async () => null, protect: null, ...opts };
+    this.#opts = { now: () => Date.now(), onChange: () => {}, thumbnail: async () => null, protect: null, isPeerAllowed: isLanPeer, ...opts };
   }
 
   async init() {
@@ -276,14 +276,14 @@ export class ShareHost {
   }
 
   async #handle(req, res) {
-    if (!isLanPeer(req.socket.remoteAddress)) return send(res, 403, { error: "local network only" });
+    if (!this.#opts.isPeerAllowed(req.socket.remoteAddress)) return send(res, 403, { error: "local network only" });
     const url = new URL(req.url ?? "/", "http://x");
     if (req.method === "GET" && url.pathname === "/v1/hello") return send(res, 200, { app: "uniview", v: P.PROTOCOL_VERSION, hostId: this.hostId });
     if (req.method !== "POST") return send(res, 405, { error: "method" });
     const ip = req.socket.remoteAddress ?? "?";
     if (url.pathname === "/v1/hello") {
       if (this.#rateLimited(ip)) return send(res, 429, { error: "slow down" });
-      return send(res, 200, { app: "uniview", v: P.PROTOCOL_VERSION, hostId: this.hostId });
+      return this.#hello(req, res);
     }
     if (url.pathname === "/v1/pair") return this.#pair(req, res);
     if (url.pathname === "/v1/session") {
@@ -292,6 +292,18 @@ export class ShareHost {
     }
     if (url.pathname === "/v1/rpc") return this.#rpc(req, res);
     return send(res, 404, { error: "not found" });
+  }
+
+  async #hello(req, res) {
+    let body;
+    try {
+      body = JSON.parse(Buffer.from(await readBody(req, MAX_BODY)).toString("utf8"));
+    } catch {
+      return send(res, 400, { error: "bad request" });
+    }
+    const response = await P.helloResponse(this.#identity, this.hostId, body);
+    if (!response) return send(res, 400, { error: "bad request" });
+    return send(res, 200, response);
   }
 
   async #pair(req, res) {

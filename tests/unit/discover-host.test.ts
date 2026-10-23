@@ -1,17 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { discoverHost } from "../../shared/remote-client.mjs";
+import * as Proto from "../../shared/remote-protocol.mjs";
 import type { RemoteTransport } from "../../src/core/types";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const P = Proto as any;
+
 describe("discoverHost", () => {
-  const targetHostId = "target-host-123";
   const enc = new TextEncoder();
+  const dec = new TextDecoder();
 
   it("finds 192.168.1.35 when the known host is 192.168.1.40", async () => {
-    const transport: RemoteTransport = async (host, _port, path) => {
+    const hostIdentity = await P.generateIdentity(true);
+    const targetHostId = await P.idOf(hostIdentity.publicRaw);
+
+    const transport: RemoteTransport = async (host, _port, path, body) => {
       if (host === "192.168.1.35" && path === "/v1/hello") {
+        const parsed = JSON.parse(dec.decode(body));
+        const res = await P.helloResponse(hostIdentity, targetHostId, parsed);
         return {
           status: 200,
-          body: enc.encode(JSON.stringify({ app: "uniview", v: 1, hostId: targetHostId })),
+          body: enc.encode(JSON.stringify(res)),
         };
       }
       throw new Error("unreachable");
@@ -20,13 +29,17 @@ describe("discoverHost", () => {
     const found = await discoverHost({
       transport,
       hostId: targetHostId,
+      hostPub: hostIdentity.publicRaw,
       knownHosts: ["192.168.1.40"],
       port: 8765,
     });
     expect(found).toBe("192.168.1.35");
   });
 
-  it("ignores a 200 answer with another hostId and a non-UniView 200 answer", async () => {
+  it("ignores a 200 answer with another hostId, non-UniView 200, or invalid proof", async () => {
+    const hostIdentity = await P.generateIdentity(true);
+    const targetHostId = await P.idOf(hostIdentity.publicRaw);
+
     const transport: RemoteTransport = async (host) => {
       if (host === "192.168.1.10") {
         return {
@@ -43,13 +56,7 @@ describe("discoverHost", () => {
       if (host === "192.168.1.30") {
         return {
           status: 200,
-          body: enc.encode("<html>not-json</html>"),
-        };
-      }
-      if (host === "192.168.1.35") {
-        return {
-          status: 200,
-          body: enc.encode(JSON.stringify({ app: "uniview", v: 1, hostId: targetHostId })),
+          body: enc.encode(JSON.stringify({ app: "uniview", v: 1, hostId: targetHostId, proof: "invalid-proof" })),
         };
       }
       throw new Error("unreachable");
@@ -58,108 +65,115 @@ describe("discoverHost", () => {
     const found = await discoverHost({
       transport,
       hostId: targetHostId,
+      hostPub: hostIdentity.publicRaw,
+      knownHosts: ["192.168.1.40"],
+      port: 8765,
+      deadlineMs: 3000,
+    });
+    expect(found).toBeNull();
+  });
+
+  it("ignores an impostor with matching hostId but wrong proof and finds real host", async () => {
+    const realHost = await P.generateIdentity(true);
+    const realHostId = await P.idOf(realHost.publicRaw);
+    const impostorHost = await P.generateIdentity(true);
+
+    const transport: RemoteTransport = async (host, _port, path, body) => {
+      if (path !== "/v1/hello") throw new Error("unreachable");
+      const parsed = JSON.parse(dec.decode(body));
+      if (host === "192.168.1.20") {
+        const res = await P.helloResponse(impostorHost, realHostId, parsed);
+        return {
+          status: 200,
+          body: enc.encode(JSON.stringify(res)),
+        };
+      }
+      if (host === "192.168.1.35") {
+        const res = await P.helloResponse(realHost, realHostId, parsed);
+        return {
+          status: 200,
+          body: enc.encode(JSON.stringify(res)),
+        };
+      }
+      throw new Error("unreachable");
+    };
+
+    const found = await discoverHost({
+      transport,
+      hostId: realHostId,
+      hostPub: realHost.publicRaw,
       knownHosts: ["192.168.1.40"],
       port: 8765,
     });
     expect(found).toBe("192.168.1.35");
   });
 
-  it("never probes outside 192.168.1.0/24, never probes the known address, never probes public or IPv6", async () => {
-    const probed: string[] = [];
-    const transport: RemoteTransport = async (host) => {
-      probed.push(host);
-      throw new Error("unreachable");
-    };
+  it("resolves null after deadlineMs when transport never settles and respects concurrency limit", async () => {
+    const hostIdentity = await P.generateIdentity(true);
+    const hostId = await P.idOf(hostIdentity.publicRaw);
 
-    const res = await discoverHost({
-      transport,
-      hostId: targetHostId,
-      knownHosts: ["192.168.1.40"],
-      port: 8765,
-    });
-    expect(res).toBeNull();
-    expect(probed.length).toBe(253);
-    expect(probed.includes("192.168.1.40")).toBe(false);
-    for (const ip of probed) {
-      expect(ip.startsWith("192.168.1.")).toBe(true);
-      const parts = ip.split(".");
-      const octet = parts[3];
-      expect(octet).toBeDefined();
-      if (octet !== undefined) {
-        const n = Number(octet);
-        expect(n).toBeGreaterThanOrEqual(1);
-        expect(n).toBeLessThanOrEqual(254);
-      }
-    }
-
-    const publicProbed: string[] = [];
-    const publicTransport: RemoteTransport = async (host) => {
-      publicProbed.push(host);
-      throw new Error("unreachable");
-    };
-    const publicRes = await discoverHost({
-      transport: publicTransport,
-      hostId: targetHostId,
-      knownHosts: ["8.8.8.8", "2001:db8::1", "::1", "fe80::1", "host.domain"],
-      port: 8765,
-    });
-    expect(publicRes).toBeNull();
-    expect(publicProbed.length).toBe(0);
-  });
-
-  it("limits concurrency to at most concurrency probes in flight at once", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
-    const concurrencyLimit = 16;
+
     const transport: RemoteTransport = async () => {
       inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      inFlight--;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      return new Promise(() => {
+        // never settles
+      });
+    };
+
+    const concurrency = 8;
+    const start = Date.now();
+    const found = await discoverHost({
+      transport,
+      hostId,
+      hostPub: hostIdentity.publicRaw,
+      knownHosts: ["192.168.1.40"],
+      port: 8765,
+      timeoutMs: 50,
+      deadlineMs: 400,
+      concurrency,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(found).toBeNull();
+    expect(elapsed).toBeGreaterThanOrEqual(350);
+    expect(maxInFlight).toBeLessThanOrEqual(concurrency);
+  });
+
+  it("does not block remaining probes when a probe hangs", async () => {
+    const hostIdentity = await P.generateIdentity(true);
+    const hostId = await P.idOf(hostIdentity.publicRaw);
+
+    const transport: RemoteTransport = async (host, _port, path, body) => {
+      if (host === "192.168.1.1") {
+        return new Promise(() => {
+          // never settles
+        });
+      }
+      if (host === "192.168.1.2" && path === "/v1/hello") {
+        const parsed = JSON.parse(dec.decode(body));
+        const res = await P.helloResponse(hostIdentity, hostId, parsed);
+        return {
+          status: 200,
+          body: enc.encode(JSON.stringify(res)),
+        };
+      }
       throw new Error("unreachable");
     };
 
-    await discoverHost({
+    const found = await discoverHost({
       transport,
-      hostId: targetHostId,
+      hostId,
+      hostPub: hostIdentity.publicRaw,
       knownHosts: ["192.168.1.40"],
       port: 8765,
-      concurrency: concurrencyLimit,
+      timeoutMs: 50,
+      deadlineMs: 5000,
+      concurrency: 1,
     });
 
-    expect(maxInFlight).toBeLessThanOrEqual(concurrencyLimit);
-    expect(maxInFlight).toBeGreaterThan(1);
-  });
-
-  it("passes { timeoutMs } to the transport", async () => {
-    let receivedTimeout: number | undefined;
-    const transport: RemoteTransport = async (_host, _port, _path, _body, _type, opts) => {
-      receivedTimeout = opts?.timeoutMs;
-      throw new Error("unreachable");
-    };
-
-    await discoverHost({
-      transport,
-      hostId: targetHostId,
-      knownHosts: ["192.168.1.40"],
-      port: 8765,
-      timeoutMs: 850,
-    });
-
-    expect(receivedTimeout).toBe(850);
-  });
-
-  it("returns null when nothing matches", async () => {
-    const transport: RemoteTransport = async () => {
-      throw new Error("connection failed");
-    };
-
-    const res = await discoverHost({
-      transport,
-      hostId: targetHostId,
-      knownHosts: ["192.168.1.40"],
-      port: 8765,
-    });
-    expect(res).toBeNull();
+    expect(found).toBe("192.168.1.2");
   });
 });

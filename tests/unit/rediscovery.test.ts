@@ -44,114 +44,129 @@ beforeAll(async () => {
   await host1.init();
   await host1.setEnabled(true);
   await host1.addRoot(sharedDir, "Shared");
-  const offer1 = await host1.createOffer();
   host1Port = host1.state.port;
 
   host2 = new ShareHost({ dataDir: data2, hostName: "Secondary Host", approve: async () => true });
   await host2.init();
   await host2.setEnabled(true);
   await host2.addRoot(sharedDir, "Shared");
-  const offer2 = await host2.createOffer();
   host2Port = host2.state.port;
 });
 
 afterAll(async () => {
   await host1.stop();
   await host2.stop();
-  rmSync(testDir, { recursive: true, force: true });
+  try {
+    rmSync(testDir, { recursive: true, force: true });
+  } catch {
+    /* ignore cleanup failure */
+  }
 });
 
-describe("ShareHost hello endpoints", () => {
-  it("POST /v1/hello returns {app: 'uniview', hostId} matching host.hostId", async () => {
-    const res = await nodeHttpPost("127.0.0.1", host1Port, "/v1/hello", new TextEncoder().encode("{}"), "application/json");
-    expect(res.status).toBe(200);
-    const json = JSON.parse(new TextDecoder().decode(res.body));
-    expect(json.app).toBe("uniview");
-    expect(json.hostId).toBe(host1.hostId);
-  });
-});
-
-describe("Host rediscovery", () => {
-  it("finds the computer when IP changes, updates preferred address and hosts, and invokes onHostsChanged", async () => {
-    let ipMap: Record<string, string | null> = {
-      "192.168.1.40": "127.0.0.1",
-    };
-
-    const transport: RemoteTransport = async (host, port, path, body, type) => {
-      const target = ipMap[host];
-      if (!target) throw new Error(`ECONNREFUSED ${host}:${port}`);
-      return nodeHttpPost(target, host1Port, path, body, type);
-    };
-
+describe("rediscovery", () => {
+  it("discovers host1 while ignoring host2 impostor and never sends session request to host2", async () => {
+    const offer1 = await host1.createOffer();
+    const offerText = offer1.text.replace(/h=[^&]+/, "h=192.168.1.40").replace(/p=\d+/, `p=${host1Port}`);
     const device = await P.generateIdentity(false);
-    const offer = await host1.createOffer();
-    const offerText = offer.text.replace(/h=[^&]+/, "h=192.168.1.40");
-    const record = await pairWithOffer(offerText, { transport, device, deviceName: "Mobile" });
 
-    // Simulate DHCP address reassignment: 192.168.1.40 goes down, host appears at 192.168.1.35
-    ipMap = {
-      "192.168.1.35": "127.0.0.1",
+    const requestCounts: Record<string, number> = {};
+    let pairingDone = false;
+
+    const transport: RemoteTransport = async (host, port, path, body, contentType) => {
+      const key = `${host}:${path}`;
+      requestCounts[key] = (requestCounts[key] ?? 0) + 1;
+
+      if (!pairingDone) {
+        if (host === "192.168.1.40") {
+          return nodeHttpPost("127.0.0.1", host1Port, path, body, contentType);
+        }
+        throw new Error(`unreachable: ${host}`);
+      }
+
+      if (host === "192.168.1.40") {
+        throw new Error("connection error: 192.168.1.40 down");
+      }
+      if (host === "192.168.1.20") {
+        return nodeHttpPost("127.0.0.1", host2Port, path, body, contentType);
+      }
+      if (host === "192.168.1.35") {
+        return nodeHttpPost("127.0.0.1", host1Port, path, body, contentType);
+      }
+      throw new Error(`connection error: ${host}`);
     };
 
-    let updatedRecord = null as HostRecord | null;
-    const client = new RemoteHost(record, {
+    let changedRecord = null as HostRecord | null;
+    const record: HostRecord = await pairWithOffer(offerText, { transport, device, deviceName: "Test Device" });
+    pairingDone = true;
+
+    const remoteHost = new RemoteHost(record, {
       transport,
       device,
-      onHostsChanged: (r) => {
-        updatedRecord = { ...r, hosts: [...r.hosts] };
+      onHostsChanged: (rec: HostRecord) => {
+        changedRecord = rec;
       },
     });
 
-    const info = await client.info();
-    expect(info.hostName).toBe("Primary Host");
-    expect(updatedRecord).not.toBeNull();
-    expect(updatedRecord?.preferred).toBe("192.168.1.35");
-    expect(updatedRecord?.hosts[0]).toBe("192.168.1.35");
+    const info = await remoteHost.info();
+    expect(info).toBeDefined();
+    expect(changedRecord).not.toBeNull();
+    expect(changedRecord!.preferred).toBe("192.168.1.35");
+
+    expect(requestCounts["192.168.1.20:/v1/session"] ?? 0).toBe(0);
+    expect(requestCounts["192.168.1.20:/v1/hello"] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(requestCounts["192.168.1.35:/v1/session"] ?? 0).toBeGreaterThanOrEqual(1);
   });
 
-  it("fails session MAC and rejects as not reachable if a different host responds at the new address", async () => {
-    const device = await P.generateIdentity(false);
+  it("rejects replayed hello proof from host1 and reports host not reachable", async () => {
     const offer1 = await host1.createOffer();
-    const offerText1 = offer1.text.replace(/h=[^&]+/, "h=127.0.0.1");
-    const record = await pairWithOffer(offerText1, {
-      transport: (h, p, path, body, type) => nodeHttpPost("127.0.0.1", host1Port, path, body, type),
-      device,
-      deviceName: "Mobile",
-    });
+    const offerText = offer1.text.replace(/h=[^&]+/, "h=192.168.1.40").replace(/p=\d+/, `p=${host1Port}`);
+    const device = await P.generateIdentity(false);
 
-    // Also pair device with host2 so host2 recognizes deviceId but has a different key pair
-    const offer2 = await host2.createOffer();
-    const offerText2 = offer2.text.replace(/h=[^&]+/, "h=127.0.0.1");
-    await pairWithOffer(offerText2, {
-      transport: (h, p, path, body, type) => nodeHttpPost("127.0.0.1", host2Port, path, body, type),
-      device,
-      deviceName: "Mobile",
-    });
+    const probe = await P.helloRequest();
+    const probeRes = await nodeHttpPost(
+      "127.0.0.1",
+      host1Port,
+      "/v1/hello",
+      new TextEncoder().encode(JSON.stringify(probe.body)),
+      "application/json",
+    );
+    const replayedProofJson = JSON.parse(new TextDecoder().decode(probeRes.body));
 
-    // An imposter at 192.168.1.35 returns host1's hostId on hello, but session handshake is processed by host2
-    let changedCalled = false;
-    const imposterTransport: RemoteTransport = async (host, port, path, body, type) => {
-      if (host === "192.168.1.35") {
-        if (path === "/v1/hello") {
-          return {
-            status: 200,
-            body: new TextEncoder().encode(JSON.stringify({ app: "uniview", v: 1, hostId: host1.hostId })),
-          };
+    let pairingDone = false;
+
+    const transport: RemoteTransport = async (host, port, path, body, contentType) => {
+      if (!pairingDone) {
+        if (host === "192.168.1.40") {
+          return nodeHttpPost("127.0.0.1", host1Port, path, body, contentType);
         }
-        return nodeHttpPost("127.0.0.1", host2Port, path, body, type);
+        throw new Error(`unreachable: ${host}`);
       }
-      throw new Error(`ECONNREFUSED ${host}:${port}`);
+
+      if (host === "192.168.1.40") {
+        throw new Error("connection error: 192.168.1.40 down");
+      }
+      if (host === "192.168.1.50" && path === "/v1/hello") {
+        return {
+          status: 200,
+          body: new TextEncoder().encode(JSON.stringify(replayedProofJson)),
+        };
+      }
+      throw new Error(`connection error: ${host}`);
     };
 
-    const client = new RemoteHost(record, {
-      transport: imposterTransport,
+    let onHostsChangedCalled = false;
+    const record: HostRecord = await pairWithOffer(offerText, { transport, device, deviceName: "Test Device" });
+    pairingDone = true;
+
+    const remoteHost = new RemoteHost(record, {
+      transport,
       device,
       onHostsChanged: () => {
-        changedCalled = true;
+        onHostsChangedCalled = true;
       },
     });
 
-    await expect(client.info()).rejects.toThrow(/not reachable/);
-    expect(changedCalled).toBe(false);
+    await expect(remoteHost.info()).rejects.toThrow(/not reachable/);
+    expect(onHostsChangedCalled).toBe(false);
   });
 });

@@ -42,7 +42,17 @@ function isPrivateIpv4(ip) {
   return false;
 }
 
-export async function discoverHost({ transport, hostId, knownHosts, port, timeoutMs = 1500, concurrency = 48 }) {
+export async function discoverHost({
+  transport,
+  hostId,
+  hostPub,
+  knownHosts,
+  port,
+  timeoutMs = 1500,
+  concurrency = 48,
+  deadlineMs = 15000,
+}) {
+  const hostPubRaw = hostPub instanceof Uint8Array ? hostPub : typeof hostPub === "string" ? P.unb64u(hostPub) : hostPub;
   const knownSet = new Set(knownHosts ?? []);
   const candidates = [];
   const seen = new Set();
@@ -62,23 +72,63 @@ export async function discoverHost({ transport, hostId, knownHosts, port, timeou
 
   if (candidates.length === 0) return null;
 
-  const helloBody = enc.encode("{}");
   let stopped = false;
   let cursor = 0;
   let active = 0;
+  let deadlineTimer = null;
+  const activeTimers = new Set();
 
   return new Promise((resolve) => {
+    function finish(result) {
+      if (stopped) return;
+      stopped = true;
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      for (const t of activeTimers) clearTimeout(t);
+      activeTimers.clear();
+      resolve(result);
+    }
+
+    deadlineTimer = setTimeout(() => {
+      finish(null);
+    }, deadlineMs);
+
     function launchNext() {
       if (stopped) return;
       if (cursor >= candidates.length) {
-        if (active === 0) resolve(null);
+        if (active === 0) finish(null);
         return;
       }
       const ip = candidates[cursor++];
       active++;
-      transport(ip, port, "/v1/hello", helloBody, "application/json", { timeoutMs })
-        .then((res) => {
-          if (stopped) return;
+
+      let settled = false;
+      let probeTimer = null;
+
+      function done() {
+        if (settled) return false;
+        settled = true;
+        if (probeTimer) {
+          clearTimeout(probeTimer);
+          activeTimers.delete(probeTimer);
+        }
+        active--;
+        return true;
+      }
+
+      probeTimer = setTimeout(() => {
+        if (done()) {
+          if (!stopped) launchNext();
+        }
+      }, timeoutMs + 500);
+      activeTimers.add(probeTimer);
+
+      (async () => {
+        try {
+          const req = await P.helloRequest();
+          if (settled || stopped) return;
+          const body = enc.encode(JSON.stringify(req.body));
+          const res = await transport(ip, port, "/v1/hello", body, "application/json", { timeoutMs });
+          if (settled || stopped) return;
           if (res && res.status === 200) {
             let json = null;
             try {
@@ -86,21 +136,20 @@ export async function discoverHost({ transport, hostId, knownHosts, port, timeou
             } catch {
               /* non-JSON */
             }
-            if (json && json.app === "uniview" && json.hostId === hostId) {
-              stopped = true;
-              resolve(ip);
+            if (json && (await req.verify(hostPubRaw, hostId, json))) {
+              if (settled || stopped) return;
+              done();
+              finish(ip);
               return;
             }
           }
-        })
-        .catch(() => {
+        } catch {
           /* ignore connection error */
-        })
-        .finally(() => {
-          active--;
-          if (stopped) return;
-          launchNext();
-        });
+        }
+        if (done()) {
+          if (!stopped) launchNext();
+        }
+      })();
     }
 
     const toLaunch = Math.min(concurrency, candidates.length);
@@ -193,6 +242,7 @@ export class RemoteHost {
       const found = await discoverHost({
         transport: this.transport,
         hostId: this.record.hostId,
+        hostPub: P.unb64u(this.record.hostPub),
         knownHosts: this.record.hosts,
         port: this.record.port,
       });
