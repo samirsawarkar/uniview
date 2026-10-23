@@ -64,6 +64,12 @@ Authentication failures return HTTP 401 with no detail. Application errors are r
 
 Paths are relative, `/`-separated, and resolved with `realpath` on every request; anything that resolves outside the shared folder (including through a symlink) is refused.
 
+### Finding a computer whose address changed
+
+When a paired host changes its local IP address (for example after a router reboot or DHCP lease renewal), existing connections may fail. If every known address fails with a connection error, the client scans the local /24 subnet for hosts answering `POST /v1/hello` with the expected public `hostId`.
+
+Because `hostId` is public and grants no access, discovery alone does not establish trust. The client verifies the rediscovered address using the standard authenticated session handshake; only when cryptographic MAC verification succeeds does the client update the host's preferred address and notify listeners.
+
 ## Streaming
 
 `RemoteFileSource` implements the normal `FileSource`, so every viewer works unchanged. Reads are split into 1 MiB-aligned chunks with an in-memory LRU cache (128 MiB) and up to 4 requests in flight.

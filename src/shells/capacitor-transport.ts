@@ -19,7 +19,7 @@ function fromBase64(b64: string): Uint8Array {
  * Native HTTP for Android/iOS: requests leave from the app process, not the WebView, so the page CSP stays
  * closed to the network. Bodies cross the bridge as base64.
  */
-export const capacitorTransport: RemoteTransport = async (host, port, path, body, _contentType) => {
+export const capacitorTransport: RemoteTransport = async (host, port, path, body, _contentType, opts) => {
   const url = validateLanUrl(host, port, path);
   // Capacitor Android's CapacitorHttpUrlConnection writes data as a literal string for application/json,
   // which sends raw base64 instead of binary bytes. Only for non-JSON with dataType: "file" does it
@@ -31,8 +31,8 @@ export const capacitorTransport: RemoteTransport = async (host, port, path, body
     data: toBase64(body),
     dataType: "file",
     responseType: "arraybuffer",
-    connectTimeout: 4000,
-    readTimeout: 20000,
+    connectTimeout: opts?.timeoutMs ?? 4000,
+    readTimeout: opts?.timeoutMs ?? 20000,
     disableRedirects: true,
   });
   if (res.status >= 300 && res.status < 400) {

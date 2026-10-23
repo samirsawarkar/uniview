@@ -1,5 +1,5 @@
 // Client side of remote browsing (docs/REMOTE.md). Transport-agnostic: the shell supplies
-// transport(host, port, path, body, contentType) -> {status, body: Uint8Array}.
+// transport(host, port, path, body, contentType, opts) -> {status, body: Uint8Array}.
 import * as P from "./remote-protocol.mjs";
 
 const enc = new TextEncoder();
@@ -22,6 +22,92 @@ async function postJson(transport, host, port, path, obj) {
     /* non-JSON error body */
   }
   return { status: res.status, json };
+}
+
+function isPrivateIpv4(ip) {
+  if (typeof ip !== "string") return false;
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  const nums = [];
+  for (const p of parts) {
+    if (!/^\d+$/.test(p)) return false;
+    const n = Number(p);
+    if (n < 0 || n > 255 || String(n) !== p) return false;
+    nums.push(n);
+  }
+  const [a, b] = nums;
+  if (a === 10) return true;
+  if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+export async function discoverHost({ transport, hostId, knownHosts, port, timeoutMs = 1500, concurrency = 48 }) {
+  const knownSet = new Set(knownHosts ?? []);
+  const candidates = [];
+  const seen = new Set();
+  for (const host of knownHosts ?? []) {
+    if (!isPrivateIpv4(host)) continue;
+    const prefix = host.split(".").slice(0, 3).join(".");
+    for (let i = 1; i <= 254; i++) {
+      const ip = `${prefix}.${i}`;
+      if (!knownSet.has(ip) && !seen.has(ip)) {
+        seen.add(ip);
+        candidates.push(ip);
+        if (candidates.length >= 1024) break;
+      }
+    }
+    if (candidates.length >= 1024) break;
+  }
+
+  if (candidates.length === 0) return null;
+
+  const helloBody = enc.encode("{}");
+  let stopped = false;
+  let cursor = 0;
+  let active = 0;
+
+  return new Promise((resolve) => {
+    function launchNext() {
+      if (stopped) return;
+      if (cursor >= candidates.length) {
+        if (active === 0) resolve(null);
+        return;
+      }
+      const ip = candidates[cursor++];
+      active++;
+      transport(ip, port, "/v1/hello", helloBody, "application/json", { timeoutMs })
+        .then((res) => {
+          if (stopped) return;
+          if (res && res.status === 200) {
+            let json = null;
+            try {
+              json = JSON.parse(dec.decode(res.body));
+            } catch {
+              /* non-JSON */
+            }
+            if (json && json.app === "uniview" && json.hostId === hostId) {
+              stopped = true;
+              resolve(ip);
+              return;
+            }
+          }
+        })
+        .catch(() => {
+          /* ignore connection error */
+        })
+        .finally(() => {
+          active--;
+          if (stopped) return;
+          launchNext();
+        });
+    }
+
+    const toLaunch = Math.min(concurrency, candidates.length);
+    for (let i = 0; i < toLaunch; i++) {
+      launchNext();
+    }
+  });
 }
 
 /**
@@ -68,11 +154,12 @@ export class RemoteHost {
   #sessionPromise = null;
   #host = null;
 
-  constructor(record, { transport, device, now = Date.now }) {
+  constructor(record, { transport, device, now = Date.now, onHostsChanged }) {
     this.record = record;
     this.transport = transport;
     this.device = device;
     this.now = now;
+    this.onHostsChanged = onHostsChanged;
     this.#host = record.preferred ?? record.hosts[0];
   }
 
@@ -101,6 +188,31 @@ export class RemoteHost {
       }
       if (res.status === 401) throw new RemoteError(`${this.record.hostName} no longer trusts this device. Pair again.`, "unpaired");
       httpError = new RemoteError(`${this.record.hostName} answered with an error (${res.status}).`);
+    }
+    if (!httpError && connError) {
+      const found = await discoverHost({
+        transport: this.transport,
+        hostId: this.record.hostId,
+        knownHosts: this.record.hosts,
+        port: this.record.port,
+      });
+      if (found) {
+        try {
+          const req = await P.sessionRequest(kst, this.record.deviceId);
+          const res = await postJson(this.transport, found, this.record.port, "/v1/session", req.body);
+          if (res.status === 200) {
+            const session = await req.finish(res.json);
+            const prev = (this.record.hosts ?? []).filter((h) => h !== found);
+            this.record.hosts = [found, ...prev].slice(0, 4);
+            this.record.preferred = found;
+            this.#host = found;
+            this.onHostsChanged?.(this.record);
+            return session;
+          }
+        } catch {
+          /* session or MAC check failed, fall through to unreachable */
+        }
+      }
     }
     const lastError = httpError ?? connError;
     throw new RemoteError(

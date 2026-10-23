@@ -8,7 +8,11 @@ const live = new Map<string, RemoteHost>();
 export async function connect(record: HostRecord, transport: RemoteTransport): Promise<RemoteHost> {
   const hit = live.get(record.hostId);
   if (hit) return hit;
-  const host = new RemoteHost(record, { transport, device: await getDeviceIdentity() });
+  const host = new RemoteHost(record, {
+    transport,
+    device: await getDeviceIdentity(),
+    onHostsChanged: (r) => rememberHost(r),
+  });
   live.set(record.hostId, host);
   return host;
 }

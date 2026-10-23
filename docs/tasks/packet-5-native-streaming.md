@@ -33,7 +33,7 @@ Hold the provider's file open and read ranges on demand. VIEW/SEND grants cannot
 ### Page (packet 5b)
 
 - New `src/shells/native-shared.ts`: `sharedSource(token, name, size, mime)` returning a `FileSource` whose `readRange(start, end, signal)` fetches the endpoint in at most 8 MiB requests and concatenates them; `readAll` reads `[0, size)`; `url()` uses `streamUrl` from `src/remote/stream.ts`; `release()` sends the close request once.
-- `src/shells/index.ts`: install `window.__univiewOpenShared`, which turns each call into `sharedSource(...)` and hands it to `window.__univiewOpen([source])`; drain `window.__univiewPendingShared` like the existing pending queues. Read failures surface through the existing `__univiewOpenError` channel with the file name.
+- `src/shells/index.ts`: install `window.__univiewOpenShared`, which turns each call into `sharedSource(...)` and hands it to `window.__univiewOpen([source])`; drain `window.__univiewPendingShared` like the existing pending queues. Failures while handing the file to the page surface through the existing `__univiewOpenError` channel with the file name; later read failures are shown by the file's viewer in its own tab, which already names the file (amended after Codex review, 2026-10-23).
 - Unit tests `tests/unit/native-shared.test.ts` with a mocked `fetch`: request URLs and chunking for a 20 MiB range, end clamping at `size`, empty result for `start >= size`, error status becomes a thrown error, abort stops further requests, release sends close exactly once, and queued calls before install are delivered.
 
 ## Non-goals

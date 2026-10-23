@@ -263,9 +263,13 @@ export class ShareHost {
 
   async #handle(req, res) {
     const url = new URL(req.url ?? "/", "http://x");
-    if (req.method === "GET" && url.pathname === "/v1/hello") return send(res, 200, { app: "uniview", v: P.PROTOCOL_VERSION });
+    if (req.method === "GET" && url.pathname === "/v1/hello") return send(res, 200, { app: "uniview", v: P.PROTOCOL_VERSION, hostId: this.hostId });
     if (req.method !== "POST") return send(res, 405, { error: "method" });
     const ip = req.socket.remoteAddress ?? "?";
+    if (url.pathname === "/v1/hello") {
+      if (this.#rateLimited(ip)) return send(res, 429, { error: "slow down" });
+      return send(res, 200, { app: "uniview", v: P.PROTOCOL_VERSION, hostId: this.hostId });
+    }
     if (url.pathname === "/v1/pair") return this.#pair(req, res);
     if (url.pathname === "/v1/session") {
       if (this.#rateLimited(ip)) return send(res, 429, { error: "slow down" });

@@ -8,19 +8,20 @@ import { join } from "node:path";
 import { ShareHost } from "./share-host.mjs";
 import { isLanHost } from "./core.mjs";
 
-const TRANSPORT_PATHS = new Set(["/v1/pair", "/v1/session", "/v1/rpc"]);
+const TRANSPORT_PATHS = new Set(["/v1/pair", "/v1/session", "/v1/rpc", "/v1/hello"]);
 const MAX_REQUEST = 64 * 1024;
 const MAX_RESPONSE = 8 * 1024 * 1024;
 
 /** POST to a paired host on the LAN with a hard size and time limit. */
-export function lanPost(host, port, path, body, contentType) {
+export function lanPost(host, port, path, body, contentType, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     if (!isLanHost(host)) return reject(new Error("Only devices on your local network can be contacted."));
     if (!Number.isInteger(port) || port < 1 || port > 65535) return reject(new Error("Invalid port."));
     if (!TRANSPORT_PATHS.has(path)) return reject(new Error("Invalid request."));
     if (!(body instanceof Uint8Array) || body.length > MAX_REQUEST) return reject(new Error("Request too large."));
+    const timeout = Number.isInteger(timeoutMs) && timeoutMs >= 200 && timeoutMs <= 60000 ? timeoutMs : 15000;
     const type = contentType === "application/json" ? "application/json" : "application/octet-stream";
-    const req = request({ host: host.replace(/^\[|\]$/g, ""), port, path, method: "POST", timeout: 15_000, headers: { "Content-Type": type, "Content-Length": body.length } }, (res) => {
+    const req = request({ host: host.replace(/^\[|\]$/g, ""), port, path, method: "POST", timeout, headers: { "Content-Type": type, "Content-Length": body.length } }, (res) => {
       const chunks = [];
       let n = 0;
       res.on("data", (c) => {
@@ -155,7 +156,7 @@ export async function setupRemote({ fromApp, getWindow }) {
   ipcMain.handle("share:remove-device", guard(async (id) => (await host.removeDevice(String(id)), host.state)));
   ipcMain.handle("share:offer", guard(async () => host.createOffer()));
   ipcMain.handle("share:cancel-offer", guard(async () => (host.cancelOffer(), host.state)));
-  ipcMain.handle("remote:post", guard(async (h, port, path, body, type) => lanPost(String(h), Number(port), String(path), body instanceof Uint8Array ? body : new Uint8Array(body ?? 0), String(type))));
+  ipcMain.handle("remote:post", guard(async (h, port, path, body, type, timeoutMs) => lanPost(String(h), Number(port), String(path), body instanceof Uint8Array ? body : new Uint8Array(body ?? 0), String(type), Number.isInteger(timeoutMs) && timeoutMs >= 200 && timeoutMs <= 60000 ? timeoutMs : 15000)));
 
   return host;
 }

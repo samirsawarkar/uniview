@@ -56,5 +56,5 @@ contextBridge.exposeInMainWorld("uniview", {
   },
 
   // Talking to another computer's sharing service (client side), LAN only.
-  remotePost: (host, port, path, body, type) => ipcRenderer.invoke("remote:post", String(host), Number(port), String(path), body, String(type)),
+  remotePost: (host, port, path, body, type, timeoutMs) => ipcRenderer.invoke("remote:post", String(host), Number(port), String(path), body, String(type), timeoutMs),
 });

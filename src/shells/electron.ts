@@ -12,7 +12,7 @@ export interface ElectronApi {
   ready(): void;
   thumbnail(token: string, size: number): Promise<Uint8Array | null>;
   share: ShareApi;
-  remotePost(host: string, port: number, path: string, body: Uint8Array, type: string): Promise<{ status: number; body: Uint8Array }>;
+  remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
 }
 
 export interface GrantedFile {
@@ -57,7 +57,7 @@ function toSource(f: GrantedFile): FileSource {
 }
 
 export function createElectronBridge(): ShellBridge {
-  const remoteTransport: RemoteTransport = (host, port, path, body, type) => api().remotePost(host, port, path, body, type);
+  const remoteTransport: RemoteTransport = (host, port, path, body, type, opts) => api().remotePost(host, port, path, body, type, opts?.timeoutMs);
   return {
     kind: "electron",
     remoteTransport,

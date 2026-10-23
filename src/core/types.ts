@@ -46,6 +46,7 @@ export type RemoteTransport = (
   path: string,
   body: Uint8Array,
   contentType: string,
+  opts?: { timeoutMs?: number },
 ) => Promise<{ status: number; body: Uint8Array }>;
 
 export interface SharedRoot {
