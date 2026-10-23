@@ -30,6 +30,7 @@ const ALLOWED_TAGS = [
   "th",
   "td",
   "span",
+  "button",
 ];
 
 function escapeHtml(str: string): string {
@@ -86,7 +87,10 @@ const md = new MarkdownIt({
   breaks: false,
 });
 
-md.validateLink = () => true;
+md.validateLink = (url: string): boolean => {
+  const trimmed = url.trim();
+  return /^(?:https?|mailto):/i.test(trimmed);
+};
 
 md.renderer.rules.link_open = () => {
   return '<span class="agent-link">';
@@ -108,7 +112,7 @@ md.renderer.rules.link_close = (tokens, idx) => {
       depth--;
     }
   }
-  return ` <code class="agent-url">${escapeHtml(href)}</code></span>`;
+  return ` <code class="agent-url">${escapeHtml(href)}</code> <button type="button" class="agent-copy" data-copy="${escapeHtml(href)}" aria-label="Copy link address">Copy</button></span>`;
 };
 
 md.renderer.rules.image = (tokens, idx, options, env, self) => {
@@ -133,7 +137,7 @@ md.renderer.rules.code_block = (tokens, idx) => {
 md.renderer.rules.fence = (tokens, idx) => {
   const token = tokens[idx];
   const info = token?.info ? token.info.trim() : "";
-  const lang = info ? info.split(/\s+/)[0] : "";
+  const lang = info ? (info.split(/\s+/)[0] ?? "") : "";
   const code = escapeHtml(token?.content ?? "");
   if (lang) {
     return `<pre><code class="language-${escapeHtml(lang)}">${code}</code></pre>\n`;
@@ -159,8 +163,10 @@ function renderTableCell(
         token.attrs.splice(styleIdx, 1);
         const alignClass = `align-${match[1].toLowerCase()}`;
         const classIdx = token.attrIndex("class");
-        if (classIdx >= 0 && token.attrs[classIdx]) {
-          token.attrs[classIdx]![1] += ` ${alignClass}`;
+        const classAttr =
+          classIdx >= 0 && token.attrs ? token.attrs[classIdx] : undefined;
+        if (classAttr) {
+          classAttr[1] += ` ${alignClass}`;
         } else {
           token.attrPush(["class", alignClass]);
         }
@@ -193,7 +199,7 @@ export function renderAgentMarkdown(text: string): string {
 
   return DOMPurify.sanitize(rawHtml, {
     ALLOWED_TAGS,
-    ALLOWED_ATTR: ["class", "align"],
+    ALLOWED_ATTR: ["class", "align", "type", "aria-label", "data-copy"],
     ALLOW_DATA_ATTR: false,
   });
 }
@@ -208,7 +214,7 @@ export function sanitizeLabel(text: string, max: number): string {
   if (max <= 0) return "";
   const codePoints = Array.from(s);
   if (codePoints.length > max) {
-    return codePoints.slice(0, max).join("") + "…";
+    return codePoints.slice(0, max - 1).join("") + "…";
   }
   return s;
 }
@@ -225,11 +231,16 @@ export function AgentMarkdown({
   const html = useMemo(() => renderAgentMarkdown(text), [text]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const target = (e.target as HTMLElement | null)?.closest?.(
-      ".agent-url"
-    ) as HTMLElement | null;
+    const el = e.target as HTMLElement | null;
+    const copyBtn = el?.closest?.(".agent-copy") as HTMLElement | null;
+    const urlEl = el?.closest?.(".agent-url") as HTMLElement | null;
+    const target = copyBtn ?? urlEl;
     if (!target) return;
-    const url = target.textContent ?? "";
+
+    const url = copyBtn
+      ? (copyBtn.getAttribute("data-copy") ?? "")
+      : (urlEl?.textContent ?? "");
+
     if (
       typeof navigator !== "undefined" &&
       navigator.clipboard &&
