@@ -13,6 +13,7 @@ const BADGES: Record<FormatKind, { text: string; color: string; name: string }> 
   zip: { text: "ZIP", color: "#A16207", name: "ZIP" },
   markdown: { text: "MD", color: "#475569", name: "Markdown" },
   json: { text: "{ }", color: "#475569", name: "JSON" },
+  viewspec: { text: "VIEW", color: "#0F766E", name: "UniView view" },
   text: { text: "TXT", color: "#64748B", name: "Text & code" },
   font: { text: "Aa", color: "#4F46E5", name: "Fonts" },
   "legacy-office": { text: "OLD", color: "#78716C", name: "Legacy Office" },

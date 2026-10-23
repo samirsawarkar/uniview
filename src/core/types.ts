@@ -110,6 +110,7 @@ export type FormatKind =
   | "zip"
   | "markdown"
   | "json"
+  | "viewspec"
   | "text"
   | "font"
   | "legacy-office"

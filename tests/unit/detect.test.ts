@@ -118,3 +118,23 @@ describe("looksLikeText", () => {
     expect(looksLikeText(new Uint8Array([0xff, 0xfe, 0x61, 0x00]))).toBe(true);
   });
 });
+
+describe("detect view specs", () => {
+  const empty = new Uint8Array(0);
+
+  it("detects .uview.json as viewspec", () => {
+    expect(detect("x.uview.json", empty).kind).toBe("viewspec");
+  });
+
+  it("detects .UVIEW.JSON case-insensitively as viewspec", () => {
+    expect(detect("X.UVIEW.JSON", empty).kind).toBe("viewspec");
+  });
+
+  it("detects .json as json", () => {
+    expect(detect("x.json", empty).kind).toBe("json");
+  });
+
+  it("detects uview.json without dot prefix part as json", () => {
+    expect(detect("uview.json", empty).kind).toBe("json");
+  });
+});
