@@ -57,16 +57,22 @@ export async function pairWithOffer(offerText, { transport, device, deviceName }
   );
 }
 
+// Retry once if the transport failed quickly (<2 s), but not on slow connect timeouts.
+export function shouldRetryAfterTransportError(elapsedMs) {
+  return elapsedMs < 2000;
+}
+
 /** A connection to one paired host. Sessions are created lazily and renewed when they expire. */
 export class RemoteHost {
   #session = null;
   #sessionPromise = null;
   #host = null;
 
-  constructor(record, { transport, device }) {
+  constructor(record, { transport, device, now = Date.now }) {
     this.record = record;
     this.transport = transport;
     this.device = device;
+    this.now = now;
     this.#host = record.preferred ?? record.hosts[0];
   }
 
@@ -115,11 +121,13 @@ export class RemoteHost {
     const session = await this.#ensureSession();
     const { seq, bytes } = await session.seal({ op, ...args });
     let res;
+    const start = (this.now ?? Date.now)();
     try {
       res = await this.transport(this.#host, this.record.port, "/v1/rpc", bytes, "application/octet-stream");
     } catch (err) {
       this.#session = null;
-      if (retry) return this.call(op, args, false);
+      const elapsed = (this.now ?? Date.now)() - start;
+      if (retry && shouldRetryAfterTransportError(elapsed)) return this.call(op, args, false);
       throw new RemoteError(`${this.record.hostName} stopped responding. ${err?.message ?? ""}`.trim(), "unreachable");
     }
     if (res.status === 401) {

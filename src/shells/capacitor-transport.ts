@@ -31,7 +31,7 @@ export const capacitorTransport: RemoteTransport = async (host, port, path, body
     data: toBase64(body),
     dataType: "file",
     responseType: "arraybuffer",
-    connectTimeout: 8000,
+    connectTimeout: 4000,
     readTimeout: 20000,
     disableRedirects: true,
   });

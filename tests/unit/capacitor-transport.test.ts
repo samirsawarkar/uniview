@@ -34,6 +34,7 @@ describe("capacitorTransport (LAN-only security)", () => {
           data: "AQIDBA==",
           dataType: "file",
           responseType: "arraybuffer",
+          connectTimeout: 4000,
           disableRedirects: true,
         })
       );

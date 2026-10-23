@@ -13,6 +13,12 @@ export interface RemoteLocation {
   path: string;
 }
 
+export function errorHeading(code: string | undefined, hostName: string): string {
+  if (code === "unreachable") return `Can't reach ${hostName}`;
+  if (code === "unpaired" || code === "unauthorized") return `${hostName} no longer trusts this device`;
+  return "Can't open this folder";
+}
+
 /** Browse a paired computer's shared folders and open files on demand. */
 export function RemoteBrowser({ record, transport, location, onNavigate, onOpen }: {
   record: HostRecord;
@@ -24,7 +30,7 @@ export function RemoteBrowser({ record, transport, location, onNavigate, onOpen 
   const [host, setHost] = useState<RemoteHost | null>(null);
   const [roots, setRoots] = useState<{ id: string; name: string }[] | null>(null);
   const [entries, setEntries] = useState<RemoteEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [filter, setFilter] = useState("");
   const [reload, setReload] = useState(0);
 
@@ -45,7 +51,10 @@ export function RemoteBrowser({ record, transport, location, onNavigate, onOpen 
           if (live) setEntries(list);
         }
       } catch (err) {
-        if (live) setError((err as Error).message);
+        if (live) {
+          const e = err as Error & { code?: string };
+          setError({ message: e.message, code: e.code });
+        }
       }
     })();
     return () => {
@@ -88,8 +97,8 @@ export function RemoteBrowser({ record, transport, location, onNavigate, onOpen 
       </div>
       {error ? (
         <div className="center-msg" role="alert">
-          <strong>Can't reach {record.hostName}</strong>
-          <span>{error}</span>
+          <strong>{errorHeading(error.code, record.hostName)}</strong>
+          <span>{error.message}</span>
           <button onClick={() => setReload((n) => n + 1)}>Try again</button>
         </div>
       ) : !location.root ? (

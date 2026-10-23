@@ -54,8 +54,9 @@ export function deviceName(): string {
     /* storage unavailable */
   }
   const ua = navigator.userAgent;
-  const model = /Android [\d.]+; ([^;)]+)/.exec(ua)?.[1];
-  if (model && model !== "K") return model.trim();
+  const rawModel = /Android [\d.]+; ([^;)]+)/.exec(ua)?.[1];
+  const model = rawModel?.replace(/\s*Build\/.*$/, "").trim();
+  if (model && model !== "K") return model;
   if (/iPhone/.test(ua)) return "iPhone";
   if (/iPad/.test(ua)) return "iPad";
   if (/Android/.test(ua)) return "Android phone";

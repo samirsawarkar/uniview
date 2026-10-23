@@ -25,7 +25,7 @@ export class RemoteError extends Error {
 export function pairWithOffer(offerText: string, opts: { transport: RemoteTransport; device: Identity; deviceName: string }): Promise<HostRecord>;
 
 export class RemoteHost {
-  constructor(record: HostRecord, opts: { transport: RemoteTransport; device: Identity });
+  constructor(record: HostRecord, opts: { transport: RemoteTransport; device: Identity; now?: () => number });
   record: HostRecord;
   info(): Promise<{ hostName: string; roots: { id: string; name: string }[] }>;
   list(root: string, path: string): Promise<RemoteEntry[]>;
@@ -33,3 +33,4 @@ export class RemoteHost {
   read(root: string, path: string, start: number, end: number): Promise<Uint8Array>;
   thumb(root: string, path: string, size: number): Promise<Uint8Array>;
 }
+export function shouldRetryAfterTransportError(elapsedMs: number): boolean;
