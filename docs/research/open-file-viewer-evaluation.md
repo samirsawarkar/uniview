@@ -2,7 +2,13 @@
 
 Research by hermes (AES run `aes-82a4d275dd1e`, 2026-10-23); facts re-verified by the CTO against the GitHub and npm APIs the same day.
 
-## CTO decision
+## CTO verification correction — 2026-10-23
+
+The published `@aiden0z/pptx-renderer@1.4.0` tarball bundles `mtx-decompressor@1.4.2`, identified as MPL-2.0 in its `THIRD_PARTY_NOTICES.md`. Its top-level Apache-2.0 licence does not describe the whole bundle. The earlier Apache-only assessment and blanket permissive approval are superseded. Integration is deferred pending the CEO's licence-policy decision; this package is not installed in UniView.
+
+`emf-converter@4.23.1` was inspected separately. Its Apache-2.0 package includes notices for bundled permissive image decoders. This independently approved converter can be integrated without adopting the second PPTX engine.
+
+## Original CTO decision (PPTX-engine approval superseded above)
 
 1. **Do not adopt Open File Viewer wholesale.** Its runtime dependencies bring copyleft risk (`heic2any` bundles LGPL libheif; the CAD peer `@mlightcad/libredwg-web` is GPL-3.0) and an unofficial SheetJS fork (`@stackline/xlsx`). It is an embeddable widget SDK, not an offline application shell. UniView keeps its own registry, viewers and shells.
 2. **Adopt selected engines, behind UniView's renderer registry, lazily loaded, only after they pass our hard-format fixtures:**
