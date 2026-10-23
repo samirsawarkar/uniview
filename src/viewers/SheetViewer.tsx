@@ -137,7 +137,16 @@ function VirtualGrid({ grid }: { grid: Grid }) {
   for (let r = r0; r < r1; r++) rowHeads.push(<div key={r} className="row-head" style={{ top: r * ROW_H }}>{r + 1}</div>);
 
   return (
-    <div className="grid-scroll" ref={ref} onScroll={(e) => setView((v) => ({ ...v, top: e.currentTarget.scrollTop, left: e.currentTarget.scrollLeft }))} data-testid="sheet-grid">
+    <div
+      className="grid-scroll"
+      ref={ref}
+      onScroll={(e) => {
+        // Read now: React clears currentTarget before a deferred state updater would run.
+        const { scrollTop, scrollLeft } = e.currentTarget;
+        setView((v) => ({ ...v, top: scrollTop, left: scrollLeft }));
+      }}
+      data-testid="sheet-grid"
+    >
       <div className="grid-canvas" style={{ width: totalW + ROWNUM_W, height: totalH + HEADER_H }}>
         <div className="grid-cols" style={{ top: view.top, left: ROWNUM_W, width: totalW }}>{colHeads}</div>
         <div className="grid-rows" style={{ left: view.left, top: HEADER_H, height: totalH }}>{rowHeads}</div>
