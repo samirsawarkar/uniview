@@ -129,3 +129,6 @@ utif2 on npm (MIT, 4.1.0, 2023) is the maintained-API fork of UTIF.js; the upstr
 
 | unjs/uqr | 778 | MIT | 2026-04-03 | false | OK | QR code generation (pairing) |
 | cozmo/jsQR | 4042 | Apache-2.0 | 2026-05-15 | false | OK | QR code scanning from the camera |
+
+| aiden0z/pptx-renderer | 133 | Apache-2.0 | 2026-10-18 | false | OK | optional high-fidelity PPTX engine (lazy) |
+| ChristopherVR/emf-converter | 9 | Apache-2.0 | 2026-10-23 | false | OK (low adoption, isolated) | EMF/WMF pictures in PPTX (lazy) |
