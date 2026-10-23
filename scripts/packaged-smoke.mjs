@@ -1,0 +1,11 @@
+import { _electron as electron } from "@playwright/test";
+const [exe, pdf, xlsx] = process.argv.slice(2);
+const app = await electron.launch({ executablePath: exe, args: [pdf, xlsx] });
+const page = await app.firstWindow();
+await page.locator(".tab").nth(1).waitFor({ timeout: 20000 });
+const tabs = await page.locator(".tab-title").allInnerTexts();
+await page.locator(".tab", { hasText: "report.pdf" }).click();
+await page.locator(".tab-panel:not([hidden]) .textLayer").filter({ hasText: "Hello from UniView" }).waitFor({ timeout: 15000 });
+const blocked = await page.evaluate(async () => { try { await fetch("https://example.com"); return "reached"; } catch { return "blocked"; } });
+console.log(JSON.stringify({ tabs, pdfText: "ok", network: blocked, title: await page.title() }));
+await app.close();

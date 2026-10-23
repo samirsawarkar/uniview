@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -12,6 +12,12 @@ export default defineConfig({
       name: "web",
       testMatch: /web\.spec\.ts/,
       use: { baseURL: "http://localhost:4173", browserName: "chromium", viewport: { width: 1280, height: 800 } },
+    },
+    {
+      // Android's WebView is Chromium: the same suite at phone size with touch approximates the Capacitor shell.
+      name: "mobile",
+      testMatch: /web\.spec\.ts/,
+      use: { baseURL: "http://localhost:4173", ...devices["Pixel 7"] },
     },
     { name: "electron", testMatch: /electron\.spec\.ts/ },
   ],
