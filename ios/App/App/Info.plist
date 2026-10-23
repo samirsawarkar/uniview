@@ -86,5 +86,14 @@
 	<false/>
 	<key>UIFileSharingEnabled</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>UniView connects directly to computers you paired with on your local network to browse their shared folders.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>UniView uses the camera only to scan the pairing QR code shown on your computer.</string>
 </dict>
 </plist>

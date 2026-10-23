@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext HTTP is allowed because every request to a paired computer is end-to-end encrypted and authenticated at the application layer (AES-256-GCM, docs/REMOTE.md) and the app only contacts paired local-network devices. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -3,5 +3,10 @@
   "appName": "UniView",
   "webDir": "dist",
   "android": { "allowMixedContent": false, "captureInput": false, "webContentsDebuggingEnabled": false },
-  "server": { "androidScheme": "https" }
+  "server": { "androidScheme": "https" },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": false
+    }
+  }
 }
