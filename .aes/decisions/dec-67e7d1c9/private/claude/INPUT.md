@@ -1,0 +1,3 @@
+# Question
+
+For UniView, a universal offline file viewer (Windows, macOS, Android, iOS) with a shared React/TypeScript viewer core, choose the app shell: (A) Electron on desktop + Capacitor on Android/iOS, buildable today with the installed toolchain (Node 24, JDK 17, Android SDK; no Rust), or (B) Tauri v2 everywhere, which needs installing Rust and MSVC build tools first. The viewer core (format detection, renderers, tabs UI) is shell-agnostic and talks to the shell only through a small FileSource interface, so the shell can be swapped later. Research is in docs/research (brainstorm synthesis, Vudit and Gander REA reports). Is this choice hard to reverse (TYPE 1) or cheap to reverse (TYPE 2)?
