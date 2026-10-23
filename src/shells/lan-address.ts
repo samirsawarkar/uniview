@@ -7,7 +7,7 @@
 
 const IPV4_STRICT_REGEX = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/;
 
-const ALLOWED_PATHS = new Set(["/v1/pair", "/v1/session", "/v1/rpc"]);
+const ALLOWED_PATHS = new Set(["/v1/pair", "/v1/session", "/v1/rpc", "/v1/hello"]);
 
 export function isLanIpv4(host: string): boolean {
   const match = IPV4_STRICT_REGEX.exec(host);
@@ -105,7 +105,7 @@ export function validateLanUrl(host: string, port: number, path: string): string
     throw new Error("LAN-only transport: port must be an integer between 1 and 65535");
   }
   if (!isValidPath(path)) {
-    throw new Error("LAN-only transport: path must be one of /v1/pair, /v1/session, /v1/rpc");
+    throw new Error("LAN-only transport: path must be one of /v1/pair, /v1/session, /v1/rpc, /v1/hello");
   }
   return `http://${canonicalHost}:${port}${path}`;
 }

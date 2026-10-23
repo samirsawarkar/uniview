@@ -5,6 +5,20 @@ import { mkdir, open, readdir, readFile, realpath, rename, stat, writeFile, lsta
 import { networkInterfaces } from "node:os";
 import { basename, join, sep, isAbsolute } from "node:path";
 import * as P from "../../shared/remote-protocol.mjs";
+import { isLanHost } from "./core.mjs";
+
+export function isLanPeer(address) {
+  if (typeof address !== "string" || !address) return false;
+  let clean = address;
+  if (clean.toLowerCase().startsWith("::ffff:")) {
+    clean = clean.slice(7);
+  }
+  const pct = clean.indexOf("%");
+  if (pct !== -1) {
+    clean = clean.slice(0, pct);
+  }
+  return isLanHost(clean);
+}
 
 export const DEFAULT_PORT = 47823;
 const MAX_BODY = 64 * 1024;
@@ -262,6 +276,7 @@ export class ShareHost {
   }
 
   async #handle(req, res) {
+    if (!isLanPeer(req.socket.remoteAddress)) return send(res, 403, { error: "local network only" });
     const url = new URL(req.url ?? "/", "http://x");
     if (req.method === "GET" && url.pathname === "/v1/hello") return send(res, 200, { app: "uniview", v: P.PROTOCOL_VERSION, hostId: this.hostId });
     if (req.method !== "POST") return send(res, 405, { error: "method" });

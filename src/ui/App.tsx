@@ -294,7 +294,7 @@ export function App() {
         {tabs.map((t) => (
           <div key={t.id} className="tab-panel" hidden={t.id !== activeId} role="tabpanel">
             {t.source ? (
-              <TabView source={t.source} onDetected={(d) => onDetected(t.id, d)} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} />
+              <TabView source={t.source} onDetected={(d) => onDetected(t.id, d)} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} active={t.id === activeId} />
             ) : t.page?.kind === "sharing" && bridge.share ? (
               <SharingPanel share={bridge.share} />
             ) : t.page?.kind === "remote" && bridge.remoteTransport && hostFor(t.page.hostId) ? (

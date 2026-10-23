@@ -11,10 +11,11 @@ export interface TabViewProps {
   onDetected: (d: Detection) => void;
   onReady: (ms: number) => void;
   onOpen: (files: FileSource[]) => void;
+  active?: boolean;
 }
 
 /** Reads the head of a file, picks a viewer, and guarantees something readable is shown. */
-export function TabView({ source, onDetected, onReady, onOpen }: TabViewProps) {
+export function TabView({ source, onDetected, onReady, onOpen, active = true }: TabViewProps) {
   const [detection, setDetection] = useState<Detection | null>(null);
   const [override, setOverride] = useState<FormatKind | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -60,7 +61,7 @@ export function TabView({ source, onDetected, onReady, onOpen }: TabViewProps) {
   return (
     <ViewerBoundary key={`${source.id}:${kind}`} source={source} onFallback={setOverride} fallbackUsed={override}>
       <Suspense fallback={<Loading />}>
-        <Viewer source={source} detection={override ? { ...base, kind } : base} onOpen={onOpen} onReady={() => onReady(performance.now() - started)} />
+        <Viewer source={source} detection={override ? { ...base, kind } : base} onOpen={onOpen} onReady={() => onReady(performance.now() - started)} active={active} />
       </Suspense>
     </ViewerBoundary>
   );

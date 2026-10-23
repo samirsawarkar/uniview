@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { parsePptx, type Fill, type Paragraph, type Presentation, type Slide, type SlideElement, type TextBody } from "../core/pptx";
 import { readZipEntries } from "../core/zip";
 import { extOf } from "../core/detect";
-import { Loading, Spacer, Toolbar, readAllChecked, useReady } from "./common";
+import { Loading, Spacer, Toolbar, readAllChecked, useReady, useViewerBack } from "./common";
 import { findPresenterEntrySlide, findNextSlide, findPrevSlide } from "./pptx-navigation";
 import type { ViewerProps } from "./types";
 
@@ -72,7 +72,7 @@ export function useImageUrls(pres: Presentation | null): Urls {
   );
 }
 
-export default function PptxViewer({ source, onReady }: ViewerProps) {
+export default function PptxViewer({ source, onReady, active = true }: ViewerProps) {
   const [thumb, setThumb] = useState<string | null>(null);
   const [pres, setPres] = useState<Presentation | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -144,16 +144,7 @@ export default function PptxViewer({ source, onReady }: ViewerProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [presenting, current, slides, startPresenting]);
 
-  useEffect(() => {
-    const onBack = (e: Event) => {
-      if (presenting) {
-        e.preventDefault();
-        setPresenting(false);
-      }
-    };
-    window.addEventListener("uniview:back:viewer", onBack);
-    return () => window.removeEventListener("uniview:back:viewer", onBack);
-  }, [presenting]);
+  useViewerBack(active && presenting, () => setPresenting(false));
 
   if (error) throw error;
   if (!pres) {

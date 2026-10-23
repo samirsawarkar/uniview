@@ -32,4 +32,12 @@ describe("mobile config for remote browsing", () => {
     expect(infoPlist).toContain("NSCameraUsageDescription");
     expect(infoPlist).not.toContain("NSAllowsArbitraryLoads");
   });
+
+  it("Android minSdkVersion is at least 26 for binary request bodies", () => {
+    const gradle = readFileSync(join(process.cwd(), "android/variables.gradle"), "utf8");
+    const match = /minSdkVersion\s*=\s*(\d+)/.exec(gradle);
+    expect(match).not.toBeNull();
+    const minSdk = Number(match?.[1]);
+    expect(minSdk).toBeGreaterThanOrEqual(26);
+  });
 });

@@ -7,6 +7,8 @@ export interface ViewerProps {
   onReady: () => void;
   /** Open more files in new tabs (archive entries). */
   onOpen: (files: FileSource[]) => void;
+  /** This viewer's tab is the visible one; default true. */
+  active?: boolean;
 }
 
 /** Size above which in-memory parsers refuse and offer the hex view instead. */

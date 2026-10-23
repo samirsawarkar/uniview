@@ -57,3 +57,23 @@ export function useReady(ready: boolean, onReady: () => void): void {
     requestAnimationFrame(() => requestAnimationFrame(onReady));
   }, [ready, onReady]);
 }
+
+/**
+ * Listen to cancellable back events on window while active/enabled.
+ * Prevents default if not already prevented and invokes the callback.
+ */
+export function useViewerBack(enabled: boolean, onBack: () => void): void {
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
+  useEffect(() => {
+    if (!enabled) return;
+    const handler = (e: Event) => {
+      if (!e.defaultPrevented) {
+        e.preventDefault();
+        onBackRef.current();
+      }
+    };
+    window.addEventListener("uniview:back:viewer", handler);
+    return () => window.removeEventListener("uniview:back:viewer", handler);
+  }, [enabled]);
+}
