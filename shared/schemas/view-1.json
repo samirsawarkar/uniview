@@ -80,7 +80,7 @@
       "properties": {
         "type": { "const": "callout" },
         "tone": { "type": "string", "enum": ["info", "success", "warning", "danger"] },
-        "text": { "type": "string" },
+        "text": { "type": "string", "maxLength": 262144 },
         "title": { "type": "string", "maxLength": 200 }
       }
     },

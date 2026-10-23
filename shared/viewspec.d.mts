@@ -199,7 +199,7 @@ export interface ValidationError {
 }
 
 export type ValidationResult =
-  | { ok: true; spec: ViewSpec }
+  | { ok: true; spec: ViewSpec; errors?: undefined }
   | { ok: false; errors: ValidationError[] };
 
 export declare function maxDepth(value: unknown): number;

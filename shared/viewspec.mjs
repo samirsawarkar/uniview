@@ -13,6 +13,7 @@ export const VIEW_SPEC_LIMITS = Object.freeze({
   MAX_HEADING_LEVEL: 4,
   MAX_MARKDOWN_LENGTH: 256 * 1024,
   MAX_CALLOUT_TITLE_LENGTH: 200,
+  MAX_CALLOUT_TEXT_LENGTH: 256 * 1024,
   MIN_KEY_VALUE_ITEMS: 1,
   MAX_KEY_VALUE_ITEMS: 500,
   MAX_KEY_VALUE_KEY_LENGTH: 200,
@@ -131,7 +132,7 @@ export const VIEW_SCHEMA = {
       properties: {
         type: { const: "callout" },
         tone: { type: "string", enum: ["info", "success", "warning", "danger"] },
-        text: { type: "string" },
+        text: { type: "string", maxLength: VIEW_SPEC_LIMITS.MAX_CALLOUT_TEXT_LENGTH },
         title: { type: "string", maxLength: VIEW_SPEC_LIMITS.MAX_CALLOUT_TITLE_LENGTH }
       }
     },
@@ -398,6 +399,16 @@ export function ensureSchemaRegistered() {
   }
 }
 
+export function escapeJsonPointer(str) {
+  return str.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+const textEncoder = new TextEncoder();
+function getByteLength(s) {
+  if (typeof s !== "string") return 0;
+  return textEncoder.encode(s).length;
+}
+
 export function maxDepth(value) {
   if (value === null || typeof value !== "object") {
     return 1;
@@ -449,9 +460,14 @@ export function countNodes(spec) {
       const rows = Array.isArray(node.rows) ? node.rows.length : 0;
       total += cols * rows;
     } else if (type === "chart") {
-      const xLen = Array.isArray(node.x) ? node.x.length : 0;
-      const seriesLen = Array.isArray(node.series) ? node.series.length : 0;
-      total += xLen * seriesLen;
+      if (Array.isArray(node.series)) {
+        for (let i = 0; i < node.series.length; i++) {
+          const s = node.series[i];
+          if (s && typeof s === "object" && Array.isArray(s.values)) {
+            total += s.values.length;
+          }
+        }
+      }
     } else if (type === "tree") {
       if (Array.isArray(node.nodes)) {
         const treeStack = [...node.nodes];
@@ -485,8 +501,8 @@ export function countNodes(spec) {
       }
     } else if (type === "columns") {
       if (Array.isArray(node.columns)) {
-        for (let i = 0; i < node.columns.length; i++) {
-          const col = node.columns[i];
+        for (let c = 0; c < node.columns.length; c++) {
+          const col = node.columns[c];
           if (Array.isArray(col)) {
             for (let j = 0; j < col.length; j++) {
               stack.push(col[j]);
@@ -566,15 +582,86 @@ function countTreeNodesTotal(nodes) {
   return count;
 }
 
+function checkByteLimit(str, limit, path, errors) {
+  if (typeof str !== "string" || errors.length >= 100) return;
+  const bytes = getByteLength(str);
+  if (bytes > limit) {
+    const existingIdx = errors.findIndex(e => e.path === path && e.message === "too long");
+    if (existingIdx !== -1) {
+      errors[existingIdx].message = `too long (${bytes} bytes, limit ${limit})`;
+    } else if (!errors.some(e => e.path === path)) {
+      errors.push({
+        code: "schema",
+        path,
+        message: `too long (${bytes} bytes, limit ${limit})`
+      });
+    }
+  }
+}
+
 function runSemanticChecks(spec, errors) {
   const columnKeyPattern = /^[A-Za-z0-9_.-]{1,64}$/;
+
+  function checkTreeEntries(entries, basePath) {
+    if (!Array.isArray(entries)) return;
+    for (let i = 0; i < entries.length; i++) {
+      if (errors.length >= 100) break;
+      const entry = entries[i];
+      if (!entry || typeof entry !== "object") continue;
+      const entryPath = `${basePath}/${i}`;
+      if (typeof entry.detail === "string") {
+        checkByteLimit(
+          entry.detail,
+          VIEW_SPEC_LIMITS.MAX_TREE_DETAIL_LENGTH,
+          `${entryPath}/detail`,
+          errors
+        );
+      }
+      if (Array.isArray(entry.children)) {
+        checkTreeEntries(entry.children, `${entryPath}/children`);
+      }
+    }
+  }
 
   function checkNode(node, nodePath) {
     if (!node || typeof node !== "object" || errors.length >= 100) return;
 
     const type = node.type;
 
-    if (type === "table") {
+    if (type === "markdown") {
+      if (typeof node.text === "string") {
+        checkByteLimit(
+          node.text,
+          VIEW_SPEC_LIMITS.MAX_MARKDOWN_LENGTH,
+          `${nodePath}/text`,
+          errors
+        );
+      }
+    } else if (type === "callout") {
+      if (typeof node.text === "string") {
+        checkByteLimit(
+          node.text,
+          VIEW_SPEC_LIMITS.MAX_CALLOUT_TEXT_LENGTH,
+          `${nodePath}/text`,
+          errors
+        );
+      }
+    } else if (type === "keyValue") {
+      if (Array.isArray(node.items)) {
+        for (let i = 0; i < node.items.length; i++) {
+          if (errors.length >= 100) break;
+          const item = node.items[i];
+          if (item && typeof item === "object" && typeof item.value === "string") {
+            checkByteLimit(
+              item.value,
+              VIEW_SPEC_LIMITS.MAX_KEY_VALUE_VALUE_LENGTH,
+              `${nodePath}/items/${i}/value`,
+              errors
+            );
+          }
+        }
+      }
+    } else if (type === "table") {
       const declaredKeys = new Set();
       if (Array.isArray(node.columns)) {
         for (let c = 0; c < node.columns.length; c++) {
@@ -611,12 +698,25 @@ function runSemanticChecks(spec, errors) {
           for (let k = 0; k < rowKeys.length; k++) {
             if (errors.length >= 100) break;
             const key = rowKeys[k];
-            if (key !== undefined && !declaredKeys.has(key)) {
-              errors.push({
-                code: "schema",
-                path: `${nodePath}/rows/${r}/${key}`,
-                message: `Row key '${key}' is not a declared column key`
-              });
+            if (key !== undefined) {
+              const escapedKey = escapeJsonPointer(key);
+              const cellPath = `${nodePath}/rows/${r}/${escapedKey}`;
+              if (!declaredKeys.has(key)) {
+                errors.push({
+                  code: "schema",
+                  path: cellPath,
+                  message: `Row key '${key}' is not a declared column key`
+                });
+              }
+              const cellValue = row[key];
+              if (typeof cellValue === "string") {
+                checkByteLimit(
+                  cellValue,
+                  VIEW_SPEC_LIMITS.MAX_TABLE_CELL_LENGTH,
+                  cellPath,
+                  errors
+                );
+              }
             }
           }
         }
@@ -650,6 +750,14 @@ function runSemanticChecks(spec, errors) {
         }
       }
     } else if (type === "code") {
+      if (typeof node.text === "string") {
+        checkByteLimit(
+          node.text,
+          VIEW_SPEC_LIMITS.MAX_CODE_LENGTH,
+          `${nodePath}/text`,
+          errors
+        );
+      }
       if (Array.isArray(node.highlightLines)) {
         for (let h = 0; h < node.highlightLines.length; h++) {
           if (errors.length >= 100) break;
@@ -665,6 +773,31 @@ function runSemanticChecks(spec, errors) {
             }
           }
         }
+      }
+    } else if (type === "diff") {
+      if (typeof node.unified === "string") {
+        checkByteLimit(
+          node.unified,
+          VIEW_SPEC_LIMITS.MAX_DIFF_LENGTH,
+          `${nodePath}/unified`,
+          errors
+        );
+      }
+      if (typeof node.before === "string") {
+        checkByteLimit(
+          node.before,
+          VIEW_SPEC_LIMITS.MAX_DIFF_LENGTH,
+          `${nodePath}/before`,
+          errors
+        );
+      }
+      if (typeof node.after === "string") {
+        checkByteLimit(
+          node.after,
+          VIEW_SPEC_LIMITS.MAX_DIFF_LENGTH,
+          `${nodePath}/after`,
+          errors
+        );
       }
     } else if (type === "image" || type === "fileRef") {
       if (typeof node.path === "string" && !isAbsolutePath(node.path)) {
@@ -690,6 +823,7 @@ function runSemanticChecks(spec, errors) {
           message: `Tree entries count (${treeCount}) exceeds maximum of ${VIEW_SPEC_LIMITS.MAX_TREE_ENTRIES}`
         });
       }
+      checkTreeEntries(node.nodes, `${nodePath}/nodes`);
     } else if (type === "section") {
       if (Array.isArray(node.children)) {
         for (let i = 0; i < node.children.length; i++) {
@@ -721,7 +855,8 @@ function runSemanticChecks(spec, errors) {
 
   if (Array.isArray(spec.body)) {
     for (let i = 0; i < spec.body.length; i++) {
-      checkNode(spec.body[i], `/body/${i}`);
+      checkNode(spec.body[i], `/body/${i
+}`);
     }
   }
 }
