@@ -19,10 +19,13 @@ UniView bundles the following open-source software. All are under permissive lic
 | highlight.js | 11.12.0 | BSD-3-Clause | Syntax highlighting |
 | fflate | 0.8.3 | MIT | ZIP reading |
 | UTIF2 | 4.1.0 | MIT | TIFF decoding |
+| emf-converter | 4.23.1 | Apache-2.0, with bundled decoder notices | EMF/WMF pictures in presentations |
 | Electron | 45.0.0 | MIT (Chromium: BSD-3-Clause and others, see `LICENSES.chromium.html` in the app folder) | Desktop shell |
 | Capacitor (core, Android, iOS) | 8.5.3 | MIT | Mobile shells |
 | AndroidX, Kotlin standard library (via Capacitor) | — | Apache-2.0 | Android runtime |
 
 UniView elects the permissive option for each dual-licensed component as recorded above.
+
+The distributed `licenses/emf-converter/` directory contains the converter's Apache-2.0 licence and its complete bundled third-party notices, including jpeg-js (BSD), gifuct-js, js-binary-schema-parser, UTIF and pako (MIT), and the Independent JPEG Group notices. The optional second PPTX engine is not installed; its bundled MPL-2.0 dependency is awaiting a separate licence-policy decision.
 
 Development-only tools (not shipped): Vite, Vitest, Playwright, TypeScript, jsdom, electron-builder, @types packages. All MIT or Apache-2.0; see `.aes/scout/scout-080e764a.md` for the verification table.

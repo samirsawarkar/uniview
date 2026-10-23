@@ -12,29 +12,63 @@ const IMAGE_MIME: Record<string, string> = {
   svg: "image/svg+xml", webp: "image/webp", tif: "image/tiff", tiff: "image/tiff",
 };
 
+import { metafileToPng } from './metafile';
+
 type Urls = (part: string) => string | undefined;
 
-function useImageUrls(pres: Presentation | null): Urls {
+export function useImageUrls(pres: Presentation | null): Urls {
   const cache = useRef(new Map<string, string | null>());
+  const [revision, setRevision] = useState(0);
+
   useEffect(() => {
     const c = cache.current;
+    let active = true;
+
+    if (pres) {
+      (async () => {
+        for (const entry of pres.pkg.entries) {
+          const ext = extOf(entry.name).toLowerCase();
+          if ((ext === 'emf' || ext === 'wmf') && entry.size <= 32 * 1024 * 1024) {
+            try {
+              const raw = pres.pkg.bytesOf(entry.name);
+              const png = raw ? await metafileToPng(raw, ext) : null;
+              if (!active) return;
+              if (png) {
+                const url = URL.createObjectURL(png);
+                c.set(entry.name, url);
+                setRevision((r) => r + 1);
+              } else {
+                c.set(entry.name, null);
+              }
+            } catch {
+              if (active) c.set(entry.name, null);
+            }
+          }
+        }
+      })();
+    }
+
     return () => {
+      active = false;
       for (const u of c.values()) if (u) URL.revokeObjectURL(u);
       c.clear();
     };
   }, [pres]);
+
   return useCallback(
     (part: string) => {
       if (!pres) return undefined;
       const hit = cache.current.get(part);
       if (hit !== undefined) return hit ?? undefined;
+      const ext = extOf(part).toLowerCase();
+      if (ext === 'emf' || ext === 'wmf') return undefined;
       const mime = IMAGE_MIME[extOf(part)];
       const bytes = mime ? pres.pkg.bytesOf(part) : undefined;
       const url = bytes ? URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime })) : null;
       cache.current.set(part, url);
       return url ?? undefined;
     },
-    [pres],
+    [pres, revision],
   );
 }
 

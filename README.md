@@ -93,7 +93,8 @@ Recorded in Obsidian (`uniview`) and in `.aes/`:
 
 - No editing or annotation; view only.
 - HEIC images are not supported (every permissive decoder bundles LGPL libheif). Old binary .doc/.ppt show recovered text only.
-- Charts in PowerPoint show a labeled placeholder; EMF/WMF pictures are not drawn.
+- Charts in PowerPoint show a labeled placeholder. EMF/WMF pictures use a bounded, offline PNG converter; unsupported or oversized metafiles keep a placeholder.
+- Spreadsheet output is limited to 500,000 grid slots across all sheets and 32 Mi UTF-16 code units of text; larger workbooks offer the fallback view.
 - Password-protected PDFs are not supported yet.
 - Android and iOS runtime behavior has not been verified on a device or emulator yet (the APK was inspected statically; iOS needs a Mac or CI).
 

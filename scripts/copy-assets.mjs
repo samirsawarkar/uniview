@@ -16,3 +16,8 @@ for (const dir of ["cmaps", "standard_fonts", "wasm", "iccs"]) {
   cpSync(join(src, dir), join(dest, dir), { recursive: true, filter: (p) => !excluded(p) });
 }
 console.log("pdf.js assets copied to public/pdfjs");
+
+mkdirSync(join(root, 'public', 'licenses', 'emf-converter'), { recursive: true });
+cpSync(join(root, 'THIRD_PARTY_NOTICES.md'), join(root, 'public', 'licenses', 'THIRD_PARTY_NOTICES.md'));
+cpSync(join(root, 'node_modules', 'emf-converter', 'LICENSE'), join(root, 'public', 'licenses', 'emf-converter', 'LICENSE.txt'));
+cpSync(join(root, 'node_modules', 'emf-converter', 'THIRD_PARTY_NOTICES'), join(root, 'public', 'licenses', 'emf-converter', 'THIRD_PARTY_NOTICES.txt'));
