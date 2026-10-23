@@ -141,6 +141,9 @@ export function App() {
   // Files from the OS: file associations, second instance, share/VIEW intents.
   useEffect(() => bridge.onExternalOpen((files) => openFiles(files)), [bridge, openFiles]);
 
+  // External open errors from the OS (e.g. unreadable shared files).
+  useEffect(() => bridge.onExternalOpenError?.((err) => setNotice(err)), [bridge]);
+
   // Keyboard shortcuts, Chrome-style.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

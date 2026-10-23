@@ -28,20 +28,36 @@ export function getBridge(): ShellBridge {
  * Android/iOS hand files to the page through window.__univiewOpenUrl(url, name, mime), where url is a
  * same-origin Capacitor file URL for a private copy the native side made from the VIEW/SEND intent.
  */
-function installNativeOpenHook(): void {
+export function installNativeOpenHook(): void {
   const w = window as unknown as {
     __univiewOpenUrl?: (url: string, name: string, mime?: string) => Promise<void>;
     __univiewOpen?: (files: unknown[]) => void;
+    __univiewOpenError?: (message: string) => void;
     __univiewPending?: { url: string; name: string; mime?: string }[];
+    __univiewPendingErrors?: string[];
   };
   w.__univiewOpenUrl = async (url, name, mime) => {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Could not read the shared file (HTTP ${res.status})`);
-    const blob = await res.blob();
-    w.__univiewOpen?.([blobSource(mime && !blob.type ? new Blob([blob], { type: mime }) : blob, name)]);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        w.__univiewOpenError?.(`Could not open "${name}". The shared file could not be read.`);
+        return;
+      }
+      const blob = await res.blob();
+      w.__univiewOpen?.([blobSource(mime && !blob.type ? new Blob([blob], { type: mime }) : blob, name)]);
+    } catch {
+      w.__univiewOpenError?.(`Could not open "${name}". The shared file could not be read.`);
+    }
   };
   // Files that arrived before the page finished loading.
   const pending = w.__univiewPending ?? [];
   w.__univiewPending = [];
   for (const p of pending) void w.__univiewOpenUrl(p.url, p.name, p.mime);
+
+  // Errors that arrived before the page finished loading.
+  const pendingErrors = w.__univiewPendingErrors ?? [];
+  w.__univiewPendingErrors = [];
+  for (const err of pendingErrors) {
+    w.__univiewOpenError?.(err);
+  }
 }

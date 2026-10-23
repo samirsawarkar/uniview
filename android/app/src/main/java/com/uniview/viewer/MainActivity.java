@@ -35,6 +35,7 @@ public class MainActivity extends BridgeActivity {
     /** Scripts waiting for the UI page to finish loading (a cold start from a share). */
     private final List<String> waiting = new ArrayList<>();
     private boolean pageLoaded = false;
+    private volatile boolean destroyed = false;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -49,6 +50,13 @@ public class MainActivity extends BridgeActivity {
         });
         clearOldShares();
         handle(getIntent());
+    }
+
+    @Override
+    public void onDestroy() {
+        destroyed = true;
+        io.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
@@ -74,11 +82,13 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void deliver(Uri uri, String mime) {
+        File dir = null;
+        File out = null;
+        String name = displayName(uri);
         try {
-            String name = displayName(uri);
-            File dir = new File(getCacheDir(), "shared/" + System.currentTimeMillis());
+            dir = new File(getCacheDir(), "shared/" + java.util.UUID.randomUUID());
             if (!dir.mkdirs() && !dir.isDirectory()) throw new IllegalStateException("cannot create cache folder");
-            File out = new File(dir, ShareFiles.safeName(name));
+            out = new File(dir, ShareFiles.safeName(name));
             ContentResolver resolver = getContentResolver();
             long total = 0;
             try (InputStream in = resolver.openInputStream(uri); OutputStream os = new FileOutputStream(out)) {
@@ -86,6 +96,9 @@ public class MainActivity extends BridgeActivity {
                 byte[] buf = new byte[256 * 1024];
                 int n;
                 while ((n = in.read(buf)) > 0) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new java.io.IOException("interrupted");
+                    }
                     total += n;
                     if (total > MAX_BYTES) throw new IllegalStateException("file larger than 2 GB");
                     os.write(buf, 0, n);
@@ -95,14 +108,33 @@ public class MainActivity extends BridgeActivity {
             String js = "(function(u,n,m){if(window.__univiewOpenUrl){window.__univiewOpenUrl(u,n,m)}else{"
                     + "(window.__univiewPending=window.__univiewPending||[]).push({url:u,name:n,mime:m})}})("
                     + JSONObject.quote(url) + "," + JSONObject.quote(name) + "," + JSONObject.quote(mime == null ? "" : mime) + ")";
-            runOnUiThread(() -> {
-                WebView web = getBridge().getWebView();
-                if (pageLoaded && web != null) web.evaluateJavascript(js, null);
-                else waiting.add(js);
-            });
+            postScript(js);
         } catch (Exception e) {
             Log.w(TAG, "Could not open shared file", e);
+            if (out != null) {
+                //noinspection ResultOfMethodCallIgnored
+                out.delete();
+            }
+            if (dir != null) {
+                //noinspection ResultOfMethodCallIgnored
+                dir.delete();
+            }
+            String msg = "Could not open " + name;
+            String js = "(function(m){if(window.__univiewOpenError){window.__univiewOpenError(m)}else{"
+                    + "(window.__univiewPendingErrors=window.__univiewPendingErrors||[]).push(m)}})("
+                    + JSONObject.quote(msg) + ")";
+            postScript(js);
         }
+    }
+
+    private void postScript(String js) {
+        if (destroyed) return;
+        runOnUiThread(() -> {
+            if (destroyed) return;
+            WebView web = getBridge().getWebView();
+            if (pageLoaded && web != null) web.evaluateJavascript(js, null);
+            else waiting.add(js);
+        });
     }
 
     private String displayName(Uri uri) {

@@ -28,6 +28,7 @@ export interface ShellBridge {
   pickFiles(): Promise<FileSource[]>;
   openPath?(path: string): Promise<FileSource>;
   onExternalOpen(cb: (files: FileSource[]) => void): () => void;
+  onExternalOpenError?(cb: (message: string) => void): () => void;
   revealInFolder?(source: FileSource): void;
   /** An OS thumbnail for a local file, when the platform has a thumbnailer. */
   thumbnail?(source: FileSource, size: number): Promise<Blob | null>;

@@ -32,6 +32,14 @@ export function createWebBridge(kind: "web" | "capacitor" = "web"): ShellBridge 
     if (!listeners.size) queued.push(files);
     for (const l of listeners) l(files);
   };
+
+  const errorListeners = new Set<(message: string) => void>();
+  const queuedErrors: string[] = [];
+  (window as unknown as { __univiewOpenError?: (message: string) => void }).__univiewOpenError = (message) => {
+    if (!errorListeners.size) queuedErrors.push(message);
+    for (const l of errorListeners) l(message);
+  };
+
   return {
     kind,
     pickFiles: pickWithInput,
@@ -39,6 +47,11 @@ export function createWebBridge(kind: "web" | "capacitor" = "web"): ShellBridge 
       listeners.add(cb);
       for (const files of queued.splice(0)) cb(files);
       return () => listeners.delete(cb);
+    },
+    onExternalOpenError(cb) {
+      errorListeners.add(cb);
+      for (const msg of queuedErrors.splice(0)) cb(msg);
+      return () => errorListeners.delete(cb);
     },
   };
 }

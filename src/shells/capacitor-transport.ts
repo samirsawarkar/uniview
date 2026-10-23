@@ -1,5 +1,6 @@
 import { CapacitorHttp } from "@capacitor/core";
 import type { RemoteTransport } from "../core/types";
+import { validateLanUrl } from "./lan-address";
 
 function toBase64(bytes: Uint8Array): string {
   let s = "";
@@ -19,9 +20,9 @@ function fromBase64(b64: string): Uint8Array {
  * closed to the network. Bodies cross the bridge as base64.
  */
 export const capacitorTransport: RemoteTransport = async (host, port, path, body, contentType) => {
-  const h = host.includes(":") ? `[${host}]` : host;
+  const url = validateLanUrl(host, port, path);
   const res = await CapacitorHttp.request({
-    url: `http://${h}:${port}${path}`,
+    url,
     method: "POST",
     headers: { "Content-Type": contentType },
     data: toBase64(body),
@@ -29,7 +30,11 @@ export const capacitorTransport: RemoteTransport = async (host, port, path, body
     responseType: "arraybuffer",
     connectTimeout: 8000,
     readTimeout: 20000,
+    disableRedirects: true,
   });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`LAN-only transport: HTTP redirect (${res.status}) rejected`);
+  }
   const data = res.data;
   const bytes = typeof data === "string" ? fromBase64(data) : new TextEncoder().encode(JSON.stringify(data ?? null));
   return { status: res.status, body: bytes };
