@@ -112,3 +112,17 @@ Only rows marked OK may be built on. Anything else needs a CTO exception or is r
 - **marked (NOASSERTION):** the LICENSE file combines MIT with the original Markdown.pl BSD-style notice; the npm metadata declares MIT. Both are permissive.
 - **JSZip (NOASSERTION):** dual-licensed MIT or GPL-3.0-or-later. It reaches us only as a dependency of docx-preview. UniView elects MIT and records that in THIRD_PARTY_NOTICES.md.
 - **Rejected:** heic2any (MIT wrapper around LGPL libheif), libheif-js (LGPL-3.0), PPTXjs (unmaintained, jQuery 1.x). HEIC is out of V1; PPTX gets an in-house renderer.
+
+### CTO verification of remaining dependencies (Codex finding 4, 2026-10-23T06:53Z)
+
+| Repo | Stars | Licence | Last push | Archived | Verdict | Used as |
+|---|---|---|---|---|---|---|
+| jsdom/jsdom | 21726 | MIT | 2026-10-17 | false | OK | test-only DOM for vitest |
+| microsoft/TypeScript | 111575 | Apache-2.0 | 2026-10-22 | false | OK | type-checker (dev) |
+| vitejs/vite-plugin-react | 1173 | MIT | 2026-10-23 | false | OK | Vite React plugin (dev) |
+| DefinitelyTyped/DefinitelyTyped | 51447 | NOASSERTION | 2026-10-22 | false | CHECK LICENCE | @types/react typings (dev) |
+| ionic-team/capacitor | 16933 | MIT | 2026-10-22 | false | OK | @capacitor/ios runtime |
+| photopea/UTIF.js | 502 | MIT | 2026-05-04 | false | OK | utif2 TIFF decoder (fork on npm) |
+
+utif2 on npm (MIT, 4.1.0, 2023) is the maintained-API fork of UTIF.js; the upstream repo above is OK. Accepted: small, MIT, used only for TIFF decoding.
+- **DefinitelyTyped (NOASSERTION):** the repo licence file is MIT; each @types package, including @types/react, declares MIT on npm (verified). Dev-only typings, never shipped. Exception granted.

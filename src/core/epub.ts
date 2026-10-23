@@ -172,7 +172,12 @@ export function chapterHtml(book: Book, part: string, urlFor: (part: string) => 
     ADD_TAGS: ["svg", "image"],
     ADD_ATTR: ["xlink:href", "epub:type"],
   });
-  const safeCss = styles.join("\n").replace(/@import[^;]+;/g, "").replace(/expression\s*\(/gi, "");
+  // CSS goes into a raw-text <style> element: neutralise anything that could end it and inject markup.
+  const safeCss = styles
+    .join("\n")
+    .replace(/@import[^;]+;/g, "")
+    .replace(/expression\s*\(/gi, "")
+    .replace(/</g, "\\3c ");
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob: data:; style-src 'unsafe-inline'; font-src blob: data:; media-src blob:"><style>html{font:18px/1.6 Georgia,serif;color-scheme:light dark}body{max-width:42em;margin:0 auto;padding:2em 1.5em}img,svg{max-width:100%;height:auto}</style><style>${safeCss}</style></head><body>${clean}</body></html>`;
 }
 

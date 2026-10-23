@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatBytes } from "../core/errors";
+import { isUtf8 } from "../core/detect";
 import { Loading, Spacer, Toolbar, useReady } from "./common";
 import { highlight } from "./highlight";
 import type { ViewerProps } from "./types";
@@ -28,16 +29,12 @@ export default function TextViewer({ source, detection, onReady }: ViewerProps) 
     try {
       const end = total < 0 ? from + TEXT_PAGE : Math.min(total, from + TEXT_PAGE);
       const bytes = new Uint8Array(await source.readRange(from, end));
+      const done = end >= total || bytes.length < end - from;
       if (!decoder.current) {
         let enc = encodingOf(bytes);
-        try {
-          new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, Math.max(0, bytes.length - 4)));
-        } catch {
-          if (enc === "utf-8") enc = "windows-1252";
-        }
+        if (enc === "utf-8" && !isUtf8(bytes, done)) enc = "windows-1252";
         decoder.current = new TextDecoder(enc);
       }
-      const done = end >= total || bytes.length < end - from;
       const chunk = decoder.current.decode(bytes, { stream: !done });
       setText((t) => (t ?? "") + chunk);
       setLoaded(from + bytes.length);

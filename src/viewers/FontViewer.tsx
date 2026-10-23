@@ -10,14 +10,18 @@ export default function FontViewer({ source, onReady }: ViewerProps) {
   const family = useLoad(async (signal) => {
     const buf = await readAllChecked(source, signal, 64 * 1024 * 1024);
     const name = `uv-font-${source.id}`;
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    let face: FontFace;
     try {
-      const face = new FontFace(name, buf);
+      face = new FontFace(name, buf);
       await face.load();
-      document.fonts.add(face);
-      return { name, face };
     } catch (err) {
       throw new CorruptFileError(`This font could not be loaded: ${(err as Error).message}`);
     }
+    // Register only if the tab is still open, so a closed tab never leaves a font behind.
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    document.fonts.add(face);
+    return { name, face };
   }, [source]);
   const [text, setText] = useState(SAMPLE);
   useEffect(() => () => void (family && document.fonts.delete(family.face)), [family]);

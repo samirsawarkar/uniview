@@ -60,17 +60,23 @@ export function readZipEntries(
   return new Map(Object.entries(out));
 }
 
-/** An in-memory view over a ZIP package, with lazy, cached part reads. */
+/** Most bytes one package may inflate in total, however many parts it has (bounds zip-bomb memory). */
+export const MAX_PACKAGE_BYTES = 1024 * 1024 * 1024;
+
+/** An in-memory view over a ZIP package, with lazy, cached part reads under a total budget. */
 export class ZipPackage {
   private readonly bytes: Uint8Array;
   private readonly names: Set<string>;
+  private readonly sizes = new Map<string, number>();
   private readonly cache = new Map<string, Uint8Array>();
+  private inflated = 0;
   readonly entries: ZipEntry[];
 
-  constructor(data: ArrayBuffer | Uint8Array) {
+  constructor(data: ArrayBuffer | Uint8Array, private readonly budget = MAX_PACKAGE_BYTES) {
     this.bytes = asBytes(data);
     this.entries = listZip(this.bytes);
     this.names = new Set(this.entries.map((e) => e.name));
+    for (const e of this.entries) this.sizes.set(e.name, e.size);
   }
 
   has(name: string): boolean {
@@ -90,8 +96,16 @@ export class ZipPackage {
     if (!real) return undefined;
     const hit = this.cache.get(real);
     if (hit) return hit;
+    // Check the declared size before inflating so a bomb never allocates.
+    const declared = this.sizes.get(real) ?? 0;
+    if (this.inflated + declared > this.budget) {
+      throw new CorruptFileError(`This file expands to more than ${Math.round(this.budget / 1048576)} MB of content, so UniView stopped reading it.`);
+    }
     const part = readZipEntries(this.bytes, (n) => n === real).get(real);
-    if (part) this.cache.set(real, part);
+    if (part) {
+      this.inflated += Math.max(declared, part.length);
+      this.cache.set(real, part);
+    }
     return part;
   }
 

@@ -15,6 +15,8 @@ type Zoom = "fit" | number;
 export default function PdfViewer({ source, onReady }: ViewerProps) {
   const doc = useLoad(async (signal) => {
     const data = new Uint8Array(await readAllChecked(source, signal));
+    // A read that finished after the tab closed must not start a worker nobody will destroy.
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const task = pdfjs.getDocument({
       data,
       cMapUrl: asset("cmaps/"),
@@ -27,8 +29,14 @@ export default function PdfViewer({ source, onReady }: ViewerProps) {
     });
     signal.addEventListener("abort", () => void task.destroy());
     try {
-      return { doc: await task.promise, task };
+      const doc = await task.promise;
+      if (signal.aborted) {
+        void task.destroy();
+        throw new DOMException("Aborted", "AbortError");
+      }
+      return { doc, task };
     } catch (err) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
       const name = (err as Error).name;
       if (name === "PasswordException") throw new CorruptFileError("This PDF is password-protected. UniView V1 cannot open protected PDFs yet.");
       throw new CorruptFileError(`This PDF could not be read: ${(err as Error).message}`);

@@ -1,5 +1,6 @@
 // Generate one valid file per supported format (plus broken ones) into fixtures/generated/.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import UTIF from "utif2";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as XLSX from "xlsx";
@@ -53,4 +54,11 @@ write("broken.pdf", "%PDF-1.7\nthis is not really a pdf\n%%EOF\n");
 write("broken.docx", Buffer.concat([Buffer.from("PK\u0003\u0004"), Buffer.alloc(64, 7)]));
 write("random.bin", Buffer.from(Array.from({ length: 4096 }, (_, i) => (i * 7919) % 256)));
 write("empty.txt", "");
+write("broken.zip", Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(200, 0x41)]));
+const rgba = new Uint8Array(64 * 48 * 4);
+for (let i = 0; i < 64 * 48; i++) rgba.set([234, 88, 12, 255], i * 4);
+write("photo.tif", Buffer.from(UTIF.encodeImage(rgba, 64, 48)));
+// Test-only font from pdf.js's bundled standard fonts; the generated folder is never committed or shipped.
+copyFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "node_modules", "pdfjs-dist", "standard_fonts", "LiberationSans-Regular.ttf"), join(out, "sans.ttf"));
+write("unicode.txt", "éà – naïve café 日本語\n");
 console.log(`fixtures written to ${out}`);

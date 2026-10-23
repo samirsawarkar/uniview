@@ -25,6 +25,7 @@
     "android:apk": "npm run build && cap sync android && cd android && gradlew.bat assembleDebug"
   },
   "dependencies": {
+    "@capacitor/ios": "8.5.3",
     "docx-preview": "0.4.1",
     "dompurify": "3.4.17",
     "fflate": "0.8.3",

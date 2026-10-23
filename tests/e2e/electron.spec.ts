@@ -29,6 +29,28 @@ test("desktop shell opens argv files, streams media and blocks the network", asy
     });
     expect(remote).toBe("blocked");
 
+    // Images stream from uniview-file:// too; the CSP must allow them (Codex finding 1).
+    const img = await page.evaluate(async (path) => {
+      const api = (window as unknown as { uniview: { openPath(p: string): Promise<{ token: string; name: string }> } }).uniview;
+      const f = await api.openPath(path);
+      const el = new Image();
+      el.src = `uniview-file://${f.token}/${encodeURIComponent(f.name)}`;
+      await el.decode();
+      return el.naturalWidth;
+    }, join(FX, "pixel.png"));
+    expect(img).toBe(320);
+
+    // The session itself refuses remote hosts, independent of the page CSP.
+    const sessionFetch = await app.evaluate(async ({ session }) => {
+      try {
+        await session.defaultSession.fetch("https://example.com/");
+        return "reached";
+      } catch {
+        return "blocked";
+      }
+    });
+    expect(sessionFetch).toBe("blocked");
+
     // An unknown token is refused.
     const forged = await page.evaluate(async () => (await fetch(`uniview-file://${"a".repeat(32)}/x`).catch(() => null))?.status ?? "error");
     expect(forged === 403 || forged === "error").toBe(true);

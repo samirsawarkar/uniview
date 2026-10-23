@@ -110,6 +110,34 @@ function containsUtf16(head: Uint8Array, word: string): boolean {
   return false;
 }
 
+/**
+ * True when bytes are valid UTF-8. When `complete` is false the bytes are a prefix of a longer file,
+ * so only a multi-byte sequence cut off at the very end is forgiven.
+ */
+export function isUtf8(bytes: Uint8Array, complete: boolean): boolean {
+  let end = bytes.length;
+  if (!complete) {
+    // Walk back over up to 3 continuation bytes to the start of the last sequence.
+    let i = end - 1;
+    let cont = 0;
+    while (i >= 0 && cont < 3 && (bytes[i]! & 0xc0) === 0x80) {
+      i--;
+      cont++;
+    }
+    if (i >= 0) {
+      const lead = bytes[i]!;
+      const need = lead >= 0xf0 ? 3 : lead >= 0xe0 ? 2 : lead >= 0xc0 ? 1 : 0;
+      if (need > cont) end = i; // incomplete final sequence: validate everything before it
+    }
+  }
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** True when the bytes look like human-readable text. */
 export function looksLikeText(head: Uint8Array): boolean {
   if (head.length === 0) return true;
@@ -121,22 +149,12 @@ export function looksLikeText(head: Uint8Array): boolean {
     if (c < 9 || (c > 13 && c < 32 && c !== 27)) control++;
   }
   if (control / sample.length > 0.02) return false;
-  // Trim a multi-byte sequence the sample may have cut in half before strict decoding.
-  let end = sample.length;
-  for (let k = 1; k <= 3 && end - k >= 0; k++) {
-    const c = sample[end - k]!;
-    if ((c & 0xc0) === 0xc0) { end -= k; break; }
-    if ((c & 0x80) === 0) break;
-  }
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(sample.subarray(0, end));
-    return true;
-  } catch {
-    // Not UTF-8. Treat mostly-printable single-byte text (Latin-1, Windows-1252) as text too.
-    let printable = 0;
-    for (const c of sample) if (c >= 32 || c === 9 || c === 10 || c === 13) printable++;
-    return printable / sample.length > 0.95;
-  }
+  // The sample may cut a multi-byte character in half; isUtf8 forgives only that.
+  if (isUtf8(sample, false)) return true;
+  // Not UTF-8. Treat mostly-printable single-byte text (Latin-1, Windows-1252) as text too.
+  let printable = 0;
+  for (const c of sample) if (c >= 32 || c === 9 || c === 10 || c === 13) printable++;
+  return printable / sample.length > 0.95;
 }
 
 function byExtension(ext: string): Detection | null {

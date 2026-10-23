@@ -1,5 +1,5 @@
 import { Component, Suspense, useEffect, useState, type ReactNode } from "react";
-import { DETECT_HEAD_BYTES, classifyZipEntries, detect } from "../core/detect";
+import { DETECT_HEAD_BYTES, classifyZipEntries, detect, extOf } from "../core/detect";
 import { describeError, isAbort, ViewerError } from "../core/errors";
 import type { Detection, FileSource, FormatKind } from "../core/types";
 import { listZip } from "../core/zip";
@@ -31,7 +31,13 @@ export function TabView({ source, onDetected, onReady, onOpen }: TabViewProps) {
         let d = detect(source.name, head, source.mimeHint);
         // ZIPs written with data descriptors hide their part names from the head; check the central directory.
         if (d.kind === "zip" && source.size > 0 && source.size < 512 * 1024 * 1024) {
-          const kind = classifyZipEntries(listZip(await source.readAll(ctrl.signal)).map((e) => e.name));
+          const bytes = await source.readAll(ctrl.signal);
+          let kind: FormatKind | null = null;
+          try {
+            kind = classifyZipEntries(listZip(bytes).map((e) => e.name));
+          } catch {
+            /* damaged archive: the ZIP viewer reports it and offers text/hex */
+          }
           if (kind) d = { ...d, kind, label: kind === "docx" ? "Word document" : kind === "pptx" ? "PowerPoint presentation" : kind === "sheet" ? "Spreadsheet" : "EPUB book", by: "container" };
         }
         if (ctrl.signal.aborted) return;
@@ -45,14 +51,16 @@ export function TabView({ source, onDetected, onReady, onOpen }: TabViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
-  if (error) return <ErrorPanel source={source} error={error} onFallback={setOverride} />;
-  if (!detection) return <Loading />;
-  const kind = override ?? detection.kind;
+  // A fallback the user chose must work even when detection itself failed (e.g. a truncated ZIP).
+  if (error && !override) return <ErrorPanel source={source} error={error} onFallback={setOverride} />;
+  const base: Detection | null = detection ?? (override ? { kind: override, label: "Unrecognized file", ext: extOf(source.name), by: "content" } : null);
+  if (!base) return <Loading />;
+  const kind = override ?? base.kind;
   const Viewer = override === "text" ? TextViewer : override === "binary" ? HexViewer : VIEWERS[kind];
   return (
     <ViewerBoundary key={`${source.id}:${kind}`} source={source} onFallback={setOverride} fallbackUsed={override}>
       <Suspense fallback={<Loading />}>
-        <Viewer source={source} detection={override ? { ...detection, kind } : detection} onOpen={onOpen} onReady={() => onReady(performance.now() - started)} />
+        <Viewer source={source} detection={override ? { ...base, kind } : base} onOpen={onOpen} onReady={() => onReady(performance.now() - started)} />
       </Suspense>
     </ViewerBoundary>
   );

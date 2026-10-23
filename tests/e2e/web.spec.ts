@@ -135,3 +135,41 @@ test("tabs: several files at once, keyboard switching and closing", async ({ pag
   await expect(page.locator(".tab.active")).toContainText("New tab");
   await expect(page.getByRole("heading", { name: "Recent" })).toBeVisible();
 });
+
+// ---- Regression tests for the Codex review (aes run aes-2c1b389d7adb) ----
+
+test("a truncated ZIP can still be viewed as hex (finding 2)", async ({ page }) => {
+  await open(page, "broken.zip");
+  await expect(panel(page).getByTestId("error-panel")).toBeVisible();
+  await panel(page).getByRole("button", { name: "View as hex" }).click();
+  await expect(panel(page).getByTestId("hex")).toContainText("50 4b 03 04");
+});
+
+test("short UTF-8 text is not mistaken for Windows-1252 (finding 5)", async ({ page }) => {
+  await open(page, "unicode.txt");
+  await expect(panel(page).getByTestId("text-content")).toContainText("éà – naïve café 日本語");
+});
+
+test("TIFF and font files render", async ({ page }) => {
+  await open(page, "photo.tif");
+  await expect(panel(page).getByText("64 × 48")).toBeVisible();
+  await expect(panel(page).locator(".image-viewer canvas")).toBeVisible();
+  await open(page, "sans.ttf");
+  await expect(panel(page).getByTestId("font-sheet")).toContainText("The quick brown fox");
+  const family = await panel(page).locator(".font-row div").first().evaluate((el) => getComputedStyle(el).fontFamily);
+  expect(family).toContain("uv-font-");
+});
+
+test("closing a tab mid-load leaves no errors and no stray fonts (finding 7)", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await open(page, "big.xlsx");
+  await page.keyboard.press("Control+w");
+  await open(page, "sans.ttf");
+  await page.keyboard.press("Control+w");
+  await open(page, "report.pdf");
+  await expect(panel(page).locator(".textLayer")).toContainText("Hello from UniView");
+  await page.waitForTimeout(500);
+  expect(errors).toEqual([]);
+  expect(await page.evaluate(() => [...document.fonts].filter((f) => f.family.startsWith("uv-font-")).length)).toBe(0);
+});

@@ -11,7 +11,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const DIST = join(here, "..", "dist");
 const MAX_READ = 512 * 1024 * 1024;
 const CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: uniview-file:; " +
   "font-src 'self' data: blob:; media-src 'self' blob: uniview-file:; connect-src 'self' blob: data: uniview-file:; worker-src 'self' blob:; " +
   "frame-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'";
 
@@ -116,18 +116,31 @@ function lockDown(ses) {
   ses.setSpellCheckerEnabled?.(false);
 }
 
+/** IPC is accepted only from the app's own top-level page, never from a subframe or other origin. */
+function fromApp(event) {
+  const frame = event.senderFrame;
+  return !!frame && frame === frame.top && typeof frame.url === "string" && frame.url.startsWith("uniview://app/");
+}
+
+function guard(handler) {
+  return (event, ...args) => {
+    if (!fromApp(event)) throw new Error("Request refused: unknown sender");
+    return handler(event, ...args);
+  };
+}
+
 function registerIpc() {
-  ipcMain.handle("uniview:pick", async () => {
+  ipcMain.handle("uniview:pick", guard(async () => {
     const res = await dialog.showOpenDialog(win, { properties: ["openFile", "multiSelections"], title: "Open files" });
     if (res.canceled) return [];
     return Promise.all(res.filePaths.map(grantFile));
-  });
-  ipcMain.handle("uniview:open-path", async (_e, path) => {
+  }));
+  ipcMain.handle("uniview:open-path", guard(async (_e, path) => {
     if (typeof path !== "string" || !path || path.length > 32767) throw new Error("Invalid path");
     const expanded = path.startsWith("~") ? join(app.getPath("home"), path.slice(1)) : path;
     return grantFile(expanded);
-  });
-  ipcMain.handle("uniview:read", async (_e, token, start, end) => {
+  }));
+  ipcMain.handle("uniview:read", guard(async (_e, token, start, end) => {
     const entry = grants.get(token);
     if (!entry) throw new Error("This file is no longer available. Open it again.");
     const s = await stat(entry.path);
@@ -147,12 +160,14 @@ function registerIpc() {
     } finally {
       await fh.close();
     }
-  });
-  ipcMain.on("uniview:reveal", (_e, token) => {
+  }));
+  ipcMain.on("uniview:reveal", (e, token) => {
+    if (!fromApp(e)) return;
     const entry = grants.get(token);
     if (entry) shell.showItemInFolder(entry.path);
   });
-  ipcMain.on("uniview:ready", () => {
+  ipcMain.on("uniview:ready", (e) => {
+    if (!fromApp(e)) return;
     rendererReady = true;
     if (pending.length && win) win.webContents.send("open-files", pending.splice(0));
   });
