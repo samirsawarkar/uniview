@@ -8,20 +8,19 @@ import java.net.URL;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Executes a LAN HTTP POST request with timeout and response size limits.
  *
  * Race condition resolution:
- * Documented outcome: a response that was fully read is returned.
- * If the response bytes were fully read from the stream before the deadline task ran
- * or while it was scheduled, the response is returned to the caller, the connection
- * is disconnected, and the deadline task is cancelled. If the deadline fires while
- * connection or reading is still in progress, the connection is aborted and
- * LanTimeoutException is thrown.
+ * Whichever transition happens first wins.
  */
 public final class LanRequest {
+    public static final int RUNNING = 0;
+    public static final int COMPLETED = 1;
+    public static final int TIMED_OUT = 2;
+
     private LanRequest() {
     }
 
@@ -36,10 +35,13 @@ public final class LanRequest {
     }
 
     static class Hooks {
-        void beforeCompletedSet() {
+        void afterBodyRead() {
         }
 
-        void beforeDeadlineFlagSet() {
+        void beforeTimeoutCas() {
+        }
+
+        void afterTimeoutCas(int stateAfterCas) {
         }
     }
 
@@ -89,8 +91,7 @@ public final class LanRequest {
 
         HttpURLConnection conn = null;
         ScheduledFuture<?> deadlineTask = null;
-        final AtomicBoolean deadlineFired = new AtomicBoolean(false);
-        final AtomicBoolean completed = new AtomicBoolean(false);
+        final AtomicInteger state = new AtomicInteger(RUNNING);
         final Hooks activeHooks = hooks;
 
         try {
@@ -105,14 +106,14 @@ public final class LanRequest {
 
             if (scheduler != null) {
                 deadlineTask = scheduler.schedule(() -> {
-                    activeHooks.beforeDeadlineFlagSet();
-                    if (!completed.get()) {
-                        deadlineFired.set(true);
+                    activeHooks.beforeTimeoutCas();
+                    if (state.compareAndSet(RUNNING, TIMED_OUT)) {
                         try {
                             finalConn.disconnect();
                         } catch (Exception ignored) {
                         }
                     }
+                    activeHooks.afterTimeoutCas(state.get());
                 }, remainingNanos, TimeUnit.NANOSECONDS);
             }
 
@@ -148,12 +149,17 @@ public final class LanRequest {
                 responseBytes = new byte[0];
             }
 
-            activeHooks.beforeCompletedSet();
-            completed.set(true);
+            activeHooks.afterBodyRead();
+            if (!state.compareAndSet(RUNNING, COMPLETED)) {
+                throw new LanTimeoutException("The computer did not answer in time.");
+            }
 
             return new Result(status, responseBytes);
         } catch (Exception e) {
-            if (deadlineFired.get()) {
+            if (state.get() == TIMED_OUT || e instanceof LanTimeoutException) {
+                if (e instanceof LanTimeoutException) {
+                    throw (LanTimeoutException) e;
+                }
                 throw new LanTimeoutException("The computer did not answer in time.", e);
             }
             if (e instanceof IOException) {
@@ -161,7 +167,6 @@ public final class LanRequest {
             }
             throw new IOException(e.getMessage() != null ? e.getMessage() : e.toString(), e);
         } finally {
-            completed.set(true);
             if (deadlineTask != null) {
                 deadlineTask.cancel(false);
             }

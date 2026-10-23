@@ -1,6 +1,7 @@
 package com.uniview.viewer;
 
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -53,8 +54,8 @@ public class LanDispatcher {
         void fail(String message);
     }
 
-    private final ExecutorService executor;
-    private final ScheduledExecutorService scheduler;
+    final ExecutorService executor;
+    final ScheduledExecutorService scheduler;
     private final LongSupplier nanoClock;
     private final RequestRunner runner;
 
@@ -74,6 +75,10 @@ public class LanDispatcher {
     }
 
     public static LanDispatcher createDefault() {
+        return createDefault(LanRequest::execute);
+    }
+
+    static LanDispatcher createDefault(RequestRunner runner) {
         ThreadPoolExecutor workers = new ThreadPoolExecutor(
                 64,
                 64,
@@ -83,7 +88,27 @@ public class LanDispatcher {
         );
         workers.allowCoreThreadTimeOut(true);
         ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
-        return new LanDispatcher(workers, scheduler, System::nanoTime);
+        return new LanDispatcher(workers, scheduler, System::nanoTime, runner);
+    }
+
+    int poolSize() {
+        if (executor instanceof ThreadPoolExecutor) {
+            return ((ThreadPoolExecutor) executor).getCorePoolSize();
+        }
+        return -1;
+    }
+
+    int queueCapacity() {
+        if (executor instanceof ThreadPoolExecutor) {
+            BlockingQueue<Runnable> queue = ((ThreadPoolExecutor) executor).getQueue();
+            return queue.size() + queue.remainingCapacity();
+        }
+        return -1;
+    }
+
+    void shutdown() {
+        executor.shutdownNow();
+        scheduler.shutdownNow();
     }
 
     public void submit(Request req, long deadlineMs, Callback cb) {
