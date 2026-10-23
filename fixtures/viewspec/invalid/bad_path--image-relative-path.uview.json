@@ -1,0 +1,11 @@
+{
+  "uniview": "view/1",
+  "title": "Bad Image Path",
+  "body": [
+    {
+      "type": "image",
+      "path": "relative/path/image.png",
+      "alt": "Relative path image"
+    }
+  ]
+}

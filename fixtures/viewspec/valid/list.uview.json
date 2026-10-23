@@ -1,0 +1,18 @@
+{
+  "uniview": "view/1",
+  "title": "List View",
+  "body": [
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "First item",
+        "Second item",
+        {
+          "type": "markdown",
+          "text": "Third item formatted as markdown"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "uniview": "view/1",
+  "title": "Chart Values Length Mismatch",
+  "body": [
+    {
+      "type": "chart",
+      "kind": "bar",
+      "x": ["Q1", "Q2", "Q3"],
+      "series": [
+        {
+          "name": "Series 1",
+          "values": [10, 20]
+        }
+      ]
+    }
+  ]
+}

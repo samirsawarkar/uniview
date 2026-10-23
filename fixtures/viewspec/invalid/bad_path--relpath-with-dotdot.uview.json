@@ -1,0 +1,12 @@
+{
+  "uniview": "view/1",
+  "title": "Bad RelPath DotDot",
+  "body": [
+    {
+      "type": "image",
+      "path": "/images/pic.png",
+      "relPath": "folder/../secret.png",
+      "alt": "Dot dot path"
+    }
+  ]
+}

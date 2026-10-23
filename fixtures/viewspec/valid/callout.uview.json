@@ -1,0 +1,12 @@
+{
+  "uniview": "view/1",
+  "title": "Callout View",
+  "body": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "Information",
+      "text": "Everything is running smoothly."
+    }
+  ]
+}

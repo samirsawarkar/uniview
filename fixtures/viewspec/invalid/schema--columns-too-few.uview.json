@@ -1,0 +1,14 @@
+{
+  "uniview": "view/1",
+  "title": "Columns Too Few",
+  "body": [
+    {
+      "type": "columns",
+      "columns": [
+        [
+          { "type": "markdown", "text": "Only one column" }
+        ]
+      ]
+    }
+  ]
+}

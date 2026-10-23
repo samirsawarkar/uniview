@@ -1,0 +1,11 @@
+{
+  "uniview": "view/1",
+  "title": "Bad RelPath Drive",
+  "body": [
+    {
+      "type": "fileRef",
+      "path": "/data/test.csv",
+      "relPath": "C:/data/test.csv"
+    }
+  ]
+}

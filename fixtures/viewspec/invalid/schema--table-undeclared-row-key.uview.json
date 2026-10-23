@@ -1,0 +1,15 @@
+{
+  "uniview": "view/1",
+  "title": "Undeclared Row Key",
+  "body": [
+    {
+      "type": "table",
+      "columns": [
+        { "key": "id", "label": "ID" }
+      ],
+      "rows": [
+        { "id": "1", "unknown_column": "value" }
+      ]
+    }
+  ]
+}

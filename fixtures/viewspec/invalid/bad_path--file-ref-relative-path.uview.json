@@ -1,0 +1,10 @@
+{
+  "uniview": "view/1",
+  "title": "Bad FileRef Path",
+  "body": [
+    {
+      "type": "fileRef",
+      "path": "relative/file.txt"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "uniview": "view/1",
+  "title": "Heading Level Out of Range",
+  "body": [
+    {
+      "type": "heading",
+      "text": "Heading level 5 is invalid",
+      "level": 5
+    }
+  ]
+}

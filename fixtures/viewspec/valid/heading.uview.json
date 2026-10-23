@@ -1,0 +1,11 @@
+{
+  "uniview": "view/1",
+  "title": "Heading View",
+  "body": [
+    {
+      "type": "heading",
+      "text": "Main Heading",
+      "level": 1
+    }
+  ]
+}

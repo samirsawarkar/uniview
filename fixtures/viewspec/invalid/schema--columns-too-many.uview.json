@@ -1,0 +1,15 @@
+{
+  "uniview": "view/1",
+  "title": "Columns Too Many",
+  "body": [
+    {
+      "type": "columns",
+      "columns": [
+        [{ "type": "markdown", "text": "Col 1" }],
+        [{ "type": "markdown", "text": "Col 2" }],
+        [{ "type": "markdown", "text": "Col 3" }],
+        [{ "type": "markdown", "text": "Col 4" }]
+      ]
+    }
+  ]
+}

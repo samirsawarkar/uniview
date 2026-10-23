@@ -1,0 +1,36 @@
+{
+  "uniview": "view/1",
+  "title": "All Nodes Nested View",
+  "agent": {
+    "name": "test-suite",
+    "model": "claude-3-5-sonnet"
+  },
+  "body": [
+    {
+      "type": "section",
+      "title": "Parent Section",
+      "children": [
+        { "type": "heading", "text": "Nested Heading", "level": 2 },
+        { "type": "callout", "tone": "success", "title": "Check", "text": "All nodes nested properly." },
+        {
+          "type": "columns",
+          "columns": [
+            [
+              { "type": "keyValue", "items": [{ "key": "k1", "value": "v1" }] },
+              { "type": "table", "columns": [{ "key": "c1", "label": "Column 1" }], "rows": [{ "c1": "val" }] },
+              { "type": "list", "ordered": false, "items": ["Item 1", { "type": "markdown", "text": "Item 2" }] },
+              { "type": "tree", "nodes": [{ "label": "root node" }] }
+            ],
+            [
+              { "type": "code", "text": "console.log(42);" },
+              { "type": "diff", "unified": "@@ -1 +1 @@\n-a\n+b\n" },
+              { "type": "image", "path": "/images/diagram.png", "alt": "Diagram" },
+              { "type": "chart", "kind": "line", "x": ["Mon", "Tue"], "series": [{ "name": "Trend", "values": [1, 2] }] },
+              { "type": "fileRef", "path": "/etc/config.json", "label": "Config" }
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "uniview": "view/1",
+  "title": "Columns View",
+  "body": [
+    {
+      "type": "columns",
+      "columns": [
+        [
+          { "type": "markdown", "text": "Column A content" }
+        ],
+        [
+          { "type": "markdown", "text": "Column B content" }
+        ]
+      ]
+    }
+  ]
+}

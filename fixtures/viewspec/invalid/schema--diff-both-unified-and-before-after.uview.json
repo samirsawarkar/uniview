@@ -1,0 +1,12 @@
+{
+  "uniview": "view/1",
+  "title": "Diff Both Forms",
+  "body": [
+    {
+      "type": "diff",
+      "unified": "@@ -1 +1 @@\n-a\n+b\n",
+      "before": "a",
+      "after": "b"
+    }
+  ]
+}

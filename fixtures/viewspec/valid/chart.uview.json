@@ -1,0 +1,17 @@
+{
+  "uniview": "view/1",
+  "title": "Chart View",
+  "body": [
+    {
+      "type": "chart",
+      "kind": "bar",
+      "x": ["Q1", "Q2", "Q3", "Q4"],
+      "series": [
+        {
+          "name": "Revenue",
+          "values": [120, 150, 180, 220]
+        }
+      ]
+    }
+  ]
+}

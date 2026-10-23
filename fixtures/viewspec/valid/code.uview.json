@@ -1,0 +1,14 @@
+{
+  "uniview": "view/1",
+  "title": "Code View",
+  "body": [
+    {
+      "type": "code",
+      "language": "typescript",
+      "text": "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+      "highlightLines": [
+        [1, 2]
+      ]
+    }
+  ]
+}

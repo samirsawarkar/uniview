@@ -1,0 +1,12 @@
+{
+  "uniview": "view/1",
+  "title": "Diff Unified View",
+  "body": [
+    {
+      "type": "diff",
+      "title": "Git Patch",
+      "language": "diff",
+      "unified": "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old line\n+new line\n"
+    }
+  ]
+}

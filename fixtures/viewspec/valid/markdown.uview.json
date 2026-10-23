@@ -1,0 +1,10 @@
+{
+  "uniview": "view/1",
+  "title": "Markdown View",
+  "body": [
+    {
+      "type": "markdown",
+      "text": "## Section Header\n\nParagraph with **bold** text."
+    }
+  ]
+}

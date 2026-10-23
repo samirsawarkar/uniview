@@ -1,0 +1,13 @@
+{
+  "uniview": "view/1",
+  "title": "Key Value View",
+  "body": [
+    {
+      "type": "keyValue",
+      "items": [
+        { "key": "Environment", "value": "Production" },
+        { "key": "Version", "value": "1.0.0" }
+      ]
+    }
+  ]
+}

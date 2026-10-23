@@ -1,0 +1,11 @@
+{
+  "uniview": "view/1",
+  "title": "Callout Invalid Tone",
+  "body": [
+    {
+      "type": "callout",
+      "tone": "critical",
+      "text": "Invalid tone value"
+    }
+  ]
+}

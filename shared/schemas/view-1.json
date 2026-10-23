@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uniview.app/schemas/view-1.json",
+  "title": "UniView View Spec v1",
+  "type": "object",
+  "required": ["uniview", "title", "body"],
+  "additionalProperties": false,
+  "properties": {
+    "uniview": {
+      "const": "view/1"
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "agent": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 80
+        }
+      }
+    },
+    "body": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Node"
+      }
+    }
+  },
+  "$defs": {
+    "Node": {
+      "oneOf": [
+        { "$ref": "#/$defs/HeadingNode" },
+        { "$ref": "#/$defs/MarkdownNode" },
+        { "$ref": "#/$defs/CalloutNode" },
+        { "$ref": "#/$defs/KeyValueNode" },
+        { "$ref": "#/$defs/TableNode" },
+        { "$ref": "#/$defs/ListNode" },
+        { "$ref": "#/$defs/TreeNode" },
+        { "$ref": "#/$defs/CodeNode" },
+        { "$ref": "#/$defs/DiffNode" },
+        { "$ref": "#/$defs/ImageNode" },
+        { "$ref": "#/$defs/ChartNode" },
+        { "$ref": "#/$defs/SectionNode" },
+        { "$ref": "#/$defs/ColumnsNode" },
+        { "$ref": "#/$defs/FileRefNode" }
+      ]
+    },
+    "HeadingNode": {
+      "type": "object",
+      "required": ["type", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "heading" },
+        "text": { "type": "string", "maxLength": 300 },
+        "level": { "type": "integer", "minimum": 1, "maximum": 4 }
+      }
+    },
+    "MarkdownNode": {
+      "type": "object",
+      "required": ["type", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "markdown" },
+        "text": { "type": "string", "maxLength": 262144 }
+      }
+    },
+    "CalloutNode": {
+      "type": "object",
+      "required": ["type", "tone", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "callout" },
+        "tone": { "type": "string", "enum": ["info", "success", "warning", "danger"] },
+        "text": { "type": "string" },
+        "title": { "type": "string", "maxLength": 200 }
+      }
+    },
+    "KeyValueNode": {
+      "type": "object",
+      "required": ["type", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "keyValue" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": {
+            "type": "object",
+            "required": ["key", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "key": { "type": "string", "maxLength": 200 },
+              "value": { "type": "string", "maxLength": 4096 }
+            }
+          }
+        }
+      }
+    },
+    "TableNode": {
+      "type": "object",
+      "required": ["type", "columns"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "table" },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "required": ["key", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+              },
+              "label": { "type": "string", "maxLength": 200 },
+              "align": { "type": "string", "enum": ["left", "right", "center"] }
+            }
+          }
+        },
+        "rows": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                { "type": "string", "maxLength": 4096 },
+                { "type": "number" },
+                { "type": "boolean" },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "ListNode": {
+      "type": "object",
+      "required": ["type", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "list" },
+        "ordered": { "type": "boolean" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/$defs/Node" }
+            ]
+          }
+        }
+      }
+    },
+    "TreeNode": {
+      "type": "object",
+      "required": ["type", "nodes"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "tree" },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TreeEntry" }
+        }
+      }
+    },
+    "TreeEntry": {
+      "type": "object",
+      "required": ["label"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "maxLength": 300 },
+        "detail": { "type": "string", "maxLength": 1024 },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TreeEntry" }
+        }
+      }
+    },
+    "CodeNode": {
+      "type": "object",
+      "required": ["type", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "code" },
+        "text": { "type": "string", "maxLength": 524288 },
+        "language": { "type": "string", "maxLength": 80 },
+        "highlightLines": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "integer", "minimum": 1 },
+              { "type": "integer", "minimum": 1 }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "DiffNode": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "diff" },
+        "title": { "type": "string", "maxLength": 200 },
+        "language": { "type": "string", "maxLength": 80 },
+        "unified": { "type": "string", "maxLength": 524288 },
+        "before": { "type": "string", "maxLength": 524288 },
+        "after": { "type": "string", "maxLength": 524288 }
+      },
+      "oneOf": [
+        {
+          "required": ["unified"],
+          "not": {
+            "anyOf": [
+              { "required": ["before"] },
+              { "required": ["after"] }
+            ]
+          }
+        },
+        {
+          "required": ["before", "after"],
+          "not": {
+            "required": ["unified"]
+          }
+        }
+      ]
+    },
+    "ImageNode": {
+      "type": "object",
+      "required": ["type", "path", "alt"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "image" },
+        "path": { "type": "string", "maxLength": 4096 },
+        "relPath": { "type": "string", "maxLength": 1024 },
+        "alt": { "type": "string", "maxLength": 300 },
+        "caption": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "ChartNode": {
+      "type": "object",
+      "required": ["type", "kind", "x", "series"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "chart" },
+        "kind": { "type": "string", "enum": ["bar", "line"] },
+        "x": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": { "type": "string" }
+        },
+        "series": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["name", "values"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "maxLength": 200 },
+              "values": {
+                "type": "array",
+                "items": { "type": "number" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "SectionNode": {
+      "type": "object",
+      "required": ["type", "children"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "section" },
+        "title": { "type": "string", "maxLength": 200 },
+        "collapsed": { "type": "boolean" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Node" }
+        }
+      }
+    },
+    "ColumnsNode": {
+      "type": "object",
+      "required": ["type", "columns"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "columns" },
+        "columns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/Node" }
+          }
+        }
+      }
+    },
+    "FileRefNode": {
+      "type": "object",
+      "required": ["type", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "fileRef" },
+        "path": { "type": "string", "maxLength": 4096 },
+        "relPath": { "type": "string", "maxLength": 1024 },
+        "label": { "type": "string", "maxLength": 200 }
+      }
+    }
+  }
+}

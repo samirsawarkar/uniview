@@ -1,0 +1,13 @@
+{
+  "uniview": "view/1",
+  "title": "Code Highlight Lines Inverted",
+  "body": [
+    {
+      "type": "code",
+      "text": "const x = 1;\n",
+      "highlightLines": [
+        [10, 4]
+      ]
+    }
+  ]
+}

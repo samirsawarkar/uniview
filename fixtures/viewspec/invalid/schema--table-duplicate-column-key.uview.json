@@ -1,0 +1,13 @@
+{
+  "uniview": "view/1",
+  "title": "Duplicate Column Key",
+  "body": [
+    {
+      "type": "table",
+      "columns": [
+        { "key": "status", "label": "Status 1" },
+        { "key": "status", "label": "Status 2" }
+      ]
+    }
+  ]
+}

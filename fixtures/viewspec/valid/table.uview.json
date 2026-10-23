@@ -1,0 +1,18 @@
+{
+  "uniview": "view/1",
+  "title": "Table View",
+  "body": [
+    {
+      "type": "table",
+      "columns": [
+        { "key": "id", "label": "ID", "align": "left" },
+        { "key": "status", "label": "Status", "align": "center" },
+        { "key": "score", "label": "Score", "align": "right" }
+      ],
+      "rows": [
+        { "id": "task-1", "status": "completed", "score": 98.5 },
+        { "id": "task-2", "status": "pending", "score": null }
+      ]
+    }
+  ]
+}

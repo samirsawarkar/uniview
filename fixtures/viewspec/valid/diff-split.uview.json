@@ -1,0 +1,13 @@
+{
+  "uniview": "view/1",
+  "title": "Diff Split View",
+  "body": [
+    {
+      "type": "diff",
+      "title": "Before and After",
+      "language": "javascript",
+      "before": "const value = false;",
+      "after": "const value = true;"
+    }
+  ]
+}

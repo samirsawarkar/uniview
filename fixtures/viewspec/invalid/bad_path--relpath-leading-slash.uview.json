@@ -1,0 +1,12 @@
+{
+  "uniview": "view/1",
+  "title": "Bad RelPath Leading Slash",
+  "body": [
+    {
+      "type": "image",
+      "path": "/images/pic.png",
+      "relPath": "/images/pic.png",
+      "alt": "Leading slash in relPath"
+    }
+  ]
+}

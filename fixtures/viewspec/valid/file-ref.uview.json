@@ -1,0 +1,16 @@
+{
+  "uniview": "view/1",
+  "title": "FileRef View",
+  "agent": {
+    "name": "review-bot",
+    "model": "gpt-4o"
+  },
+  "body": [
+    {
+      "type": "fileRef",
+      "path": "C:/Projects/workspace/README.md",
+      "relPath": "workspace/README.md",
+      "label": "Project Documentation"
+    }
+  ]
+}

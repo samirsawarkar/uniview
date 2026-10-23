@@ -1,0 +1,13 @@
+{
+  "uniview": "view/1",
+  "title": "Image View",
+  "body": [
+    {
+      "type": "image",
+      "path": "/absolute/path/to/image.png",
+      "relPath": "images/image.png",
+      "alt": "Architecture diagram",
+      "caption": "Figure 1: High level architecture"
+    }
+  ]
+}

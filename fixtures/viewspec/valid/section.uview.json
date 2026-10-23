@@ -1,0 +1,17 @@
+{
+  "uniview": "view/1",
+  "title": "Section View",
+  "body": [
+    {
+      "type": "section",
+      "title": "Collapsible Block",
+      "collapsed": true,
+      "children": [
+        {
+          "type": "markdown",
+          "text": "Content inside collapsed section."
+        }
+      ]
+    }
+  ]
+}

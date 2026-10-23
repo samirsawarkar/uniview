@@ -1,0 +1,10 @@
+{
+  "uniview": "view/1",
+  "title": "Unknown Node Type",
+  "body": [
+    {
+      "type": "unknownCustomNode",
+      "value": 123
+    }
+  ]
+}

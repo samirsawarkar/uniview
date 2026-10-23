@@ -1,0 +1,5 @@
+{
+  "uniview": "view/1",
+  "title": "This title is intentionally made longer than two hundred characters in order to verify that the view specification validator properly catches and rejects any title exceeding the maximum length limit of 200 characters.",
+  "body": []
+}

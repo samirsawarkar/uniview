@@ -1,0 +1,18 @@
+{
+  "uniview": "view/1",
+  "title": "Tree View",
+  "body": [
+    {
+      "type": "tree",
+      "nodes": [
+        {
+          "label": "root",
+          "detail": "directory",
+          "children": [
+            { "label": "file.ts", "detail": "source code" }
+          ]
+        }
+      ]
+    }
+  ]
+}

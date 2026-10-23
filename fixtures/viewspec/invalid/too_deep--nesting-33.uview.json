@@ -1,0 +1,90 @@
+{
+  "uniview": "view/1",
+  "title": "Too Deep",
+  "body": [
+    {
+      "type": "section",
+      "children": [
+        {
+          "type": "section",
+          "children": [
+            {
+              "type": "section",
+              "children": [
+                {
+                  "type": "section",
+                  "children": [
+                    {
+                      "type": "section",
+                      "children": [
+                        {
+                          "type": "section",
+                          "children": [
+                            {
+                              "type": "section",
+                              "children": [
+                                {
+                                  "type": "section",
+                                  "children": [
+                                    {
+                                      "type": "section",
+                                      "children": [
+                                        {
+                                          "type": "section",
+                                          "children": [
+                                            {
+                                              "type": "section",
+                                              "children": [
+                                                {
+                                                  "type": "section",
+                                                  "children": [
+                                                    {
+                                                      "type": "section",
+                                                      "children": [
+                                                        {
+                                                          "type": "section",
+                                                          "children": [
+                                                            {
+                                                              "type": "section",
+                                                              "children": [
+                                                                {
+                                                                  "type": "section",
+                                                                  "children": [
+                                                                    {
+                                                                      "type": "heading",
+                                                                      "text": "Deeply Nested"
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

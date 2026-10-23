@@ -1,0 +1,12 @@
+{
+  "uniview": "view/1",
+  "title": "Invalid Column Key Pattern",
+  "body": [
+    {
+      "type": "table",
+      "columns": [
+        { "key": "invalid key with spaces", "label": "Column" }
+      ]
+    }
+  ]
+}
