@@ -7,6 +7,14 @@ export interface FileSource {
   mimeHint?: string;
   /** Absolute desktop path, when the shell has one. */
   path?: string;
+  /** Remote file reference when opened from a paired computer. */
+  remote?: {
+    hostId: string;
+    rootId: string;
+    rootName: string;
+    path: string;
+    mtime: number;
+  };
   readAll(signal?: AbortSignal): Promise<ArrayBuffer>;
   /** Bytes in [start, end). */
   readRange(start: number, end: number, signal?: AbortSignal): Promise<ArrayBuffer>;

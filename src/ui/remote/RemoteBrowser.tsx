@@ -61,7 +61,7 @@ export function RemoteBrowser({ record, transport, location, onNavigate, onOpen 
     if (!host || !location.root) return;
     const path = [location.path, e.name].filter(Boolean).join("/");
     if (e.dir) return onNavigate({ root: location.root, path });
-    onOpen([remoteSource({ host, hostName: record.hostName, root: location.root.id, path, entry: e })]);
+    onOpen([remoteSource({ host, hostName: record.hostName, root: location.root.id, rootName: location.root.name, path, entry: e })]);
   };
 
   return (

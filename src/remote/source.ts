@@ -41,6 +41,7 @@ export interface RemoteFileRef {
   host: RemoteHost;
   hostName: string;
   root: string;
+  rootName?: string;
   path: string; // relative, "/"-separated
   entry: RemoteEntry;
 }
@@ -96,6 +97,13 @@ export function remoteSource(ref: RemoteFileRef): FileSource {
     name: entry.name,
     size: entry.size,
     path: `${ref.hostName}: ${path}`,
+    remote: {
+      hostId: host.record.hostId,
+      rootId: root,
+      rootName: ref.rootName ?? root,
+      path,
+      mtime: entry.mtime,
+    },
     readAll: (signal) => readRange(0, entry.size, signal),
     readRange,
     async url() {

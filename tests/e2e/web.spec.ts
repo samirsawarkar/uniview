@@ -50,9 +50,21 @@ test("spreadsheet shows cells, UTF-8 CSV keeps accents, sheets switch", async ({
 });
 
 test("50,000-row workbook opens and scrolls", async ({ page }) => {
+  await page.evaluate(() => {
+    (window as unknown as { __maxLongTask: number }).__maxLongTask = 0;
+    const obs = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const cur = (window as unknown as { __maxLongTask: number }).__maxLongTask;
+        if (entry.duration > cur) (window as unknown as { __maxLongTask: number }).__maxLongTask = entry.duration;
+      }
+    });
+    obs.observe({ entryTypes: ["longtask"] });
+  });
   await open(page, "big.xlsx");
   const grid = panel(page).getByTestId("sheet-grid");
   await expect(grid).toContainText("row 1");
+  const maxTask = await page.evaluate(() => (window as unknown as { __maxLongTask: number }).__maxLongTask);
+  expect(maxTask).toBeLessThan(200);
   await grid.evaluate((el) => (el.scrollTop = 24 * 40000));
   await expect(grid).toContainText("row 400");
   expect(await grid.locator(".cell").count()).toBeLessThan(600);

@@ -1,8 +1,17 @@
+export interface RemoteRef {
+  hostId: string;
+  rootId: string;
+  rootName: string;
+  path: string;
+  mtime: number;
+}
+
 export interface Recent {
   name: string;
   path?: string;
   size: number;
   openedAt: number;
+  remote?: RemoteRef;
 }
 
 const KEY = "uniview.recents.v1";
@@ -30,8 +39,20 @@ export function loadRecents(): Recent[] {
   return read().sort((a, b) => b.openedAt - a.openedAt);
 }
 
-const same = (a: Pick<Recent, "name" | "path">, b: Pick<Recent, "name" | "path">) =>
-  a.path ? a.path === b.path : !b.path && a.name === b.name;
+const same = (
+  a: Pick<Recent, "name" | "path" | "remote">,
+  b: Pick<Recent, "name" | "path" | "remote">,
+) => {
+  if (a.remote || b.remote) {
+    if (!a.remote || !b.remote) return false;
+    return (
+      a.remote.hostId === b.remote.hostId &&
+      a.remote.rootId === b.remote.rootId &&
+      a.remote.path === b.remote.path
+    );
+  }
+  return a.path ? a.path === b.path : !b.path && a.name === b.name;
+};
 
 export function rememberRecent(entry: Omit<Recent, "openedAt">): Recent[] {
   const list = [{ ...entry, openedAt: Date.now() }, ...read().filter((r) => !same(r, entry))].slice(0, MAX);

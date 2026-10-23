@@ -10,8 +10,9 @@ import { SharingPanel } from "./remote/SharingPanel";
 import { PairDialog } from "./remote/PairDialog";
 import { RemoteBrowser, type RemoteLocation } from "./remote/RemoteBrowser";
 import { forgetHost, loadHosts } from "../remote/store";
-import { disconnect } from "../remote/connections";
-import type { HostRecord } from "../../shared/remote-client.mjs";
+import { connect, disconnect } from "../remote/connections";
+import { remoteSource } from "../remote/source";
+import type { HostRecord, RemoteEntry } from "../../shared/remote-client.mjs";
 
 type Page = { kind: "sharing" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
@@ -54,7 +55,13 @@ export function App() {
       return next;
     });
     setActiveId(files[files.length - 1]!.id);
-    for (const f of files) setRecents(rememberRecent({ name: f.name, path: f.path, size: f.size }));
+    for (const f of files) {
+      if (f.remote) {
+        setRecents(rememberRecent({ name: f.name, size: f.size, remote: f.remote }));
+      } else {
+        setRecents(rememberRecent({ name: f.name, path: f.path, size: f.size }));
+      }
+    }
   }, [activeId]);
 
   const closeTab = useCallback((id: string) => {
@@ -115,6 +122,54 @@ export function App() {
       setNotice(`Could not open ${path}: ${(err as Error).message}`);
     }
   }, [bridge, openFiles]);
+
+  const reopenRecent = useCallback(async (r: Recent) => {
+    if (r.remote) {
+      if (!bridge.remoteTransport) {
+        setNotice("Remote browsing is not supported on this device.");
+        return;
+      }
+      const hostRecord = hosts.find((h) => h.hostId === r.remote!.hostId);
+      if (!hostRecord) {
+        setNotice(`Can't reach ${r.name}: this computer is no longer paired.`);
+        return;
+      }
+      try {
+        const host = await connect(hostRecord, bridge.remoteTransport);
+        const st = await host.stat(r.remote.rootId, r.remote.path);
+        if (st.mtime !== r.remote.mtime || st.size !== r.size) {
+          setNotice(`"${r.name}" on ${hostRecord.hostName} has changed since it was last opened.`);
+          return;
+        }
+        const entry: RemoteEntry = {
+          name: r.name,
+          dir: false,
+          size: st.size,
+          mtime: st.mtime,
+        };
+        const source = remoteSource({
+          host,
+          hostName: hostRecord.hostName,
+          root: r.remote.rootId,
+          rootName: r.remote.rootName,
+          path: r.remote.path,
+          entry,
+        });
+        openFiles([source]);
+      } catch (err) {
+        const msg = (err as Error).message || "";
+        if (msg.includes("not available") || msg.includes("no longer shared") || /not found|enoent/i.test(msg)) {
+          setNotice(`"${r.name}" was removed from ${hostRecord.hostName}.`);
+        } else {
+          setNotice(`Can't reach ${hostRecord.hostName}: ${msg}`);
+        }
+      }
+      return;
+    }
+    if (r.path) {
+      void openPath(r.path);
+    }
+  }, [bridge, hosts, openFiles, openPath]);
 
   // Files from the OS: file associations, second instance, share/VIEW intents.
   useEffect(() => bridge.onExternalOpen((files) => openFiles(files)), [bridge, openFiles]);
@@ -180,7 +235,7 @@ export function App() {
   useEffect(() => {
     const t = active.source ? active.source.name : pageTitle(active, hosts);
     document.title = `${t} – UniView`;
-  }, [active]);
+  }, [active, hosts]);
 
   const hostFor = (hostId: string) => hosts.find((h) => h.hostId === hostId);
 
@@ -246,8 +301,9 @@ export function App() {
               <Home
                 recents={recents}
                 canReopen={!!bridge.openPath}
+                canReopenRemote={!!bridge.remoteTransport}
                 onPick={pick}
-                onReopen={(r) => r.path && void openPath(r.path)}
+                onReopen={reopenRecent}
                 onForget={(r) => setRecents(forgetRecent(r))}
                 hosts={bridge.remoteTransport ? hosts : null}
                 onConnect={() => setPairing(true)}
@@ -365,9 +421,10 @@ function pageTitle(t: Tab, hosts: HostRecord[]): string {
   return "New tab";
 }
 
-function Home({ recents, canReopen, onPick, onReopen, onForget, hosts, onConnect, onBrowse, onForgetHost, onShare }: {
+function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget, hosts, onConnect, onBrowse, onForgetHost, onShare }: {
   recents: Recent[];
   canReopen: boolean;
+  canReopenRemote?: boolean;
   onPick: () => void;
   onReopen: (r: Recent) => void;
   onForget: (r: Recent) => void;
@@ -421,15 +478,33 @@ function Home({ recents, canReopen, onPick, onReopen, onForget, hosts, onConnect
         <section className="recents">
           <h2>Recent</h2>
           <ul>
-            {recents.slice(0, 12).map((r) => (
-              <li key={(r.path ?? "") + r.name}>
-                <button className="recent" disabled={!canReopen || !r.path} onClick={() => onReopen(r)} title={canReopen ? r.path : "Reopen by choosing the file again"}>
-                  <span className="recent-name">{r.name}</span>
-                  <span className="muted small ellipsis">{r.path ?? formatBytes(r.size)}</span>
-                </button>
-                <button className="link small" onClick={() => onForget(r)} aria-label={`Remove ${r.name} from recent`}>Remove</button>
-              </li>
-            ))}
+            {recents.slice(0, 12).map((r) => {
+              const host = r.remote ? hosts?.find((h) => h.hostId === r.remote!.hostId) : undefined;
+              const computerName = host?.hostName ?? "Computer";
+              const canOpen = r.remote ? !!canReopenRemote : (canReopen && !!r.path);
+              return (
+                <li key={r.remote ? `${r.remote.hostId}:${r.remote.rootId}:${r.remote.path}` : (r.path ?? "") + r.name}>
+                  <button
+                    className="recent"
+                    disabled={!canOpen}
+                    onClick={() => onReopen(r)}
+                    title={
+                      r.remote
+                        ? `${r.name} on ${computerName}`
+                        : canReopen
+                          ? r.path
+                          : "Reopen by choosing the file again"
+                    }
+                  >
+                    <span className="recent-name">{r.name}</span>
+                    <span className="muted small ellipsis">
+                      {r.remote ? `🖥 ${computerName}` : (r.path ?? formatBytes(r.size))}
+                    </span>
+                  </button>
+                  <button className="link small" onClick={() => onForget(r)} aria-label={`Remove ${r.name} from recent`}>Remove</button>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}

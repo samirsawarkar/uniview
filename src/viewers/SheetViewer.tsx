@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
+import type { Detection } from "../core/types";
 import { CorruptFileError } from "../core/errors";
-import { assertZipWithinBudget, decodeText } from "../core/zip";
 import { Loading, Spacer, Toolbar, readAllChecked, useLoad, useReady } from "./common";
+import { DEFAULT_COL_W, parseSpreadsheet, type ParsedSheet } from "./sheet-parse";
+import type { SheetWorkerRequest, SheetWorkerResponse } from "./sheet.worker";
 import type { ViewerProps } from "./types";
 
 const ROW_H = 24;
 const HEADER_H = 24;
 const ROWNUM_W = 56;
-const DEFAULT_COL_W = 110;
 
 interface Grid {
   name: string;
@@ -18,48 +18,93 @@ interface Grid {
   colWidth(c: number): number;
 }
 
-function toGrid(ws: XLSX.WorkSheet, name: string): Grid {
-  const ref = ws["!ref"];
-  const range = ref ? XLSX.utils.decode_range(ref) : { s: { r: 0, c: 0 }, e: { r: -1, c: -1 } };
-  const dense = (ws as unknown as { "!data"?: (XLSX.CellObject | undefined)[][] })["!data"];
-  const widths = (ws["!cols"] ?? []).map((c) => (c?.wpx ? c.wpx : c?.wch ? c.wch * 7 + 10 : undefined));
+function toGrid(s: ParsedSheet): Grid {
   return {
-    name,
-    rows: range.e.r - range.s.r + 1,
-    cols: range.e.c - range.s.c + 1,
-    cell(r, c) {
-      const rr = r + range.s.r, cc = c + range.s.c;
-      const cell = dense ? dense[rr]?.[cc] : ws[XLSX.utils.encode_cell({ r: rr, c: cc })];
-      if (!cell) return "";
-      if (cell.w !== undefined) return cell.w;
-      if (cell.v === undefined || cell.v === null) return "";
-      return cell.v instanceof Date ? cell.v.toLocaleString() : String(cell.v);
-    },
-    colWidth: (c) => Math.max(40, Math.min(480, widths[c + range.s.c] ?? DEFAULT_COL_W)),
+    name: s.name,
+    rows: s.rows,
+    cols: s.cols,
+    cell: (r, c) => s.cells[r]?.[c] ?? "",
+    colWidth: (c) => s.colWidths[c] ?? DEFAULT_COL_W,
   };
 }
 
-export default function SheetViewer({ source, detection, onReady }: ViewerProps) {
-  const book = useLoad(async (signal) => {
-    const buf = await readAllChecked(source, signal, 256 * 1024 * 1024);
-    // SheetJS inflates .xlsx/.ods itself without limits; prove the archive is not a bomb first.
-    const head = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
-    if (head[0] === 0x50 && head[1] === 0x4b) assertZipWithinBudget(buf);
+function parseWorkbook(
+  buf: ArrayBuffer,
+  detection: Detection,
+  signal: AbortSignal,
+): Promise<ParsedSheet[]> {
+  if (typeof Worker === "undefined") {
+    return Promise.resolve(parseSpreadsheet(buf, detection));
+  }
+
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./sheet.worker.ts", import.meta.url), { type: "module" });
+  } catch {
     try {
-      const isText = detection.ext === "csv" || detection.ext === "tsv" || detection.by === "content";
-      // SheetJS reads raw bytes as Latin-1 unless there is a BOM; decode UTF-8 first so accents survive.
-      const wb = isText
-        ? XLSX.read(decodeText(new Uint8Array(buf)), { type: "string", dense: true, cellDates: true, raw: false, FS: detection.ext === "tsv" ? "\t" : undefined })
-        : XLSX.read(buf, { type: "array", dense: true, cellDates: true, cellStyles: false, sheetStubs: false });
-      return wb;
+      return Promise.resolve(parseSpreadsheet(buf, detection));
     } catch (err) {
-      throw new CorruptFileError(`This spreadsheet could not be read: ${(err as Error).message}`);
+      return Promise.reject(err);
     }
+  }
+
+  return new Promise<ParsedSheet[]>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      worker.terminate();
+    };
+
+    const onAbort = () => {
+      if (settled) return;
+      cleanup();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+
+    if (signal.aborted) {
+      worker.terminate();
+      return reject(new DOMException("Aborted", "AbortError"));
+    }
+
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    worker.onmessage = (e: MessageEvent<SheetWorkerResponse>) => {
+      if (settled) return;
+      const data = e.data;
+      cleanup();
+      if (data.ok) {
+        resolve(data.sheets);
+      } else {
+        reject(new CorruptFileError(data.error));
+      }
+    };
+
+    worker.onerror = (e) => {
+      if (settled) return;
+      cleanup();
+      reject(new CorruptFileError(e.message || "Failed to parse spreadsheet in worker"));
+    };
+
+    const req: SheetWorkerRequest = {
+      id: 1,
+      buffer: buf,
+      options: { ext: detection.ext, by: detection.by },
+    };
+    worker.postMessage(req, [buf]);
+  });
+}
+
+export default function SheetViewer({ source, detection, onReady }: ViewerProps) {
+  const sheets = useLoad(async (signal) => {
+    const buf = await readAllChecked(source, signal, 256 * 1024 * 1024);
+    return parseWorkbook(buf, detection, signal);
   }, [source]);
   const [active, setActive] = useState(0);
-  const grids = useMemo(() => (book ? book.SheetNames.map((n) => toGrid(book.Sheets[n]!, n)) : []), [book]);
-  useReady(!!book, onReady);
-  if (!book) return <Loading label="Reading workbook…" />;
+  const grids = useMemo(() => (sheets ? sheets.map(toGrid) : []), [sheets]);
+  useReady(!!sheets, onReady);
+  if (!sheets) return <Loading label="Reading workbook…" />;
   const grid = grids[Math.min(active, grids.length - 1)];
   return (
     <div className="viewer sheet-viewer">

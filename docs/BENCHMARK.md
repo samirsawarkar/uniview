@@ -1,29 +1,34 @@
 # UniView benchmark
 
-Generated 2026-10-23T06:46:17.121Z by `npm run bench` (5 runs each, Chromium headless, production build, win32).
+Generated 2026-10-23T07:48:32.935Z by `npm run bench` (3 runs each, Chromium headless, production build, win32).
 Time-to-first-view: from the file entering the app to the first meaningful content painted (two animation frames after the viewer reports content).
 Cold = first open of that format in a fresh page (includes loading the viewer's code). Warm = reopening in the same page.
 
-App start to interactive (page load to Open button): p50 108 ms, p95 115 ms.
+App start to interactive (page load to Open button): p50 80 ms, p95 95 ms.
 
-All formats: cold p50 355 ms, p95 620 ms · warm p50 41 ms, p95 290 ms.
+All formats: cold p50 356 ms, p95 638 ms · warm p50 42 ms, p95 308 ms.
 
-| File | Size | Cold p50 | Cold p95 | Warm p50 | Warm p95 |
-|---|---:|---:|---:|---:|---:|
-| app.ts | 0.1 KB | 354 ms | 354 ms | 40 ms | 41 ms |
-| big.xlsx | 5969.0 KB | 621 ms | 670 ms | 291 ms | 306 ms |
-| book.epub | 2.0 KB | 402 ms | 407 ms | 40 ms | 42 ms |
-| bundle.zip | 0.4 KB | 337 ms | 339 ms | 40 ms | 41 ms |
-| charter.docx | 1.1 KB | 352 ms | 363 ms | 40 ms | 42 ms |
-| data.json | 0.1 KB | 354 ms | 355 ms | 41 ms | 43 ms |
-| deck.pptx | 7.1 KB | 356 ms | 359 ms | 42 ms | 44 ms |
-| minutes.doc | 1.1 KB | 354 ms | 355 ms | 40 ms | 42 ms |
-| notes.md | 0.1 KB | 355 ms | 356 ms | 42 ms | 42 ms |
-| people.csv | 0.0 KB | 355 ms | 356 ms | 41 ms | 42 ms |
-| pixel.png | 0.6 KB | 339 ms | 354 ms | 41 ms | 42 ms |
-| report.pdf | 0.6 KB | 439 ms | 455 ms | 109 ms | 109 ms |
-| sales.xlsx | 16.8 KB | 356 ms | 372 ms | 41 ms | 41 ms |
-| shape.svg | 0.2 KB | 354 ms | 356 ms | 39 ms | 41 ms |
-| tone.wav | 15.7 KB | 356 ms | 357 ms | 41 ms | 42 ms |
+| File | Size | Cold p50 | Cold p95 | Warm p50 | Warm p95 | Heap after open | Longest task |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| app.ts | 0.1 KB | 355 ms | 356 ms | 41 ms | 42 ms | 5.4 MB | 0 ms |
+| big.xlsx | 5969.0 KB | 639 ms | 656 ms | 308 ms | 309 ms | 9.7 MB | 0 ms |
+| book.epub | 2.0 KB | 355 ms | 372 ms | 43 ms | 43 ms | 5.3 MB | 0 ms |
+| bundle.zip | 0.4 KB | 340 ms | 356 ms | 42 ms | 42 ms | 4.1 MB | 0 ms |
+| charter.docx | 1.1 KB | 356 ms | 357 ms | 42 ms | 43 ms | 4.9 MB | 0 ms |
+| data.json | 0.1 KB | 338 ms | 356 ms | 42 ms | 42 ms | 5.2 MB | 0 ms |
+| deck.pptx | 7.1 KB | 358 ms | 358 ms | 42 ms | 43 ms | 5.0 MB | 0 ms |
+| minutes.doc | 1.1 KB | 339 ms | 340 ms | 42 ms | 42 ms | 4.1 MB | 0 ms |
+| notes.md | 0.1 KB | 356 ms | 357 ms | 42 ms | 43 ms | 5.6 MB | 0 ms |
+| people.csv | 0.0 KB | 374 ms | 388 ms | 59 ms | 60 ms | 4.8 MB | 0 ms |
+| photo.tif | 13.0 KB | 355 ms | 357 ms | 43 ms | 43 ms | 4.5 MB | 0 ms |
+| pixel.png | 0.6 KB | 339 ms | 340 ms | 41 ms | 42 ms | 4.1 MB | 0 ms |
+| report.pdf | 0.6 KB | 440 ms | 440 ms | 109 ms | 109 ms | 5.2 MB | 0 ms |
+| sales.xlsx | 16.8 KB | 389 ms | 390 ms | 59 ms | 59 ms | 4.8 MB | 0 ms |
+| sans.ttf | 136.2 KB | 340 ms | 356 ms | 42 ms | 42 ms | 4.1 MB | 0 ms |
+| shape.svg | 0.2 KB | 356 ms | 356 ms | 42 ms | 43 ms | 4.1 MB | 0 ms |
+| tone.wav | 15.7 KB | 341 ms | 343 ms | 43 ms | 43 ms | 4.1 MB | 0 ms |
+| unicode.txt | 0.0 KB | 356 ms | 356 ms | 43 ms | 43 ms | 5.2 MB | 0 ms |
+
+Electron process-family memory after open (big.xlsx): 479.0 MB.
 
 Targets from docs/SPEC.md: warm p50 under 300 ms for files under 5 MB; app start under 1.5 s.
