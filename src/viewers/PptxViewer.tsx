@@ -144,6 +144,17 @@ export default function PptxViewer({ source, onReady }: ViewerProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [presenting, current, slides, startPresenting]);
 
+  useEffect(() => {
+    const onBack = (e: Event) => {
+      if (presenting) {
+        e.preventDefault();
+        setPresenting(false);
+      }
+    };
+    window.addEventListener("uniview:back", onBack, true);
+    return () => window.removeEventListener("uniview:back", onBack, true);
+  }, [presenting]);
+
   if (error) throw error;
   if (!pres) {
     return thumb ? (

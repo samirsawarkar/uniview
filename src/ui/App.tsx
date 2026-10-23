@@ -169,6 +169,38 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [tabs, activeId, pick, newTab, closeTab]);
 
+  // Android back navigation.
+  useEffect(() => {
+    const onBack = (e: Event) => {
+      if (e.defaultPrevented) return;
+      if (pairing) {
+        e.preventDefault();
+        setPairing(false);
+        return;
+      }
+      if (active.page?.kind === "remote" && active.page.location?.root) {
+        e.preventDefault();
+        const loc = active.page.location;
+        const trimmed = (loc.path || "").replace(/[\/\\]$/, "");
+        if (trimmed) {
+          const i = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+          const parent = i >= 0 ? trimmed.slice(0, i) : "";
+          navigateRemote(activeId, { ...loc, path: parent });
+        } else {
+          navigateRemote(activeId, { root: undefined, path: "" });
+        }
+        return;
+      }
+      if (active.source || active.page || tabs.length > 1) {
+        e.preventDefault();
+        closeTab(activeId);
+        return;
+      }
+    };
+    window.addEventListener("uniview:back", onBack);
+    return () => window.removeEventListener("uniview:back", onBack);
+  }, [pairing, active, activeId, tabs.length, navigateRemote, closeTab]);
+
   // Drag-and-drop anywhere.
   useEffect(() => {
     const has = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");

@@ -9,6 +9,8 @@ import android.provider.OpenableColumns;
 import android.util.Log;
 import android.webkit.WebView;
 
+import androidx.activity.OnBackPressedCallback;
+
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.WebViewListener;
 
@@ -40,6 +42,24 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (destroyed) return;
+                WebView web = getBridge().getWebView();
+                if (!pageLoaded || web == null) {
+                    moveTaskToBack(true);
+                    return;
+                }
+                String js = "(function(){var e=new Event('uniview:back',{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented;})()";
+                web.evaluateJavascript(js, result -> {
+                    if (destroyed) return;
+                    if (!"true".equals(result)) {
+                        moveTaskToBack(true);
+                    }
+                });
+            }
+        });
         getBridge().addWebViewListener(new WebViewListener() {
             @Override
             public void onPageLoaded(WebView webView) {
