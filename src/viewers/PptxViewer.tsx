@@ -151,8 +151,8 @@ export default function PptxViewer({ source, onReady }: ViewerProps) {
         setPresenting(false);
       }
     };
-    window.addEventListener("uniview:back", onBack, true);
-    return () => window.removeEventListener("uniview:back", onBack, true);
+    window.addEventListener("uniview:back:viewer", onBack);
+    return () => window.removeEventListener("uniview:back:viewer", onBack);
   }, [presenting]);
 
   if (error) throw error;

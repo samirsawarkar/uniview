@@ -113,14 +113,21 @@ export function isLanHost(host) {
     const [a, b] = [Number(v4[1]), Number(v4[2])];
     return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
   }
-  let v6 = host;
-  if (v6.startsWith("[") && v6.endsWith("]")) {
-    v6 = v6.slice(1, -1);
+  let inner = host;
+  if (inner.startsWith("[") && inner.endsWith("]")) {
+    inner = inner.slice(1, -1);
   }
-  if (v6.includes("[") || v6.includes("]")) return false;
-  const lower = v6.toLowerCase();
-  if (lower.includes(":")) {
-    return lower === "::1" || /^f[cd][0-9a-f]{2}:/.test(lower) || /^fe[89ab][0-9a-f]:/.test(lower);
+  if (inner.includes("[") || inner.includes("]")) return false;
+  try {
+    const url = new URL("http://[" + inner + "]");
+    let hostname = url.hostname;
+    if (hostname.startsWith("[") && hostname.endsWith("]")) {
+      hostname = hostname.slice(1, -1);
+    }
+    if (hostname === "::1") return true;
+    const firstHextet = parseInt(hostname.split(":")[0], 16);
+    return (firstHextet & 0xfe00) === 0xfc00 || (firstHextet & 0xffc0) === 0xfe80;
+  } catch {
+    return false;
   }
-  return false;
 }

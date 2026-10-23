@@ -173,6 +173,12 @@ export function App() {
   useEffect(() => {
     const onBack = (e: Event) => {
       if (e.defaultPrevented) return;
+      const viewer = new Event("uniview:back:viewer", { cancelable: true });
+      window.dispatchEvent(viewer);
+      if (viewer.defaultPrevented) {
+        e.preventDefault();
+        return;
+      }
       if (pairing) {
         e.preventDefault();
         setPairing(false);
@@ -199,7 +205,7 @@ export function App() {
     };
     window.addEventListener("uniview:back", onBack);
     return () => window.removeEventListener("uniview:back", onBack);
-  }, [pairing, active, activeId, tabs.length, navigateRemote, closeTab]);
+  }, [pairing, active, activeId, tabs, navigateRemote, closeTab]);
 
   // Drag-and-drop anywhere.
   useEffect(() => {

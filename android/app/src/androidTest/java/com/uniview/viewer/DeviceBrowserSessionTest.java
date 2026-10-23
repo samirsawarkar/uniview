@@ -1,6 +1,7 @@
 package com.uniview.viewer;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.SystemClock;
@@ -9,6 +10,7 @@ import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.filters.LargeTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.Assert;
@@ -17,7 +19,27 @@ import org.junit.runner.RunWith;
 
 import java.io.File;
 
+/**
+ * Controlled browser session instrumentation test for interactive debugging.
+ *
+ * <p>Skipped by default during normal connected test runs. To run this session,
+ * pass {@code -e uniview_device_session true} to the test runner:
+ *
+ * <pre>
+ * ./gradlew connectedAndroidTest -Pandroid.testInstrumentationRunnerArguments.uniview_device_session=true
+ * </pre>
+ *
+ * or via adb:
+ *
+ * <pre>
+ * adb shell am instrument -w -r \
+ *   -e uniview_device_session true \
+ *   -e class com.uniview.viewer.DeviceBrowserSessionTest \
+ *   com.uniview.viewer.test/androidx.test.runner.AndroidJUnitRunner
+ * </pre>
+ */
 @RunWith(AndroidJUnit4.class)
+@LargeTest
 public class DeviceBrowserSessionTest {
 
     private static final String STOP_MARKER_FILENAME = "uniview-device-session.stop";
@@ -28,6 +50,8 @@ public class DeviceBrowserSessionTest {
 
     @Test
     public void controlledBrowserSession() throws Exception {
+        org.junit.Assume.assumeTrue("Run only with -e uniview_device_session true", "true".equals(InstrumentationRegistry.getArguments().getString("uniview_device_session")));
+
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
         File markerFile = new File(target.getCacheDir(), STOP_MARKER_FILENAME);
 
@@ -63,7 +87,9 @@ public class DeviceBrowserSessionTest {
                 activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 Assert.assertNotNull("Capacitor bridge must be initialized", activity.getBridge());
                 Assert.assertNotNull("Capacitor webView must be initialized", activity.getBridge().getWebView());
-                WebView.setWebContentsDebuggingEnabled(true);
+                if ((activity.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                    WebView.setWebContentsDebuggingEnabled(true);
+                }
             });
 
             int pid = Process.myPid();

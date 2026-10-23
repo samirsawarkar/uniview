@@ -97,10 +97,10 @@ describe("isAppFrame (IPC sender validation)", () => {
 
 describe("isLanHost (remote client transport)", () => {
   it("allows only local-network addresses", () => {
-    for (const h of ["192.168.1.5", "10.0.0.2", "172.16.4.1", "172.31.255.255", "127.0.0.1", "::1", "fd12:3456::1", "fe80::1", "[fd12::1]"]) {
+    for (const h of ["192.168.1.5", "10.0.0.2", "172.16.4.1", "172.31.255.255", "127.0.0.1", "::1", "fd12:3456::1", "fe80::1", "[fd12::1]", "fd00::1", "FE80::1"]) {
       expect(isLanHost(h)).toBe(true);
     }
-    for (const h of ["8.8.8.8", "172.32.0.1", "192.169.1.1", "example.com", "evil.local.example.com", "2001:4860::8888", "256.1.1.1", "", "localhost", "169.254.3.3", "100.64.1.1", "studio-pc.local", "010.0.0.1", "192.168.01.1", "fe80::1%eth0", "user@192.168.1.5", " 192.168.1.5", "192.168.1.5 ", "[fe80::1"]) {
+    for (const h of ["8.8.8.8", "172.32.0.1", "192.169.1.1", "example.com", "evil.local.example.com", "2001:4860::8888", "256.1.1.1", "", "localhost", "169.254.3.3", "100.64.1.1", "studio-pc.local", "010.0.0.1", "192.168.01.1", "fe80::1%eth0", "user@192.168.1.5", " 192.168.1.5", "192.168.1.5 ", "[fe80::1", "fc00:evil.com", "fd00:not-an-ip", "::ffff:8.8.8.8", "fe80::zz"]) {
       expect(isLanHost(h)).toBe(false);
     }
   });

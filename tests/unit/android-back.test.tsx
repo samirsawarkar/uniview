@@ -119,4 +119,88 @@ describe("Android back event handling", () => {
     });
     expect(finalBack.defaultPrevented).toBe(false);
   });
+
+  it("gives viewer first chance to handle back event before closing file tab", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const fakeFile: any = {
+      id: "fake-file-viewer-1",
+      name: "presentation.pptx",
+      size: 2048,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(async () => "blob:fake"),
+      release: vi.fn(),
+    };
+
+    expect(externalOpenCb).not.toBeNull();
+    act(() => {
+      externalOpenCb!([fakeFile]);
+    });
+
+    const onViewerBack = (e: Event) => {
+      e.preventDefault();
+    };
+    window.addEventListener("uniview:back:viewer", onViewerBack);
+
+    const firstBack = new Event("uniview:back", { cancelable: true });
+    act(() => {
+      window.dispatchEvent(firstBack);
+    });
+    expect(firstBack.defaultPrevented).toBe(true);
+    expect(fakeFile.release).not.toHaveBeenCalled();
+
+    window.removeEventListener("uniview:back:viewer", onViewerBack);
+
+    const secondBack = new Event("uniview:back", { cancelable: true });
+    act(() => {
+      window.dispatchEvent(secondBack);
+    });
+    expect(secondBack.defaultPrevented).toBe(true);
+    expect(fakeFile.release).toHaveBeenCalled();
+  });
+
+  it("ensures viewer precedence does not depend on registration order", async () => {
+    const onViewerBack = (e: Event) => {
+      e.preventDefault();
+    };
+    window.addEventListener("uniview:back:viewer", onViewerBack);
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const fakeFile: any = {
+      id: "fake-file-viewer-2",
+      name: "presentation2.pptx",
+      size: 2048,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(async () => "blob:fake"),
+      release: vi.fn(),
+    };
+
+    expect(externalOpenCb).not.toBeNull();
+    act(() => {
+      externalOpenCb!([fakeFile]);
+    });
+
+    const firstBack = new Event("uniview:back", { cancelable: true });
+    act(() => {
+      window.dispatchEvent(firstBack);
+    });
+    expect(firstBack.defaultPrevented).toBe(true);
+    expect(fakeFile.release).not.toHaveBeenCalled();
+
+    window.removeEventListener("uniview:back:viewer", onViewerBack);
+
+    const secondBack = new Event("uniview:back", { cancelable: true });
+    act(() => {
+      window.dispatchEvent(secondBack);
+    });
+    expect(secondBack.defaultPrevented).toBe(true);
+    expect(fakeFile.release).toHaveBeenCalled();
+  });
 });
