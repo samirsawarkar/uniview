@@ -8,22 +8,29 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 @CapacitorPlugin(name = "LanHttp")
 public class LanHttpPlugin extends Plugin {
-    private static final ExecutorService WORKERS = Executors.newFixedThreadPool(64);
+    private static final ThreadPoolExecutor WORKERS;
     private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(4);
     private static final int MAX_RESPONSE_LIMIT = 8 * 1024 * 1024 + 64 * 1024;
+
+    static {
+        WORKERS = new ThreadPoolExecutor(
+            64,
+            64,
+            30L,
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(256)
+        );
+        WORKERS.allowCoreThreadTimeOut(true);
+    }
 
     @PluginMethod
     public void post(PluginCall call) {
@@ -60,82 +67,41 @@ public class LanHttpPlugin extends Plugin {
         Integer maxBytesVal = call.getInt("maxResponseBytes");
         int maxResponseBytes = clamp(maxBytesVal != null ? maxBytesVal : MAX_RESPONSE_LIMIT, 1, MAX_RESPONSE_LIMIT);
 
-        WORKERS.execute(() -> {
-            HttpURLConnection conn = null;
-            ScheduledFuture<?> deadlineTask = null;
-            AtomicBoolean deadlineFired = new AtomicBoolean(false);
+        long deadlineAtNanos = System.nanoTime() + (long) deadline * 1_000_000L;
 
-            try {
-                URL targetUrl = new URL(url);
-                conn = (HttpURLConnection) targetUrl.openConnection();
-                final HttpURLConnection finalConn = conn;
-
-                deadlineTask = SCHEDULER.schedule(() -> {
-                    deadlineFired.set(true);
-                    try {
-                        finalConn.disconnect();
-                    } catch (Exception ignored) {
-                    }
-                }, deadline, TimeUnit.MILLISECONDS);
-
-                conn.setRequestMethod("POST");
-                conn.setInstanceFollowRedirects(false);
-                conn.setUseCaches(false);
-                conn.setConnectTimeout(connectTimeout);
-                conn.setReadTimeout(readTimeout);
-                conn.setDoOutput(true);
-
-                if (contentType != null && !contentType.isEmpty()) {
-                    conn.setRequestProperty("Content-Type", contentType);
-                }
-                conn.setRequestProperty("Content-Length", String.valueOf(decodedBody.length));
-
-                try (OutputStream os = conn.getOutputStream()) {
-                    if (decodedBody.length > 0) {
-                        os.write(decodedBody);
-                    }
-                    os.flush();
-                }
-
-                int status = conn.getResponseCode();
-                InputStream is = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
-                byte[] responseBytes;
-                if (is != null) {
-                    try (InputStream stream = is) {
-                        responseBytes = BoundedRead.readAtMost(stream, maxResponseBytes);
-                    }
-                } else {
-                    responseBytes = new byte[0];
-                }
-
-                if (deadlineFired.get()) {
+        try {
+            WORKERS.execute(() -> {
+                if (System.nanoTime() >= deadlineAtNanos) {
                     call.reject("The computer did not answer in time.");
                     return;
                 }
 
-                String responseB64 = Base64.encodeToString(responseBytes, Base64.NO_WRAP);
-                JSObject ret = new JSObject();
-                ret.put("status", status);
-                ret.put("body", responseB64);
-                call.resolve(ret);
-            } catch (Exception e) {
-                if (deadlineFired.get()) {
+                try {
+                    LanRequest.Result result = LanRequest.execute(
+                        url,
+                        decodedBody,
+                        contentType,
+                        connectTimeout,
+                        readTimeout,
+                        deadlineAtNanos,
+                        maxResponseBytes,
+                        SCHEDULER
+                    );
+
+                    String responseB64 = Base64.encodeToString(result.body, Base64.NO_WRAP);
+                    JSObject ret = new JSObject();
+                    ret.put("status", result.status);
+                    ret.put("body", responseB64);
+                    call.resolve(ret);
+                } catch (LanTimeoutException e) {
                     call.reject("The computer did not answer in time.");
-                } else {
+                } catch (Exception e) {
                     call.reject(e.getMessage() != null ? e.getMessage() : e.toString());
                 }
-            } finally {
-                if (deadlineTask != null) {
-                    deadlineTask.cancel(false);
-                }
-                if (conn != null) {
-                    try {
-                        conn.disconnect();
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        });
+            });
+        } catch (RejectedExecutionException e) {
+            call.reject("Too many requests to the computer.");
+        }
     }
 
     private static int clamp(int val, int min, int max) {

@@ -101,34 +101,22 @@ export async function discoverHost({
       const ip = candidates[cursor++];
       active++;
 
-      let settled = false;
+      let expired = false;
       let probeTimer = null;
 
-      function done() {
-        if (settled) return false;
-        settled = true;
-        if (probeTimer) {
-          clearTimeout(probeTimer);
-          activeTimers.delete(probeTimer);
-        }
-        active--;
-        return true;
-      }
-
       probeTimer = setTimeout(() => {
-        if (done()) {
-          if (!stopped) launchNext();
-        }
-      }, timeoutMs + 500);
+        expired = true;
+        activeTimers.delete(probeTimer);
+      }, timeoutMs);
       activeTimers.add(probeTimer);
 
       (async () => {
         try {
           const req = await P.helloRequest();
-          if (settled || stopped) return;
+          if (stopped || expired) return;
           const body = enc.encode(JSON.stringify(req.body));
           const res = await transport(ip, port, "/v1/hello", body, "application/json", { timeoutMs });
-          if (settled || stopped) return;
+          if (stopped || expired) return;
           if (res && res.status === 200) {
             let json = null;
             try {
@@ -137,17 +125,22 @@ export async function discoverHost({
               /* non-JSON */
             }
             if (json && (await req.verify(hostPubRaw, hostId, json))) {
-              if (settled || stopped) return;
-              done();
+              if (stopped || expired) return;
               finish(ip);
               return;
             }
           }
         } catch {
           /* ignore connection error */
-        }
-        if (done()) {
-          if (!stopped) launchNext();
+        } finally {
+          if (probeTimer) {
+            clearTimeout(probeTimer);
+            activeTimers.delete(probeTimer);
+          }
+          active--;
+          if (!stopped) {
+            launchNext();
+          }
         }
       })();
     }
