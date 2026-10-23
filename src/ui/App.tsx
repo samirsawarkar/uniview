@@ -13,6 +13,8 @@ import { forgetHost, loadHosts } from "../remote/store";
 import { disconnect } from "../remote/connections";
 import { reopenRemoteRecent } from "../remote/reopen-recent";
 import type { HostRecord } from "../../shared/remote-client.mjs";
+import logoUrl from "./assets/logo.png";
+import { getTheme, setTheme, type Theme } from "./theme";
 
 type Page = { kind: "sharing" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
@@ -105,6 +107,17 @@ export function App() {
     setTabs((prev) => [...prev, t]);
     setActiveId(t.id);
   }, []);
+
+  const goHome = useCallback(() => {
+    const existing = tabs.find((t) => !t.source && !t.page);
+    if (existing) {
+      setActiveId(existing.id);
+    } else {
+      const t = homeTab();
+      setTabs((prev) => [...prev, t]);
+      setActiveId(t.id);
+    }
+  }, [tabs]);
 
   const pick = useCallback(async () => {
     try {
@@ -266,7 +279,7 @@ export function App() {
               onClick={() => setActiveId(t.id)}
               title={t.source ? `${t.source.path ?? t.source.name}\n${t.detection?.label ?? ""} · ${formatBytes(t.source.size)}` : "New tab"}
             >
-              {t.source ? <KindBadge kind={t.detection?.kind} small /> : <span className="tab-home" aria-hidden>{t.page?.kind === "sharing" ? "⇄" : t.page?.kind === "remote" ? "🖥" : "⌂"}</span>}
+              {t.source ? <KindBadge kind={t.detection?.kind} small /> : <span className="tab-home" aria-hidden>{t.page?.kind === "sharing" ? "⇄" : t.page?.kind === "remote" ? "🖥" : <img className="tab-logo" src={logoUrl} alt="" />}</span>}
               <span className="tab-title">{t.source?.name ?? pageTitle(t, hosts)}</span>
               <button className="tab-close" aria-label={`Close ${t.source?.name ?? "tab"}`} onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>×</button>
             </div>
@@ -282,6 +295,7 @@ export function App() {
           onSwitch={setActiveId}
           onOpenPath={openPath}
           onReveal={active.source && bridge.revealInFolder ? () => bridge.revealInFolder!(active.source!) : undefined}
+          onHome={goHome}
         />
       </header>
       {notice && (
@@ -347,7 +361,7 @@ export function App() {
   );
 }
 
-function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenPath, onReveal }: {
+function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenPath, onReveal, onHome }: {
   active: Tab;
   tabs: Tab[];
   recents: Recent[];
@@ -356,6 +370,7 @@ function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenP
   onSwitch: (id: string) => void;
   onOpenPath: (p: string) => void;
   onReveal?: () => void;
+  onHome: () => void;
 }) {
   const [value, setValue] = useState<string | null>(null);
   const shown = value ?? (active.source ? active.source.path ?? active.source.name : "");
@@ -381,6 +396,18 @@ function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenP
   };
   return (
     <div className="omnibar">
+      <button
+        className="home-button"
+        onClick={onHome}
+        aria-label="Home"
+        title="Home"
+        data-testid="home-button"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          <polyline points="9 22 9 12 15 12 15 22" />
+        </svg>
+      </button>
       <button className="omni-open" onClick={onPick} title="Open files (Ctrl+O)">Open</button>
       <div className="omnibox-wrap">
         <span className="omni-icon" aria-hidden>{active.source ? <KindBadge kind={active.detection?.kind} small /> : "🔍"}</span>
@@ -442,46 +469,90 @@ function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget,
   onForgetHost: (h: HostRecord) => void;
   onShare?: () => void;
 }) {
+  const [theme, setThemeState] = useState<Theme>(() => getTheme());
+  const handleTheme = (t: Theme) => {
+    setTheme(t);
+    setThemeState(t);
+  };
+
   return (
     <div className="home">
       <div className="home-hero">
-        <div className="logo" aria-hidden>U</div>
+        <img className="logo" src={logoUrl} alt="" />
         <h1>UniView</h1>
         <p className="muted">Open any file. Offline, private, instant.</p>
-        <button className="primary big" onClick={onPick} data-testid="open-button">Open files</button>
-        <p className="muted small">or drop files anywhere · Ctrl+O</p>
       </div>
-      <div className="home-formats" aria-label="Supported formats">
-        {(["pdf", "docx", "sheet", "pptx", "epub", "image", "video", "audio", "markdown", "text", "zip", "font"] as FormatKind[]).map((k) => (
-          <span key={k} className="format-chip"><KindBadge kind={k} small /> {badgeFor(k).name}</span>
-        ))}
+
+      <div className="home-actions">
+        <button className="action-card primary" onClick={onPick} data-testid="open-button">
+          <span className="action-card-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          </span>
+          <strong className="action-card-title">Open files</strong>
+          <span className="muted small action-card-sub">
+            {canReopen ? "PDF, Office, images, video and more · or drop files anywhere · Ctrl+O" : "PDF, Office, images, video and more"}
+          </span>
+        </button>
+
+        {hosts !== null && (
+          <button className="action-card" onClick={onConnect} data-testid="connect-computer">
+            <span className="action-card-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                <line x1="2" y1="20" x2="22" y2="20" />
+              </svg>
+            </span>
+            <strong className="action-card-title">Connect a computer</strong>
+            <span className="muted small action-card-sub">Browse a PC or Mac on your Wi-Fi</span>
+          </button>
+        )}
+
+        {onShare && (
+          <button className="action-card" onClick={onShare} data-testid="open-sharing">
+            <span className="action-card-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="18" cy="5" r="3" />
+                <circle cx="6" cy="12" r="3" />
+                <circle cx="18" cy="19" r="3" />
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+              </svg>
+            </span>
+            <strong className="action-card-title">Share this computer</strong>
+            <span className="muted small action-card-sub">Let your phone browse folders you choose</span>
+          </button>
+        )}
       </div>
-      {(hosts || onShare) && (
+
+      {hosts && hosts.length > 0 && (
         <section className="recents computers" aria-label="Your computers">
           <div className="section-head">
             <h2>Your computers</h2>
-            <div className="row">
-              {onShare && <button onClick={onShare} data-testid="open-sharing">Share this computer…</button>}
-              {hosts && <button onClick={onConnect} data-testid="connect-computer">Connect a computer…</button>}
-            </div>
           </div>
-          {hosts && hosts.length > 0 ? (
-            <ul>
-              {hosts.map((h) => (
-                <li key={h.hostId}>
-                  <button className="recent" onClick={() => onBrowse(h)} data-testid="browse-host">
-                    <span className="recent-name">🖥 {h.hostName}</span>
-                    <span className="muted small ellipsis">Browse shared folders · end-to-end encrypted</span>
-                  </button>
-                  <button className="link small" onClick={() => onForgetHost(h)} aria-label={`Forget ${h.hostName}`}>Forget</button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            hosts && <p className="muted small">Open files on your other computer without copying them. Connect over your local network; no account or cloud.</p>
-          )}
+          <ul>
+            {hosts.map((h) => (
+              <li key={h.hostId}>
+                <button className="recent" onClick={() => onBrowse(h)} data-testid="browse-host">
+                  <span className="recent-name">🖥 {h.hostName}</span>
+                  <span className="muted small ellipsis">Browse shared folders · end-to-end encrypted</span>
+                </button>
+                <button
+                  className="link danger small"
+                  onClick={() => onForgetHost(h)}
+                  data-testid={`pair-forget-${h.hostId}`}
+                  aria-label={`Forget ${h.hostName}`}
+                  title="Forget this computer"
+                >
+                  Forget
+                </button>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
+
       {recents.length > 0 && (
         <section className="recents">
           <h2>Recent</h2>
@@ -516,6 +587,48 @@ function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget,
           </ul>
         </section>
       )}
+
+      <div className="home-formats" aria-label="Supported formats">
+        {(["pdf", "docx", "sheet", "pptx", "epub", "image", "video", "audio", "markdown", "text", "zip", "font"] as FormatKind[]).map((k) => (
+          <span key={k} className="format-chip"><KindBadge kind={k} small /> {badgeFor(k).name}</span>
+        ))}
+      </div>
+
+      <div className="theme-control" role="radiogroup" aria-label="Appearance">
+        <span className="muted small">Appearance</span>
+        <div className="theme-segmented">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={theme === "light"}
+            className={theme === "light" ? "active" : ""}
+            data-testid="theme-light"
+            onClick={() => handleTheme("light")}
+          >
+            Light
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={theme === "dark"}
+            className={theme === "dark" ? "active" : ""}
+            data-testid="theme-dark"
+            onClick={() => handleTheme("dark")}
+          >
+            Dark
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={theme === "system"}
+            className={theme === "system" ? "active" : ""}
+            data-testid="theme-system"
+            onClick={() => handleTheme("system")}
+          >
+            System
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
