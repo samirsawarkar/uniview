@@ -41,7 +41,7 @@ public class MainActivity extends BridgeActivity {
     private boolean pageLoaded = false;
     private volatile boolean destroyed = false;
     // BridgeActivity.load() already passes the launch intent to onNewIntent.
-    private Intent lastHandled;
+    private final IntentGate intentGate = new IntentGate();
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -93,8 +93,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void handle(Intent intent) {
-        if (intent == null || intent == lastHandled) return;
-        lastHandled = intent;
+        if (!intentGate.firstTime(intent)) return;
         Uri uri = null;
         String action = intent.getAction();
         if (Intent.ACTION_VIEW.equals(action)) {
@@ -116,8 +115,11 @@ public class MainActivity extends BridgeActivity {
             if (pfd != null) {
                 long size = pfd.getStatSize();
                 if (size >= 0) {
-                    String token = SharedFiles.register(pfd, name, size);
+                    String token = SharedFiles.registerWhile(() -> !destroyed, pfd, name, size);
                     pfd = null;
+                    if (token == null) {
+                        return;
+                    }
                     String js = "(function(t,n,s,m){if(window.__univiewOpenShared){window.__univiewOpenShared(t,n,s,m)}else{"
                             + "(window.__univiewPendingShared=window.__univiewPendingShared||[]).push({token:t,name:n,size:s,mime:m})}})("
                             + JSONObject.quote(token) + ","

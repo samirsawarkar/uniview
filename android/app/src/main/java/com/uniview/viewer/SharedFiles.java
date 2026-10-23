@@ -14,6 +14,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 public final class SharedFiles {
     private static final int MAX_ENTRIES = 64;
@@ -86,7 +87,20 @@ public final class SharedFiles {
         return token;
     }
 
+    static String registerWhile(BooleanSupplier live, Closeable owner, FileChannel channel, String name, long size) {
+        String token = register(owner, channel, name, size);
+        if (live != null && !live.getAsBoolean()) {
+            close(token);
+            return null;
+        }
+        return token;
+    }
+
     public static String register(ParcelFileDescriptor pfd, String name, long size) throws IOException {
+        return registerWhile(() -> true, pfd, name, size);
+    }
+
+    public static String registerWhile(BooleanSupplier live, ParcelFileDescriptor pfd, String name, long size) throws IOException {
         if (pfd == null) {
             throw new IllegalArgumentException("pfd cannot be null");
         }
@@ -111,7 +125,7 @@ public final class SharedFiles {
             } catch (Throwable ignored) {
             }
         };
-        return register(owner, channel, name, size);
+        return registerWhile(live, owner, channel, name, size);
     }
 
     // A read racing a close may throw ClosedChannelException; the web client turns

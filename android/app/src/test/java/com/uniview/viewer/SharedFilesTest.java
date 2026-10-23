@@ -67,6 +67,37 @@ public class SharedFilesTest {
     }
 
     @Test
+    public void testRegisterWhile() throws IOException {
+        File f1 = File.createTempFile("test_rw1", ".dat");
+        File f2 = File.createTempFile("test_rw2", ".dat");
+        f1.deleteOnExit();
+        f2.deleteOnExit();
+        try (RandomAccessFile raf1 = new RandomAccessFile(f1, "rw");
+             RandomAccessFile raf2 = new RandomAccessFile(f2, "rw")) {
+            byte[] payload = new byte[]{1, 2, 3, 4};
+            raf1.write(payload);
+
+            TrackedCloseable liveOwner = new TrackedCloseable(raf1);
+            String token = SharedFiles.registerWhile(() -> true, liveOwner, raf1.getChannel(), "live.bin", payload.length);
+
+            assertNotNull(token);
+            assertFalse(liveOwner.closed);
+            assertArrayEquals(payload, SharedFiles.read(token, 0, 4));
+
+            int countBefore = SharedFiles.openCount();
+            TrackedCloseable deadOwner = new TrackedCloseable(raf2);
+            String deadToken = SharedFiles.registerWhile(() -> false, deadOwner, raf2.getChannel(), "dead.bin", 10);
+
+            assertNull(deadToken);
+            assertTrue(deadOwner.closed);
+            assertEquals(countBefore, SharedFiles.openCount());
+        } finally {
+            f1.delete();
+            f2.delete();
+        }
+    }
+
+    @Test
     public void testReadOperations() throws IOException {
         File f = File.createTempFile("test_read", ".dat");
         f.deleteOnExit();
