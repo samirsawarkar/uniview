@@ -1,0 +1,7 @@
+{
+  "uniview": "receipt/1",
+  "createdAt": "2026-10-24T00:00:00.000Z",
+  "agent": {
+    "name": "broken-json"
+  },
+  "task": "Unclosed object

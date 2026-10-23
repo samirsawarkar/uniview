@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uniview.app/schemas/receipt-1.json",
+  "title": "UniView Review Receipt v1",
+  "type": "object",
+  "required": [
+    "uniview",
+    "createdAt",
+    "agent",
+    "task",
+    "summary",
+    "files"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "uniview": {
+      "const": "receipt/1"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "agent": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "run": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "task": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 262144
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "relPath": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "role": {
+            "enum": ["created", "modified", "input"]
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "status": {
+            "enum": ["pass", "fail", "skip"]
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "required": ["title", "ref"],
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        }
+      }
+    },
+    "view": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "viewRelPath": {
+      "type": "string",
+      "maxLength": 1024
+    }
+  }
+}

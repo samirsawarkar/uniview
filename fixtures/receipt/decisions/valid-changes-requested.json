@@ -1,0 +1,18 @@
+{
+  "uniview": "decision/1",
+  "reviewId": "abcdef0123456789abcdef0123456789",
+  "receiptDigest": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+  "decision": "changes_requested",
+  "comment": "Please add test coverage for edge case token expiry.",
+  "decidedAt": "2026-10-24T02:35:00Z",
+  "verifiedAt": "2026-10-24T02:34:55Z",
+  "persisted": false,
+  "files": [
+    {
+      "path": "/workspace/src/auth.ts",
+      "expectedSha256": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+      "observedSha256": "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+      "state": "changed"
+    }
+  ]
+}

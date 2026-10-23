@@ -1,0 +1,49 @@
+{
+  "uniview": "receipt/1",
+  "createdAt": "2026-10-24T00:00:00.000Z",
+  "agent": {
+    "name": "deep-agent"
+  },
+  "task": "Exceeding JSON depth 16",
+  "summary": "Summary with 17 levels of object nesting",
+  "files": [
+    {
+      "path": "/workspace/file.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "role": "created"
+    }
+  ],
+  "extra": {
+    "l2": {
+      "l3": {
+        "l4": {
+          "l5": {
+            "l6": {
+              "l7": {
+                "l8": {
+                  "l9": {
+                    "l10": {
+                      "l11": {
+                        "l12": {
+                          "l13": {
+                            "l14": {
+                              "l15": {
+                                "l16": {
+                                  "l17": "too deep"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

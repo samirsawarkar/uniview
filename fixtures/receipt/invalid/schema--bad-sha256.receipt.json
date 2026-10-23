@@ -1,0 +1,16 @@
+{
+  "uniview": "receipt/1",
+  "createdAt": "2026-10-24T00:00:00.000Z",
+  "agent": {
+    "name": "test-agent"
+  },
+  "task": "Task with invalid SHA-256 hash",
+  "summary": "The sha256 pattern requires 64 lowercase hex characters.",
+  "files": [
+    {
+      "path": "/workspace/file.txt",
+      "sha256": "not-a-valid-sha256-hex-hash",
+      "role": "created"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "uniview": "decision/1",
+  "reviewId": "ffffffffffffffffffffffffffffffff",
+  "receiptDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "decision": "dismissed",
+  "comment": "",
+  "decidedAt": "2026-10-24T02:40:00Z",
+  "verifiedAt": "2026-10-24T02:39:50Z",
+  "persisted": false,
+  "files": [
+    {
+      "path": "/workspace/src/auth.ts",
+      "expectedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observedSha256": null,
+      "state": "missing"
+    }
+  ]
+}

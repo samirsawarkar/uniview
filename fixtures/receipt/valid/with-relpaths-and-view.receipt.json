@@ -1,0 +1,26 @@
+{
+  "uniview": "receipt/1",
+  "createdAt": "2026-10-24T02:00:00+00:00",
+  "agent": {
+    "name": "apex-lead",
+    "model": "gemini-2.5-pro"
+  },
+  "task": "Render inspection view with companion assets",
+  "summary": "Included relative path companions for cross-device LAN folder sync.",
+  "files": [
+    {
+      "path": "/home/user/project/dist/bundle.js",
+      "relPath": "dist/bundle.js",
+      "sha256": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+      "role": "created"
+    },
+    {
+      "path": "/home/user/project/dist/bundle.css",
+      "relPath": "dist/bundle.css",
+      "sha256": "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+      "role": "created"
+    }
+  ],
+  "view": "/home/user/project/dist/index.html",
+  "viewRelPath": "dist/index.html"
+}

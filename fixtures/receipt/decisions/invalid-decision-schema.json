@@ -1,0 +1,11 @@
+{
+  "uniview": "decision/1",
+  "reviewId": "short-id",
+  "receiptDigest": "bad-digest",
+  "decision": "unknown_action",
+  "comment": "Invalid decision payload",
+  "decidedAt": "not-a-date",
+  "verifiedAt": "not-a-date",
+  "persisted": "not-a-boolean",
+  "files": []
+}

@@ -1,0 +1,18 @@
+{
+  "uniview": "decision/1",
+  "reviewId": "0123456789abcdef0123456789abcdef",
+  "receiptDigest": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "decision": "approved",
+  "comment": "All unit tests pass and code quality looks great.",
+  "decidedAt": "2026-10-24T02:30:00Z",
+  "verifiedAt": "2026-10-24T02:29:59Z",
+  "persisted": true,
+  "files": [
+    {
+      "path": "/workspace/src/auth.ts",
+      "expectedSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "observedSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "state": "unchanged"
+    }
+  ]
+}

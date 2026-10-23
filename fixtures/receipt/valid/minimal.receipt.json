@@ -1,0 +1,16 @@
+{
+  "uniview": "receipt/1",
+  "createdAt": "2026-10-24T00:00:00.000Z",
+  "agent": {
+    "name": "codex-core"
+  },
+  "task": "Add user authentication flow and routes",
+  "summary": "Implemented login and signup routes with SHA-256 password hash checks.",
+  "files": [
+    {
+      "path": "/workspace/src/auth.ts",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "role": "created"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "uniview": "receipt/2",
+  "createdAt": "2026-10-24T00:00:00.000Z",
+  "agent": {
+    "name": "future-agent"
+  },
+  "task": "Task with unsupported receipt version 2",
+  "summary": "Should be rejected with unsupported_version",
+  "files": [
+    {
+      "path": "/workspace/main.ts",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "role": "created"
+    }
+  ]
+}

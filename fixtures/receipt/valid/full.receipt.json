@@ -1,0 +1,58 @@
+{
+  "uniview": "receipt/1",
+  "createdAt": "2026-10-24T01:15:30Z",
+  "agent": {
+    "name": "claude-code",
+    "model": "claude-3-7-sonnet",
+    "run": "run-987123"
+  },
+  "task": "Implement full review receipt schema and verification subsystem",
+  "summary": "Detailed receipt with verification checks, external documentation sources, and generated outputs.",
+  "files": [
+    {
+      "path": "I:/Development/Clone/Universal/uniview/shared/receipt.mjs",
+      "relPath": "shared/receipt.mjs",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "role": "created"
+    },
+    {
+      "path": "I:/Development/Clone/Universal/uniview/package.json",
+      "relPath": "package.json",
+      "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "role": "modified"
+    },
+    {
+      "path": "I:/Development/Clone/Universal/uniview/README.md",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "role": "input"
+    }
+  ],
+  "checks": [
+    {
+      "name": "Unit test suite",
+      "status": "pass",
+      "evidence": "4 test suites passed with 48 assertions"
+    },
+    {
+      "name": "Typecheck",
+      "status": "pass"
+    },
+    {
+      "name": "Fuzzing tests",
+      "status": "skip",
+      "evidence": "Deferred to nightly CI run"
+    }
+  ],
+  "sources": [
+    {
+      "title": "RFC 3339 Date and Time specification",
+      "ref": "https://www.rfc-editor.org/rfc/rfc3339"
+    },
+    {
+      "title": "JSON Schema Draft 2020-12",
+      "ref": "https://json-schema.org/draft/2020-12/release-notes"
+    }
+  ],
+  "view": "I:/Development/Clone/Universal/uniview/views/review-summary.html",
+  "viewRelPath": "views/review-summary.html"
+}
