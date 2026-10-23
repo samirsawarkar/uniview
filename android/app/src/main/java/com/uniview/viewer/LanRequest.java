@@ -10,6 +10,17 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * Executes a LAN HTTP POST request with timeout and response size limits.
+ *
+ * Race condition resolution:
+ * Documented outcome: a response that was fully read is returned.
+ * If the response bytes were fully read from the stream before the deadline task ran
+ * or while it was scheduled, the response is returned to the caller, the connection
+ * is disconnected, and the deadline task is cancelled. If the deadline fires while
+ * connection or reading is still in progress, the connection is aborted and
+ * LanTimeoutException is thrown.
+ */
 public final class LanRequest {
     private LanRequest() {
     }
@@ -24,6 +35,14 @@ public final class LanRequest {
         }
     }
 
+    static class Hooks {
+        void beforeCompletedSet() {
+        }
+
+        void beforeDeadlineFlagSet() {
+        }
+    }
+
     public static Result execute(
             String url,
             byte[] body,
@@ -33,6 +52,33 @@ public final class LanRequest {
             long deadlineAtNanos,
             int maxResponseBytes,
             ScheduledExecutorService scheduler) throws IOException {
+        return execute(
+                url,
+                body,
+                contentType,
+                connectTimeoutMs,
+                readTimeoutMs,
+                deadlineAtNanos,
+                maxResponseBytes,
+                scheduler,
+                new Hooks()
+        );
+    }
+
+    static Result execute(
+            String url,
+            byte[] body,
+            String contentType,
+            int connectTimeoutMs,
+            int readTimeoutMs,
+            long deadlineAtNanos,
+            int maxResponseBytes,
+            ScheduledExecutorService scheduler,
+            Hooks hooks) throws IOException {
+        if (hooks == null) {
+            hooks = new Hooks();
+        }
+
         if (url == null || !LanUrl.isAllowed(url)) {
             throw new IOException("LAN-only transport: destination not allowed");
         }
@@ -45,6 +91,7 @@ public final class LanRequest {
         ScheduledFuture<?> deadlineTask = null;
         final AtomicBoolean deadlineFired = new AtomicBoolean(false);
         final AtomicBoolean completed = new AtomicBoolean(false);
+        final Hooks activeHooks = hooks;
 
         try {
             URL targetUrl = new URL(url);
@@ -58,6 +105,7 @@ public final class LanRequest {
 
             if (scheduler != null) {
                 deadlineTask = scheduler.schedule(() -> {
+                    activeHooks.beforeDeadlineFlagSet();
                     if (!completed.get()) {
                         deadlineFired.set(true);
                         try {
@@ -100,11 +148,8 @@ public final class LanRequest {
                 responseBytes = new byte[0];
             }
 
+            activeHooks.beforeCompletedSet();
             completed.set(true);
-
-            if (deadlineFired.get()) {
-                throw new LanTimeoutException("The computer did not answer in time.");
-            }
 
             return new Result(status, responseBytes);
         } catch (Exception e) {

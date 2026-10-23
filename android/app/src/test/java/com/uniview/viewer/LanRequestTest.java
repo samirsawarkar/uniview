@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -23,6 +24,16 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+/**
+ * Tests for LanRequest native HTTP POST client.
+ *
+ * Race condition resolution:
+ * Documented outcome: a response that was fully read is returned.
+ * Even if the deadline task executes while completion flags are being set,
+ * a fully read response takes precedence and is returned, while the connection
+ * is closed and the deadline task is cancelled. If the deadline task fires while
+ * reading is still blocked, LanTimeoutException is thrown.
+ */
 public class LanRequestTest {
     private ScheduledExecutorService scheduler;
 
@@ -280,10 +291,15 @@ public class LanRequestTest {
     }
 
     @Test(timeout = 10000)
-    public void testCompletionRacesDeadline() throws Exception {
+    public void testCompletionWinsRaceWhenResponseFullyRead() throws Exception {
+        // Mutation caught: if a racing deadline task overrides a fully read response with LanTimeoutException,
+        // or fails to close connection / cancel deadline task on completion, this test fails.
         ServerSocket server = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
         int port = server.getLocalPort();
         byte[] expectedBody = "racing deadline completed".getBytes(StandardCharsets.UTF_8);
+
+        CountDownLatch serverSentResponse = new CountDownLatch(1);
+        CountDownLatch serverSawDisconnect = new CountDownLatch(1);
 
         Thread serverThread = new Thread(() -> {
             try (Socket socket = server.accept();
@@ -299,13 +315,47 @@ public class LanRequestTest {
                 os.write(response.getBytes(StandardCharsets.UTF_8));
                 os.write(expectedBody);
                 os.flush();
+                serverSentResponse.countDown();
+
+                // Read to EOF to observe client socket disconnect
+                while (is.read() != -1) {
+                }
+                serverSawDisconnect.countDown();
             } catch (IOException ignored) {
+                serverSawDisconnect.countDown();
             }
         });
         serverThread.start();
 
+        CountDownLatch responseReadLatch = new CountDownLatch(1);
+        CountDownLatch deadlineFiredLatch = new CountDownLatch(1);
+
+        LanRequest.Hooks hooks = new LanRequest.Hooks() {
+            @Override
+            public void beforeCompletedSet() {
+                responseReadLatch.countDown();
+                try {
+                    assertTrue("Deadline task must fire while held in beforeCompletedSet",
+                            deadlineFiredLatch.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            public void beforeDeadlineFlagSet() {
+                try {
+                    assertTrue("Response must be fully read before deadline task proceeds",
+                            responseReadLatch.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                deadlineFiredLatch.countDown();
+            }
+        };
+
         try {
-            long deadlineAtNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1000);
+            long deadlineAtNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(50);
             LanRequest.Result result = LanRequest.execute(
                     "http://127.0.0.1:" + port + "/v1/rpc",
                     new byte[0],
@@ -314,17 +364,98 @@ public class LanRequestTest {
                     2000,
                     deadlineAtNanos,
                     64 * 1024,
-                    scheduler
+                    scheduler,
+                    hooks
             );
 
+            // Documented outcome: a response that was fully read is returned
             assertEquals(200, result.status);
             assertArrayEquals(expectedBody, result.body);
 
-            Thread.sleep(1200);
+            // Connection is disconnected
+            assertTrue("Server must observe client disconnect after completion",
+                    serverSawDisconnect.await(5, TimeUnit.SECONDS));
 
-            assertEquals(200, result.status);
-            assertArrayEquals(expectedBody, result.body);
+            // Deadline task is cancelled / done
+            if (scheduler instanceof ScheduledThreadPoolExecutor) {
+                assertEquals("Scheduler queue must have no pending tasks",
+                        0, ((ScheduledThreadPoolExecutor) scheduler).getQueue().size());
+            }
         } finally {
+            server.close();
+            serverThread.join(1000);
+        }
+    }
+
+    @Test(timeout = 10000)
+    public void testDeadlineWinsRaceWhenServerStalls() throws Exception {
+        // Mutation caught: if the deadline task does not abort an in-flight stalled read with
+        // LanTimeoutException, this test times out or fails to throw LanTimeoutException.
+        ServerSocket server = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
+        int port = server.getLocalPort();
+
+        CountDownLatch clientConnected = new CountDownLatch(1);
+        CountDownLatch serverSawDisconnect = new CountDownLatch(1);
+
+        Thread serverThread = new Thread(() -> {
+            try (Socket socket = server.accept();
+                 InputStream is = socket.getInputStream()) {
+                byte[] buf = new byte[1024];
+                is.read(buf);
+                clientConnected.countDown();
+
+                // Stall without sending response headers or body
+                while (is.read() != -1) {
+                }
+                serverSawDisconnect.countDown();
+            } catch (IOException ignored) {
+                serverSawDisconnect.countDown();
+            }
+        });
+        serverThread.start();
+
+        CountDownLatch deadlineTaskHold = new CountDownLatch(1);
+
+        LanRequest.Hooks hooks = new LanRequest.Hooks() {
+            @Override
+            public void beforeDeadlineFlagSet() {
+                try {
+                    assertTrue("Client must be connected and blocked in read before deadline fires",
+                            clientConnected.await(5, TimeUnit.SECONDS));
+                    deadlineTaskHold.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+
+        try {
+            long deadlineAtNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(50);
+
+            // Trigger deadline task release after short delay so client is blocked in socket read
+            scheduler.schedule(deadlineTaskHold::countDown, 100, TimeUnit.MILLISECONDS);
+
+            try {
+                LanRequest.execute(
+                        "http://127.0.0.1:" + port + "/v1/rpc",
+                        new byte[0],
+                        null,
+                        2000,
+                        10000,
+                        deadlineAtNanos,
+                        64 * 1024,
+                        scheduler,
+                        hooks
+                );
+                fail("Expected LanTimeoutException when deadline fires during stalled read");
+            } catch (LanTimeoutException e) {
+                assertEquals("The computer did not answer in time.", e.getMessage());
+            }
+
+            assertTrue("Server must observe socket close after deadline aborts request",
+                    serverSawDisconnect.await(5, TimeUnit.SECONDS));
+        } finally {
+            deadlineTaskHold.countDown();
             server.close();
             serverThread.join(1000);
         }
