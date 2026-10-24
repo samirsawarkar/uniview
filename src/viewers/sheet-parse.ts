@@ -4,6 +4,7 @@ import { assertZipWithinBudget, decodeText } from "../core/zip";
 
 export const DEFAULT_COL_W = 110;
 export const MAX_GRID_SLOTS = 500_000;
+export const MAX_GRID_COLS = 16_384;
 export const MAX_PARSE_ROWS = 100_000;
 export const MAX_OUTPUT_CHARS = 32 * 1024 * 1024; // 32 Mi UTF-16 code units
 export const MAX_OUTPUT_CODE_UNITS = MAX_OUTPUT_CHARS;
@@ -22,6 +23,8 @@ export interface ParsedSheet {
   cells: string[][];
   merges: SheetMerge[];
   totalRows?: number;
+  totalCols?: number;
+  truncated?: boolean;
 }
 
 export interface ParseSpreadsheetOptions {
@@ -50,14 +53,8 @@ interface SheetPlan {
   cols: number;
   merges: SheetMerge[];
   totalRows?: number;
-}
-
-function countLines(text: string): number {
-  let n = 0;
-  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) n++;
-  // A final line without a trailing newline is still a row.
-  if (text.length > 0 && !text.endsWith("\n")) n++;
-  return n;
+  totalCols?: number;
+  truncated?: boolean;
 }
 
 /** Pure spreadsheet parsing: handles CSV/TSV with UTF-8 decoding and ZIP-based workbooks with budget checks. */
@@ -72,24 +69,21 @@ export function parseSpreadsheet(
   }
 
   let wb: XLSX.WorkBook;
-  // SheetJS records the full range of a truncated workbook sheet in "!fullref", but not for CSV/TSV;
-  // for text input count the lines instead (a quoted cell spanning lines counts as extra rows).
-  let textLines = 0;
+  const isText =
+    opts.ext === "csv" ||
+    opts.ext === "tsv" ||
+    opts.by === "content" ||
+    (!opts.ext && (head[0] !== 0x50 || head[1] !== 0x4b) && head[0] !== 0xd0);
+
   try {
-    const isText =
-      opts.ext === "csv" ||
-      opts.ext === "tsv" ||
-      opts.by === "content" ||
-      (!opts.ext && (head[0] !== 0x50 || head[1] !== 0x4b) && head[0] !== 0xd0);
     const text = isText ? decodeText(new Uint8Array(buf)) : "";
-    if (isText) textLines = countLines(text);
     wb = isText
       ? XLSX.read(text, {
           type: "string",
           dense: true,
           cellDates: true,
           raw: false,
-          sheetRows: MAX_PARSE_ROWS,
+          sheetRows: MAX_PARSE_ROWS + 1,
           FS: opts.ext === "tsv" ? "\t" : undefined,
         })
       : XLSX.read(buf, {
@@ -173,54 +167,65 @@ export function parseSpreadsheet(
       throw new CorruptFileError(`Spreadsheet sheet "${name}" exceeds grid slot capacity.`);
     }
 
+    const textRowsCapped = isText && rows > MAX_PARSE_ROWS;
+    const availableRows = textRowsCapped ? MAX_PARSE_ROWS : rows;
+
     const rawFullref = (ws as { "!fullref"?: unknown })["!fullref"];
-    let fullRows = rows;
-    if (typeof rawFullref === "string" && rawFullref.trim() !== "") {
-      try {
-        const fullRange = XLSX.utils.decode_range(rawFullref);
-        if (
-          Number.isFinite(fullRange.s.r) &&
-          Number.isFinite(fullRange.e.r) &&
-          fullRange.e.r >= fullRange.s.r
-        ) {
-          fullRows = fullRange.e.r - fullRange.s.r + 1;
+    let fullRows = availableRows;
+    if (!isText) {
+      if (typeof rawFullref === "string" && rawFullref.trim() !== "") {
+        try {
+          const fullRange = XLSX.utils.decode_range(rawFullref);
+          if (
+            Number.isFinite(fullRange.s.r) &&
+            Number.isFinite(fullRange.e.r) &&
+            fullRange.e.r >= fullRange.s.r
+          ) {
+            fullRows = fullRange.e.r - fullRange.s.r + 1;
+          }
+        } catch {
+          // fallback to rows from !ref
         }
-      } catch {
-        // fallback to rows from !ref
-      }
-    } else if (rawFullref && typeof rawFullref === "object" && "s" in rawFullref && "e" in rawFullref) {
-      const fr = rawFullref as XLSX.Range;
-      if (Number.isFinite(fr.s.r) && Number.isFinite(fr.e.r) && fr.e.r >= fr.s.r) {
-        fullRows = fr.e.r - fr.s.r + 1;
+      } else if (rawFullref && typeof rawFullref === "object" && "s" in rawFullref && "e" in rawFullref) {
+        const fr = rawFullref as XLSX.Range;
+        if (Number.isFinite(fr.s.r) && Number.isFinite(fr.e.r) && fr.e.r >= fr.s.r) {
+          fullRows = fr.e.r - fr.s.r + 1;
+        }
       }
     }
 
-    if (textLines > fullRows) fullRows = textLines;
-
-    let keptRows = rows;
-    if (cols > 0) {
-      if (rows * cols > remainingBudget) {
-        keptRows = Math.floor(remainingBudget / cols);
-      }
-    } else {
-      keptRows = 0;
+    let keptCols = remainingBudget > 0 ? Math.min(cols, MAX_GRID_COLS, remainingBudget) : 0;
+    let keptRows = keptCols > 0 ? Math.min(availableRows, Math.floor(remainingBudget / keptCols)) : 0;
+    if (keptRows === 0) {
+      keptCols = 0;
     }
 
-    const usedSlots = keptRows * cols;
+    const usedSlots = keptRows * keptCols;
     remainingBudget = Math.max(0, remainingBudget - usedSlots);
 
-    const isTruncated = fullRows > keptRows;
-    const totalRows = isTruncated ? fullRows : undefined;
+    const colsDropped = keptRows > 0 && cols > keptCols;
+    const rowsDropped = textRowsCapped || (fullRows > keptRows && fullRows > 0);
+    const isTruncated = rowsDropped || colsDropped;
+
+    let totalRows: number | undefined;
+    if (textRowsCapped) {
+      totalRows = undefined;
+    } else if (fullRows > keptRows && fullRows > 0) {
+      totalRows = fullRows;
+    }
+
+    const totalCols = colsDropped ? cols : undefined;
 
     // Conservative check of cell text content in this sheet before allocating output arrays
-    if (keptRows > 0 && cols > 0) {
+    if (keptRows > 0 && keptCols > 0) {
       const maxR = range.s.r + keptRows - 1;
+      const maxC = range.s.c + keptCols - 1;
       const dense = (ws as unknown as { "!data"?: (XLSX.CellObject | undefined)[][] })["!data"];
       if (dense) {
         for (let r = range.s.r; r <= maxR && r < dense.length; r++) {
           const denseRow = dense[r];
           if (!denseRow) continue;
-          for (let c = range.s.c; c <= range.e.c && c < denseRow.length; c++) {
+          for (let c = range.s.c; c <= maxC && c < denseRow.length; c++) {
             const cell = denseRow[c];
             if (!cell) continue;
             totalTextUnits += formatCell(cell).length;
@@ -236,7 +241,7 @@ export function parseSpreadsheet(
           if (key.charCodeAt(0) === 0x21 /* '!' */) continue;
           try {
             const coord = XLSX.utils.decode_cell(key);
-            if (coord.r < range.s.r || coord.r > maxR || coord.c < range.s.c || coord.c > range.e.c) {
+            if (coord.r < range.s.r || coord.r > maxR || coord.c < range.s.c || coord.c > maxC) {
               continue;
             }
           } catch {
@@ -263,8 +268,9 @@ export function parseSpreadsheet(
     }
 
     const merges: SheetMerge[] = [];
-    if (keptRows > 0 && cols > 0) {
+    if (keptRows > 0 && keptCols > 0) {
       const maxR = range.s.r + keptRows - 1;
+      const maxC = range.s.c + keptCols - 1;
       for (const m of rawMerges) {
         if (!m || !m.s || !m.e) continue;
         const r0 = Math.min(m.s.r, m.e.r);
@@ -282,7 +288,7 @@ export function parseSpreadsheet(
         const clipR0 = Math.max(r0, range.s.r);
         const clipR1 = Math.min(r1, maxR);
         const clipC0 = Math.max(c0, range.s.c);
-        const clipC1 = Math.min(c1, range.e.c);
+        const clipC1 = Math.min(c1, maxC);
         if (clipR0 > clipR1 || clipC0 > clipC1) {
           continue;
         }
@@ -293,15 +299,15 @@ export function parseSpreadsheet(
       }
     }
 
-    plans.push({ name, ws, range, rows: keptRows, cols, merges, totalRows });
+    plans.push({ name, ws, range, rows: keptRows, cols: keptCols, merges, totalRows, totalCols, truncated: isTruncated });
   }
 
-  return plans.map(({ name, ws, range, rows, cols, merges, totalRows }) => {
+  return plans.map(({ name, ws, range, rows, cols, merges, totalRows, totalCols, truncated }) => {
     if (!ws) {
       const emptySheet: ParsedSheet = { name, rows: 0, cols: 0, colWidths: [], cells: [], merges: [] };
-      if (totalRows !== undefined) {
-        emptySheet.totalRows = totalRows;
-      }
+      if (totalRows !== undefined) emptySheet.totalRows = totalRows;
+      if (totalCols !== undefined) emptySheet.totalCols = totalCols;
+      if (truncated) emptySheet.truncated = true;
       return emptySheet;
     }
 
@@ -336,9 +342,9 @@ export function parseSpreadsheet(
       cells,
       merges,
     };
-    if (totalRows !== undefined) {
-      parsed.totalRows = totalRows;
-    }
+    if (totalRows !== undefined) parsed.totalRows = totalRows;
+    if (totalCols !== undefined) parsed.totalCols = totalCols;
+    if (truncated) parsed.truncated = true;
     return parsed;
   });
 }

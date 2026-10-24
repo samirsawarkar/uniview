@@ -30,12 +30,25 @@ export function toGrid(s: ParsedSheet): Grid {
   };
 }
 
-/** Shown when the sheet had more rows than fit the parse budget. */
+/** Shown when the sheet had rows or columns dropped. */
 export function SheetTruncatedNotice({ sheet }: { sheet?: ParsedSheet }) {
-  if (!sheet || sheet.totalRows === undefined) return null;
+  if (!sheet || !sheet.truncated) return null;
+
+  let msg = "";
+  if (sheet.totalRows !== undefined) {
+    msg = `Showing the first ${sheet.rows.toLocaleString()} of ${sheet.totalRows.toLocaleString()} rows.`;
+  } else if (sheet.totalCols === undefined) {
+    msg = `Showing the first ${sheet.rows.toLocaleString()} rows. The rest of the file is not shown.`;
+  }
+
+  if (sheet.totalCols !== undefined) {
+    const colMsg = `Showing the first ${sheet.cols.toLocaleString()} of ${sheet.totalCols.toLocaleString()} columns.`;
+    msg = msg ? `${msg} ${colMsg}` : colMsg;
+  }
+
   return (
     <p className="sheet-truncated" role="status">
-      Showing the first {sheet.rows.toLocaleString()} of {sheet.totalRows.toLocaleString()} rows.
+      {msg}
     </p>
   );
 }
@@ -68,8 +81,7 @@ export function parseWorkbook(
     }
   }
 
-  return new Promise<ParsedSheet[]>((
-resolve, reject) => {
+  return new Promise<ParsedSheet[]>((resolve, reject) => {
     let settled = false;
 
     const cleanup = () => {
@@ -253,7 +265,6 @@ export function VirtualGrid({ grid }: { grid: Grid }) {
       className="grid-scroll"
       ref={ref}
       onScroll={(e) => {
-        // Read now: React clears currentTarget before a deferred state updater would run.
         const { scrollTop, scrollLeft } = e.currentTarget;
         setView((v) => ({ ...v, top: scrollTop, left: scrollLeft }));
       }}
