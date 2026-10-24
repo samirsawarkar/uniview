@@ -482,10 +482,29 @@ function sameIdentity(a, b) {
   return String(x.dev) === String(y.dev) && String(x.ino) === String(y.ino);
 }
 
+function sameFingerprint(a, b) {
+  const x = a ?? null;
+  const y = b ?? null;
+  if (x === null || y === null) return x === y;
+  return (
+    String(x.size) === String(y.size) &&
+    String(x.mtimeMs) === String(y.mtimeMs) &&
+    String(x.birthtimeMs ?? null) === String(y.birthtimeMs ?? null)
+  );
+}
+
 /**
  * A decision is allowed only when the states being decided on are exactly the states that were shown:
- * same files in the same order, same state and observed hash, and the same file identity (dev, ino).
- * Identity matters because a file replaced a second time with identical bytes looks identical otherwise.
+ * same files in the same order, same state and observed hash, and the same file identity.
+ *
+ * Identity depends on its quality (set by the verifier as `identityQuality`):
+ *  - "inode":       (dev, ino) must match, and the fstat metadata too when both sides have it;
+ *  - "fingerprint": the inode number is unusable on that volume, so size, mtime and birth time must match
+ *                   and both must be present;
+ *  - "none":        nothing can be compared, so the file is never approvable;
+ *  - absent (plain data without a verifier): (dev, ino) as given, as before.
+ * The two sides must have the same quality. Identity matters because a file replaced a second time with
+ * identical bytes looks identical otherwise.
  */
 export function canDecide(shown, current) {
   if (!Array.isArray(shown) || !Array.isArray(current)) {
@@ -500,7 +519,17 @@ export function canDecide(shown, current) {
     if (!s || !c) return false;
     if (s.state !== c.state) return false;
     if (s.observedSha256 !== c.observedSha256) return false;
-    if (!sameIdentity(s.identity, c.identity)) return false;
+    const qs = s.identityQuality ?? null;
+    const qc = c.identityQuality ?? null;
+    if (qs === "none" || qc === "none") return false;
+    if (qs !== qc) return false;
+    if (qs === "fingerprint") {
+      if (!s.fingerprint || !c.fingerprint) return false;
+      if (!sameFingerprint(s.fingerprint, c.fingerprint)) return false;
+    } else {
+      if (!sameIdentity(s.identity, c.identity)) return false;
+      if (s.fingerprint && c.fingerprint && !sameFingerprint(s.fingerprint, c.fingerprint)) return false;
+    }
     if (s.path !== undefined && c.path !== undefined && s.path !== c.path) {
       return false;
     }

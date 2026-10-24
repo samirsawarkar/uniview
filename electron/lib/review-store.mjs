@@ -181,6 +181,12 @@ export function createDecisionStore({
     }
   }
 
+  /** Deletes this review's record (best effort cleanup when it can no longer be corrected). */
+  async function remove(reviewId) {
+    await fs.unlink(path.join(dir, `${reviewId}.json`));
+    knownIds.delete(reviewId);
+  }
+
   async function load(reviewId) {
     const targetPath = path.join(dir, `${reviewId}.json`);
     try {
@@ -201,6 +207,7 @@ export function createDecisionStore({
     hasDecision,
     save,
     rewrite,
+    remove,
     load,
     prune,
   };
@@ -225,6 +232,25 @@ async function parentIsLinkFree(fs, dir) {
   try {
     const real = await fs.realpath(dir);
     return comparablePath(real) === comparablePath(dir);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * After the write: the directory and the target must still resolve to exactly where they were checked.
+ *
+ * Node has no directory-relative file operations on Windows, so the writes above go through the pathname
+ * and an ancestor swapped to a junction/symlink after the first realpath could redirect them. This second
+ * check turns that into a detected failure: the caller removes what it created and reports false.
+ * Residual window: a swap that is undone again before this check cannot be seen without handle-relative
+ * operations; the data then still went to the intended directory or was removed again.
+ */
+async function placementStillValid(fs, dir, targetPath) {
+  try {
+    if (!(await parentIsLinkFree(fs, dir))) return false;
+    const realTarget = await fs.realpath(targetPath);
+    return comparablePath(realTarget) === comparablePath(targetPath);
   } catch {
     return false;
   }
@@ -263,10 +289,16 @@ export async function writeDecisionNextToReceipt(receiptPath, decision, { fs = d
 
     const outcome = await createExclusive(fs, targetPath, JSON.stringify(decision, null, 2));
     if (outcome === "created") {
-      return true;
+      if (await placementStillValid(fs, dir, targetPath)) return true;
+      // An ancestor changed under us: take back what was created (through the same path) and fail closed.
+      try {
+        await fs.unlink(targetPath);
+      } catch {}
+      return false;
     }
 
     // Something is already there: fine only if it is this review's own decision.
+    if (!(await placementStillValid(fs, dir, targetPath))) return false;
     const existingStats = await fs.lstat(targetPath);
     if (existingStats.isSymbolicLink()) {
       return false;

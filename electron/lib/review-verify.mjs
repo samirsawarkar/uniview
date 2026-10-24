@@ -13,6 +13,9 @@ export const REVIEW_LIMITS = Object.freeze({
 
 // How often a pending pass re-checks the deadline against the injected clock.
 const DEADLINE_TICK_MS = 250;
+// How long a file's handle close may take before the pass stops waiting for it. The handle's slot is
+// still only freed when the close really settles (see liveHandles below).
+const CLOSE_DEADLINE_MS = 2000;
 
 export class ReviewError extends Error {
   constructor(code, details = undefined) {
@@ -47,16 +50,75 @@ export async function openReview({ receiptBytes, receiptPath = null, randomBytes
   };
 }
 
-export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_LIMITS }) {
+/**
+ * Identity quality.
+ *
+ * The (dev, ino) pair identifies a file only where the filesystem hands out stable, unique inode numbers.
+ * Some volumes report ino 0 for every file, or numbers that change between opens. So:
+ *  - "inode": ino is present, a positive integer, and the volume is not flagged unreliable. (dev, ino)
+ *    decides replacement; a differing pair is always "replaced", an unstable ino on an unflagged volume
+ *    is therefore blocked (fail closed: it cannot be told apart from a swap).
+ *  - "fingerprint": ino is unusable (0, absent, non-finite) or the volume is flagged by `inoUnreliable`.
+ *    Replacement is judged by fstat metadata taken from the same handle (size, mtimeMs, birthtimeMs) against
+ *    the first-seen values. An unchanged file keeps its metadata, so it is not blocked; a different file
+ *    almost always differs in mtime or birthtime. Identical metadata plus identical bytes is the best-effort
+ *    limit of this fallback (a perfect forgery cannot be told apart); approval stays bound to the byte hash.
+ *  - "none": neither is available. Nothing can be compared, so the file is never approvable
+ *    (canDecide refuses, decide reports "identity_unavailable").
+ */
+function inoUsable(identity, inoUnreliable) {
+  if (!identity) return false;
+  const ino = String(identity.ino);
+  if (!/^\d+$/.test(ino) || BigInt(ino) === 0n) return false;
+  if (identity.dev === undefined || identity.dev === null) return false;
+  return !inoUnreliable(identity.dev);
+}
+
+function fingerprintUsable(fp) {
+  return Boolean(fp) && fp.size !== null && fp.size !== undefined && fp.mtimeMs !== null && fp.mtimeMs !== undefined;
+}
+
+/** size, mtime and birth time must all match; a birth time only counts when both sides have one. */
+function fingerprintsDiffer(a, b) {
+  if (String(a.size) !== String(b.size)) return true;
+  if (String(a.mtimeMs) !== String(b.mtimeMs)) return true;
+  if (a.birthtimeMs && b.birthtimeMs && String(a.birthtimeMs) !== String(b.birthtimeMs)) return true;
+  return false;
+}
+
+function normalizeFingerprint(st) {
+  if (!st) return null;
+  const size = st.size;
+  const mtime = st.mtimeMs;
+  if (size === undefined || size === null || mtime === undefined || mtime === null) return null;
+  const birth = st.birthtimeMs;
+  return {
+    size: String(size),
+    mtimeMs: String(mtime),
+    // 0 / absent means the filesystem does not record a creation time.
+    birthtimeMs: birth === undefined || birth === null || Number(birth) === 0 ? null : String(birth),
+  };
+}
+
+export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_LIMITS, inoUnreliable = () => false }) {
   const maxBytesPerPass = limits?.maxBytesPerPass ?? REVIEW_LIMITS.maxBytesPerPass;
   const passDeadlineMs = limits?.passDeadlineMs ?? REVIEW_LIMITS.passDeadlineMs;
   const concurrentFiles = limits?.concurrentFiles ?? REVIEW_LIMITS.concurrentFiles;
   const queuedVerifications = limits?.queuedVerifications ?? REVIEW_LIMITS.queuedVerifications;
   const chunkBytes = limits?.chunkBytes ?? REVIEW_LIMITS.chunkBytes;
   const deadlineTickMs = limits?.deadlineTickMs ?? DEADLINE_TICK_MS;
+  const closeDeadlineMs = limits?.closeDeadlineMs ?? CLOSE_DEADLINE_MS;
 
   let isRunning = false;
   const queue = [];
+
+  // Open file handles, counted from the moment a slot is reserved until the handle's close has really
+  // settled (also when it settles long after the pass stopped waiting). Never more than concurrentFiles,
+  // across passes: a handle whose close hangs keeps its slot, so a later pass cannot pile more on top.
+  let liveHandles = 0;
+  const releaseSlot = () => {
+    liveHandles = Math.max(0, liveHandles - 1);
+  };
 
   function queueSize() {
     return queue.length;
@@ -92,12 +154,29 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
     });
   }
 
-  /** Closes a handle without waiting for it (a pending read would block an awaited close). */
-  function closeDetached(handle) {
+  /**
+   * Closes a handle and waits for it, but never longer than closeDeadlineMs. The slot is released when the
+   * close settles, however late; a close that never settles keeps its slot (and so bounds the live handles).
+   */
+  function closeBounded(handle) {
+    let closePromise;
     try {
-      const p = handle?.close?.();
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    } catch {}
+      closePromise = Promise.resolve(handle?.close?.());
+    } catch (err) {
+      closePromise = Promise.reject(err);
+    }
+    const settled = closePromise.then(
+      () => {},
+      () => {},
+    ).then(() => {
+      releaseSlot();
+    });
+    let timer;
+    const bound = new Promise((resolve) => {
+      timer = setTimeout(resolve, closeDeadlineMs);
+      if (typeof timer?.unref === "function") timer.unref();
+    });
+    return Promise.race([settled, bound]).finally(() => clearTimeout(timer));
   }
 
   async function runPass(files, { baseline, signal } = {}) {
@@ -166,22 +245,28 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
     const results = new Array(list.length);
     let nextIdx = 0;
 
-    function resultFor(file, state, identity, baselineEntry, observedSha256 = null) {
+    /** `info` is { identity, fingerprint, quality } for a file that was opened, else null. */
+    function resultFor(file, state, info, baselineEntry, observedSha256 = null) {
+      const identity = info?.identity ?? null;
+      const fingerprint = info?.fingerprint ?? null;
       return {
         path: file.path,
         expectedSha256: file.sha256,
         observedSha256,
         state,
         identity,
-        // The identity first seen when the review opened; "replaced" is judged against it.
+        fingerprint,
+        identityQuality: info?.quality ?? null,
+        // The identity and metadata first seen when the review opened; "replaced" is judged against them.
         firstIdentity: baselineEntry?.firstIdentity ?? baselineEntry?.identity ?? identity ?? null,
+        firstFingerprint: baselineEntry?.firstFingerprint ?? baselineEntry?.fingerprint ?? fingerprint ?? null,
       };
     }
 
     async function hashFile(file) {
       const baselineEntry = baselineMap.get(file.path);
-      const make = (state, identity = null, observed = null) => resultFor(file, state, identity, baselineEntry, observed);
-      const interruptedResult = (reason, identity = null) => make(reason === "abort" ? "unreadable" : "too_large", identity);
+      const make = (state, info = null, observed = null) => resultFor(file, state, info, baselineEntry, observed);
+      const interruptedResult = (reason, info = null) => make(reason === "abort" ? "unreadable" : "too_large", info);
 
       if (aborted) return make("unreadable");
 
@@ -190,17 +275,32 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
         return make("too_large");
       }
 
+      // Reserve a handle slot before opening. If earlier handles are still not closed (their close is
+      // hanging), no further file is opened: it is reported unreadable instead of exceeding the bound.
+      if (liveHandles >= concurrentFiles) return make("unreadable");
+      liveHandles++;
+
       const openPromise = Promise.resolve().then(() => openAgentPath(file.path));
       const opened = await raceInterrupt(openPromise);
       if (opened.interrupt) {
-        // The open may still finish later; do not leak the handle it produces.
-        openPromise.then((r) => r?.handle && closeDetached(r.handle), () => {});
+        // The open may still finish later; its handle is closed then and only then gives its slot back.
+        openPromise.then(
+          (r) => {
+            if (r?.handle) void closeBounded(r.handle);
+            else releaseSlot();
+          },
+          () => releaseSlot(),
+        );
         return interruptedResult(opened.interrupt);
       }
-      if (opened.error) return make("unreadable");
+      if (opened.error) {
+        releaseSlot();
+        return make("unreadable");
+      }
 
       const openRes = opened.value;
       if (!openRes || !openRes.ok) {
+        releaseSlot();
         const code = openRes?.code;
         let state = "unreadable";
         if (code === "not_found") state = "missing";
@@ -212,30 +312,40 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
       const identity = (dev !== undefined && ino !== undefined && dev !== null && ino !== null)
         ? { dev: String(dev), ino: String(ino) }
         : null;
+      let info = { identity, fingerprint: null, quality: "none" };
 
-      let readPending = false;
-      try {
-        if (aborted) return make("unreadable", identity);
+      /** Reads and hashes the opened handle. The handle is closed by the caller. */
+      const readAndHash = async () => {
+        if (aborted) return make("unreadable", info);
+
+        // Metadata from the same handle (never from the path), used when the inode number is not usable.
+        let fingerprint = null;
+        if (typeof handle.stat === "function") {
+          const st = await raceInterrupt(Promise.resolve().then(() => handle.stat({ bigint: true })));
+          if (st.interrupt) return interruptedResult(st.interrupt, info);
+          if (!st.error) fingerprint = normalizeFingerprint(st.value);
+        }
+        const inoOk = inoUsable(identity, inoUnreliable);
+        const quality = inoOk ? "inode" : fingerprintUsable(fingerprint) ? "fingerprint" : "none";
+        info = { identity, fingerprint, quality };
 
         const hash = crypto.createHash("sha256");
         const buffer = Buffer.alloc(chunkBytes);
 
         while (true) {
-          if (aborted) return make("unreadable", identity);
+          if (aborted) return make("unreadable", info);
           if (now() > deadline) {
             limitReached = true;
-            return make("too_large", identity);
+            return make("too_large", info);
           }
 
-          readPending = true;
           const read = await raceInterrupt(Promise.resolve().then(() => handle.read(buffer, 0, chunkBytes, null)));
-          if (read.interrupt) return interruptedResult(read.interrupt, identity);
-          readPending = false;
-          if (read.error) return make("unreadable", identity);
+          if (read.interrupt) return interruptedResult(read.interrupt, info);
+          if (read.error) return make("unreadable", info);
 
           const bytesRead = read.value?.bytesRead ?? 0;
           if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > chunkBytes) {
-            return make("unreadable", identity);
+            return make("unreadable", info);
           }
           if (bytesRead === 0) {
             break;
@@ -243,7 +353,7 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
 
           if (totalBytesHashed + bytesRead > maxBytesPerPass) {
             limitReached = true;
-            return make("too_large", identity);
+            return make("too_large", info);
           }
 
           totalBytesHashed += bytesRead;
@@ -251,34 +361,66 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
 
           if (now() > deadline) {
             limitReached = true;
-            return make("too_large", identity);
+            return make("too_large", info);
           }
         }
 
         // The deadline also covers the final read that reports end of file.
-        if (aborted) return make("unreadable", identity);
+        if (aborted) return make("unreadable", info);
         if (now() > deadline) {
           limitReached = true;
-          return make("too_large", identity);
+          return make("too_large", info);
         }
 
         const observedSha256 = hash.digest("hex");
 
         const first = baselineEntry?.firstIdentity ?? baselineEntry?.identity ?? null;
-        const isReplaced = Boolean(first && identity && (first.dev !== identity.dev || first.ino !== identity.ino));
-        const state = isReplaced ? "replaced" : fileState(file.sha256, observedSha256);
-        return make(state, identity, observedSha256);
-      } catch {
-        return make("unreadable", identity);
-      } finally {
-        if (readPending) {
-          closeDetached(handle);
+        const firstFp = baselineEntry?.firstFingerprint ?? baselineEntry?.fingerprint ?? null;
+        let replaced = false;
+        let metadataDiffers = false;
+        if (inoOk && inoUsable(first, inoUnreliable)) {
+          // Inode numbers are usable on both sides: a differing pair is a different file. The inode
+          // number alone can be reused by a new file, so a differing creation time also counts.
+          replaced = first.dev !== identity.dev || first.ino !== identity.ino;
+          if (!replaced && fingerprintUsable(fingerprint) && fingerprintUsable(firstFp) && fingerprint.birthtimeMs && firstFp.birthtimeMs) {
+            replaced = fingerprint.birthtimeMs !== firstFp.birthtimeMs;
+          }
+        } else if (fingerprintUsable(fingerprint) && fingerprintUsable(firstFp)) {
+          metadataDiffers = fingerprintsDiffer(fingerprint, firstFp);
+        }
+
+        let state;
+        if (replaced) {
+          state = "replaced";
         } else {
-          try {
-            await handle.close();
-          } catch {}
+          state = fileState(file.sha256, observedSha256);
+          // Without a usable inode, different metadata with the expected bytes is a replacement; with other
+          // bytes the file simply reads as changed.
+          if (metadataDiffers && state === "unchanged") state = "replaced";
+        }
+        return make(state, info, observedSha256);
+      };
+
+      let result;
+      try {
+        result = await readAndHash();
+      } catch {
+        result = make("unreadable", info);
+      } finally {
+        // Closed right away (also while a read is still pending) and waited for, but only up to the close
+        // deadline, so a hanging close cannot hold the pass or the queue.
+        await closeBounded(handle);
+      }
+
+      // A pass cancelled, or out of time, while the file was closing does not report a clean result.
+      if (result.observedSha256 !== null) {
+        if (aborted) return make("unreadable", info);
+        if (now() > deadline) {
+          limitReached = true;
+          return make("too_large", info);
         }
       }
+      return result;
     }
 
     async function worker() {
@@ -322,7 +464,8 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
   return {
     verify,
     queueSize,
-    limits: { maxBytesPerPass, passDeadlineMs, concurrentFiles, queuedVerifications, chunkBytes, deadlineTickMs },
+    liveHandles: () => liveHandles,
+    limits: { maxBytesPerPass, passDeadlineMs, concurrentFiles, queuedVerifications, chunkBytes, deadlineTickMs, closeDeadlineMs },
   };
 }
 
@@ -388,9 +531,11 @@ async function decideClaimed({
     const currentResults = current?.results ?? [];
 
     if (!canDecide(shownResults, currentResults)) {
+      // A file whose identity cannot be established at all is a different problem from a changed file.
+      const unavailable = currentResults.some((r) => r?.identityQuality === "none");
       return {
         ok: false,
-        code: "changed",
+        code: unavailable ? "identity_unavailable" : "changed",
         current,
       };
     }
@@ -447,18 +592,43 @@ async function decideClaimed({
   // A record exists when the store holds it, or (without a store) the sidecar was written.
   outcome.recorded = storeOk || (!store && wantsSidecar && nextOk);
 
-  // 3. Make the store copy agree with what is returned when the sidecar failed.
+  // 3. Make the store copy agree with what is returned when the sidecar failed. The three copies (returned
+  //    decision, store record, sidecar) must never disagree on `persisted`.
+  let note = null;
+  let storeRecordRemoved = null;
   if (storeOk && !nextOk) {
     decisionObj.persisted = false;
-    try {
-      await store.rewrite(decisionObj);
-    } catch {}
+    let corrected = false;
+    for (let attempt = 0; attempt < 2 && !corrected; attempt++) {
+      try {
+        await store.rewrite(decisionObj);
+        corrected = true;
+      } catch {}
+    }
+    if (!corrected) {
+      // The stored copy still claims persisted true and cannot be corrected: remove it (best effort) so it
+      // cannot contradict what is returned. The claim stays (outcome.recorded) so this review is not decided
+      // a second time in this process, and the result says the store was left inconsistent.
+      note = "store_inconsistent";
+      storeRecordRemoved = false;
+      try {
+        if (typeof store.remove === "function") {
+          await store.remove(decisionObj.reviewId);
+          storeRecordRemoved = true;
+        }
+      } catch {}
+    }
   }
 
   decisionObj.persisted = Boolean(storeOk && nextOk);
 
-  return {
+  const result = {
     ok: true,
     decision: decisionObj,
   };
+  if (note) {
+    result.note = note;
+    result.storeRecordRemoved = storeRecordRemoved;
+  }
+  return result;
 }

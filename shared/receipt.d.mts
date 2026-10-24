@@ -135,7 +135,12 @@ export declare function fileState(
   observed: string | null,
   opts?: { replaced?: boolean; missing?: boolean; unreadable?: boolean; tooLarge?: boolean }
 ): FileState;
-export declare function canDecide(
-  shown: Array<{ state: FileState; observedSha256: string | null; path?: string; identity?: { dev: string; ino: string } | null }>,
-  current: Array<{ state: FileState; observedSha256: string | null; path?: string; identity?: { dev: string; ino: string } | null }>
-): boolean;
+export interface DecidableFile {
+  state: FileState;
+  observedSha256: string | null;
+  path?: string;
+  identity?: { dev: string; ino: string } | null;
+  identityQuality?: "inode" | "fingerprint" | "none" | null;
+  fingerprint?: { size: string; mtimeMs: string; birthtimeMs?: string | null } | null;
+}
+export declare function canDecide(shown: DecidableFile[], current: DecidableFile[]): boolean;
