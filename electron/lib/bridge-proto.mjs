@@ -366,7 +366,7 @@ function timingSafeEqualBuffers(a, b) {
  * @param {import('node:stream').Duplex} stream
  * @param {{
  *   key: Buffer | Uint8Array | string,
- *   replay?: ReplayWindow,
+ *   replay: ReplayWindow,
  *   timeoutMs?: number,
  *   randomBytes?: (size: number) => Buffer
  * }} options
@@ -374,15 +374,22 @@ function timingSafeEqualBuffers(a, b) {
  *   sessionId: string,
  *   clientNonce: Buffer,
  *   serverNonce: Buffer,
- *   decoder: FrameDecoder
+ *   decoder: FrameDecoder,
+ *   pending: Array<{ header: Record<string, unknown>, body: Buffer }>
  * }>}
  */
-export async function serverHandshake(stream, {
-  key,
-  replay,
-  timeoutMs = HANDSHAKE_TIMEOUT_MS,
-  randomBytes = crypto.randomBytes,
-}) {
+export function serverHandshake(stream, options = {}) {
+  if (!options || !(options.replay instanceof ReplayWindow)) {
+    throw new TypeError('serverHandshake requires a shared ReplayWindow');
+  }
+
+  const {
+    key,
+    replay,
+    timeoutMs = HANDSHAKE_TIMEOUT_MS,
+    randomBytes = crypto.randomBytes,
+  } = options;
+
   const decoder = new FrameDecoder();
   const queue = [];
   let waiter = null;
@@ -466,82 +473,75 @@ export async function serverHandshake(stream, {
     stream.removeListener('close', onClose);
   };
 
-  try {
-    const handshakeLogic = async () => {
-      const helloFrame = await nextFrame();
-      const hello = helloFrame.header;
-      if (hello.t !== 'hello' || hello.v !== 1 || typeof hello.clientNonce !== 'string') {
-        throw new BridgeError('bad_frame', 'Expected valid hello frame');
-      }
+  return (async () => {
+    try {
+      const handshakeLogic = async () => {
+        const helloFrame = await nextFrame();
+        const hello = helloFrame.header;
+        if (hello.t !== 'hello' || hello.v !== 1 || typeof hello.clientNonce !== 'string') {
+          throw new BridgeError('bad_frame', 'Expected valid hello frame');
+        }
 
-      const clientNonce = Buffer.from(hello.clientNonce, 'base64');
-      if (clientNonce.length !== NONCE_BYTES) {
-        throw new BridgeError('bad_frame', `clientNonce must be ${NONCE_BYTES} bytes`);
-      }
+        const clientNonce = Buffer.from(hello.clientNonce, 'base64');
+        if (clientNonce.length !== NONCE_BYTES) {
+          throw new BridgeError('bad_frame', `clientNonce must be ${NONCE_BYTES} bytes`);
+        }
 
-      if (replay) {
         const isFresh = replay.checkAndRemember(clientNonce);
         if (!isFresh) {
           throw new BridgeError('replay', 'Replay of clientNonce detected');
         }
-      }
 
-      const serverNonce = toBuffer(randomBytes(NONCE_BYTES));
-      if (serverNonce.length !== NONCE_BYTES) {
-        throw new BridgeError('bad_frame', `serverNonce must be ${NONCE_BYTES} bytes`);
-      }
-
-      const sProof = serverProof(key, clientNonce, serverNonce);
-      stream.write(encodeFrame({
-        t: 'challenge',
-        serverNonce: serverNonce.toString('base64'),
-        serverProof: sProof.toString('base64'),
-      }));
-
-      const proofFrame = await nextFrame();
-      const proofMsg = proofFrame.header;
-      if (proofMsg.t !== 'proof' || typeof proofMsg.clientProof !== 'string') {
-        throw new BridgeError('bad_frame', 'Expected valid proof frame');
-      }
-
-      const clientProofBuf = Buffer.from(proofMsg.clientProof, 'base64');
-      const expectedProof = clientProof(key, serverNonce, clientNonce);
-      if (!timingSafeEqualBuffers(clientProofBuf, expectedProof)) {
-        try {
-          stream.write(encodeFrame({ t: 'error', code: 'auth_failed' }));
-        } catch (_) {}
-        throw new BridgeError('auth_failed', 'Client proof verification failed');
-      }
-
-      const sessionIdBytes = toBuffer(randomBytes(16));
-      const sessionId = sessionIdBytes.toString('hex');
-      stream.write(encodeFrame({ t: 'ready', sessionId }));
-
-      if (queue.length > 0) {
-        const leftoverBuffers = [];
-        for (const f of queue) {
-          leftoverBuffers.push(encodeFrame(f.header, f.body));
+        const serverNonce = toBuffer(randomBytes(NONCE_BYTES));
+        if (serverNonce.length !== NONCE_BYTES) {
+          throw new BridgeError('bad_frame', `serverNonce must be ${NONCE_BYTES} bytes`);
         }
-        decoder._buffer = Buffer.concat([...leftoverBuffers, decoder._buffer]);
-      }
 
-      return {
-        sessionId,
-        clientNonce,
-        serverNonce,
-        decoder,
+        const sProof = serverProof(key, clientNonce, serverNonce);
+        stream.write(encodeFrame({
+          t: 'challenge',
+          serverNonce: serverNonce.toString('base64'),
+          serverProof: sProof.toString('base64'),
+        }));
+
+        const proofFrame = await nextFrame();
+        const proofMsg = proofFrame.header;
+        if (proofMsg.t !== 'proof' || typeof proofMsg.clientProof !== 'string') {
+          throw new BridgeError('bad_frame', 'Expected valid proof frame');
+        }
+
+        const clientProofBuf = Buffer.from(proofMsg.clientProof, 'base64');
+        const expectedProof = clientProof(key, serverNonce, clientNonce);
+        if (!timingSafeEqualBuffers(clientProofBuf, expectedProof)) {
+          try {
+            stream.write(encodeFrame({ t: 'error', code: 'auth_failed' }));
+          } catch (_) {}
+          throw new BridgeError('auth_failed', 'Client proof verification failed');
+        }
+
+        const sessionIdBytes = toBuffer(randomBytes(16));
+        const sessionId = sessionIdBytes.toString('hex');
+        stream.write(encodeFrame({ t: 'ready', sessionId }));
+
+        return {
+          sessionId,
+          clientNonce,
+          serverNonce,
+          decoder,
+          pending: queue,
+        };
       };
-    };
 
-    return await Promise.race([handshakeLogic(), timeoutPromise]);
-  } catch (err) {
-    try {
-      stream.destroy();
-    } catch (_) {}
-    throw err;
-  } finally {
-    cleanup();
-  }
+      return await Promise.race([handshakeLogic(), timeoutPromise]);
+    } catch (err) {
+      try {
+        stream.destroy();
+      } catch (_) {}
+      throw err;
+    } finally {
+      cleanup();
+    }
+  })();
 }
 
 /**
@@ -557,14 +557,15 @@ export async function serverHandshake(stream, {
  *   sessionId: string,
  *   clientNonce: Buffer,
  *   serverNonce: Buffer,
- *   decoder: FrameDecoder
+ *   decoder: FrameDecoder,
+ *   pending: Array<{ header: Record<string, unknown>, body: Buffer }>
  * }>}
  */
 export async function clientHandshake(stream, {
   key,
   timeoutMs = HANDSHAKE_TIMEOUT_MS,
   randomBytes = crypto.randomBytes,
-}) {
+} = {}) {
   const decoder = new FrameDecoder();
   const queue = [];
   let waiter = null;
@@ -704,19 +705,12 @@ export async function clientHandshake(stream, {
         throw new BridgeError('bad_frame', 'Expected valid ready frame');
       }
 
-      if (queue.length > 0) {
-        const leftoverBuffers = [];
-        for (const f of queue) {
-          leftoverBuffers.push(encodeFrame(f.header, f.body));
-        }
-        decoder._buffer = Buffer.concat([...leftoverBuffers, decoder._buffer]);
-      }
-
       return {
         sessionId: ready.sessionId,
         clientNonce,
         serverNonce,
         decoder,
+        pending: queue,
       };
     };
 

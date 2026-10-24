@@ -273,7 +273,7 @@ describe('Packet P15b-1: bridge wire protocol', () => {
     it('bad client proof: server rejects auth_failed, sends the error frame, destroys the stream', async () => {
       const [clientStream, serverStream] = createDuplexPair();
       const serverKey = Buffer.alloc(32, 1);
-      const serverPromise = serverHandshake(serverStream, { key: serverKey });
+      const serverPromise = serverHandshake(serverStream, { key: serverKey, replay: new ReplayWindow() });
 
       const decoder = new FrameDecoder();
       const received: any[] = [];
@@ -295,7 +295,7 @@ describe('Packet P15b-1: bridge wire protocol', () => {
     it('mismatched keys: the client fails first and the server sees the stream close', async () => {
       const [clientStream, serverStream] = createDuplexPair();
       const clientPromise = clientHandshake(clientStream, { key: Buffer.alloc(32, 2) });
-      const serverPromise = serverHandshake(serverStream, { key: Buffer.alloc(32, 1) });
+      const serverPromise = serverHandshake(serverStream, { key: Buffer.alloc(32, 1), replay: new ReplayWindow() });
       await expect(clientPromise).rejects.toThrowError(expect.objectContaining({ code: 'auth_failed' }));
       await expect(serverPromise).rejects.toThrow();
       expect(clientStream.destroyed).toBe(true);
@@ -321,7 +321,7 @@ describe('Packet P15b-1: bridge wire protocol', () => {
       });
 
       const clientPromise = clientHandshake(clientStream, { key: clientKey });
-      const serverPromise = serverHandshake(serverStream, { key: wrongServerKey });
+      const serverPromise = serverHandshake(serverStream, { key: wrongServerKey, replay: new ReplayWindow() });
 
       await expect(clientPromise).rejects.toThrowError(
         expect.objectContaining({ code: 'auth_failed' })
@@ -446,7 +446,7 @@ describe('Packet P15b-1: bridge wire protocol', () => {
     it('unexpected message type or field types throws bad_frame', async () => {
       const [clientStream, serverStream] = createDuplexPair();
       const key = Buffer.alloc(32, 9);
-      const serverPromise = serverHandshake(serverStream, { key });
+      const serverPromise = serverHandshake(serverStream, { key, replay: new ReplayWindow() });
 
       clientStream.write(encodeFrame({
         t: 'hello',
@@ -459,5 +459,376 @@ describe('Packet P15b-1: bridge wire protocol', () => {
       );
       expect(serverStream.destroyed).toBe(true);
     });
+  });
+});
+
+describe('Packet P15b-1b: Codex security review fixes', () => {
+  it('pipelining: server handoff preserves decoder state and returns pending frames when client pipelines frames', async () => {
+    // Mutation: if serverHandshake corrupts decoder._buffer or drops pending frames, pipelined parsing fails with bad_frame
+    const [serverStream, clientStream] = createDuplexPair();
+    const key = crypto.randomBytes(32);
+    const replay = new ReplayWindow();
+
+    const serverPromise = serverHandshake(serverStream, { key, replay });
+
+    const clientNonce = crypto.randomBytes(NONCE_BYTES);
+    clientStream.write(encodeFrame({
+      t: 'hello',
+      v: 1,
+      clientNonce: clientNonce.toString('base64'),
+    }));
+
+    const clientDecoder = new FrameDecoder();
+    let challengeFrame: any = null;
+    await new Promise<void>((resolve) => {
+      const onData = (chunk: Buffer) => {
+        const frames = clientDecoder.push(chunk);
+        if (frames.length > 0) {
+          challengeFrame = frames[0];
+          clientStream.removeListener('data', onData);
+          resolve();
+        }
+      };
+      clientStream.on('data', onData);
+    });
+
+    expect(challengeFrame.header.t).toBe('challenge');
+    const serverNonce = Buffer.from(challengeFrame.header.serverNonce, 'base64');
+    const cProof = clientProof(key, serverNonce, clientNonce);
+
+    const proofFrame = encodeFrame({
+      t: 'proof',
+      clientProof: cProof.toString('base64'),
+    });
+    const completeReq = encodeFrame({ t: 'req', id: 1 }, Buffer.from('payload-1'));
+    const partialReqFull = encodeFrame({ t: 'req', id: 2 }, Buffer.from('payload-2'));
+    const partialPart1 = partialReqFull.subarray(0, 6);
+    const partialPart2 = partialReqFull.subarray(6);
+
+    // Write proof + complete req + first 6 bytes of second req in one write
+    clientStream.write(Buffer.concat([proofFrame, completeReq, partialPart1]));
+
+    const serverRes = await serverPromise;
+
+    expect(serverRes.pending).toHaveLength(1);
+    expect(serverRes.pending[0].header).toEqual({ t: 'req', id: 1 });
+    expect(serverRes.pending[0].body).toEqual(Buffer.from('payload-1'));
+
+    const remainingFrames = serverRes.decoder.push(partialPart2);
+    expect(remainingFrames).toHaveLength(1);
+    expect(remainingFrames[0].header).toEqual({ t: 'req', id: 2 });
+    expect(remainingFrames[0].body).toEqual(Buffer.from('payload-2'));
+  });
+
+  it('pipelining: client handoff preserves decoder state and returns pending frames when server pipelines frames', async () => {
+    // Mutation: if clientHandshake corrupts decoder._buffer or drops pending frames, pipelined parsing fails with bad_frame
+    const [serverStream, clientStream] = createDuplexPair();
+    const key = crypto.randomBytes(32);
+
+    const clientPromise = clientHandshake(clientStream, { key });
+
+    const serverDecoder = new FrameDecoder();
+    let helloFrame: any = null;
+    await new Promise<void>((resolve) => {
+      const onData = (chunk: Buffer) => {
+        const frames = serverDecoder.push(chunk);
+        if (frames.length > 0) {
+          helloFrame = frames[0];
+          serverStream.removeListener('data', onData);
+          resolve();
+        }
+      };
+      serverStream.on('data', onData);
+    });
+
+    expect(helloFrame.header.t).toBe('hello');
+    const clientNonce = Buffer.from(helloFrame.header.clientNonce, 'base64');
+    const serverNonce = crypto.randomBytes(NONCE_BYTES);
+    const sProof = serverProof(key, clientNonce, serverNonce);
+
+    serverStream.write(encodeFrame({
+      t: 'challenge',
+      serverNonce: serverNonce.toString('base64'),
+      serverProof: sProof.toString('base64'),
+    }));
+
+    let proofFrame: any = null;
+    await new Promise<void>((resolve) => {
+      const onData = (chunk: Buffer) => {
+        const frames = serverDecoder.push(chunk);
+        if (frames.length > 0) {
+          proofFrame = frames[0];
+          serverStream.removeListener('data', onData);
+          resolve();
+        }
+      };
+      serverStream.on('data', onData);
+    });
+
+    expect(proofFrame.header.t).toBe('proof');
+
+    const sessionId = crypto.randomBytes(16).toString('hex');
+    const readyFrame = encodeFrame({ t: 'ready', sessionId });
+    const completeRes = encodeFrame({ t: 'res', id: 10 }, Buffer.from('res-payload-1'));
+    const partialResFull = encodeFrame({ t: 'res', id: 20 }, Buffer.from('res-payload-2'));
+    const partialPart1 = partialResFull.subarray(0, 6);
+    const partialPart2 = partialResFull.subarray(6);
+
+    // Server writes ready + complete frame + partial frame in one write
+    serverStream.write(Buffer.concat([readyFrame, completeRes, partialPart1]));
+
+    const clientRes = await clientPromise;
+
+    expect(clientRes.pending).toHaveLength(1);
+    expect(clientRes.pending[0].header).toEqual({ t: 'res', id: 10 });
+    expect(clientRes.pending[0].body).toEqual(Buffer.from('res-payload-1'));
+
+    const remainingFrames = clientRes.decoder.push(partialPart2);
+    expect(remainingFrames).toHaveLength(1);
+    expect(remainingFrames[0].header).toEqual({ t: 'res', id: 20 });
+    expect(remainingFrames[0].body).toEqual(Buffer.from('res-payload-2'));
+  });
+
+  it('serverHandshake requires a shared ReplayWindow instance and does not touch stream on failure', () => {
+    // Mutation: if serverHandshake allows missing replay or throws asynchronously, this test fails
+    const [serverStream] = createDuplexPair();
+    const key = crypto.randomBytes(32);
+    const writeSpy = vi.spyOn(serverStream, 'write');
+    const destroySpy = vi.spyOn(serverStream, 'destroy');
+
+    expect(() => {
+      serverHandshake(serverStream, { key } as any);
+    }).toThrow(TypeError);
+
+    expect(() => {
+      serverHandshake(serverStream, { key } as any);
+    }).toThrow('serverHandshake requires a shared ReplayWindow');
+
+    expect(() => {
+      serverHandshake(serverStream, { key, replay: {} } as any);
+    }).toThrow(TypeError);
+
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(destroySpy).not.toHaveBeenCalled();
+    expect(serverStream.destroyed).toBe(false);
+  });
+
+  it('proof comparison calls crypto.timingSafeEqual for both server and client checks', async () => {
+    // Mutation: if timingSafeEqualBuffers uses === or Buffer.prototype.equals, crypto.timingSafeEqual is not called
+    const timingSpy = vi.spyOn(crypto, 'timingSafeEqual');
+    try {
+      const [serverStream, clientStream] = createDuplexPair();
+      const key = crypto.randomBytes(32);
+      const replay = new ReplayWindow();
+
+      const [serverRes, clientRes] = await Promise.all([
+        serverHandshake(serverStream, { key, replay }),
+        clientHandshake(clientStream, { key }),
+      ]);
+
+      expect(serverRes.sessionId).toBe(clientRes.sessionId);
+      expect(timingSpy).toHaveBeenCalledTimes(2);
+      for (const call of timingSpy.mock.calls) {
+        expect(call[0]).toBeInstanceOf(Buffer);
+        expect(call[1]).toBeInstanceOf(Buffer);
+        expect((call[0] as Buffer).length).toBe(32);
+        expect((call[1] as Buffer).length).toBe(32);
+      }
+    } finally {
+      timingSpy.mockRestore();
+    }
+  });
+
+  it('server default deadline is exactly 5000ms when timeoutMs is omitted', async () => {
+    // Mutation: if HANDSHAKE_TIMEOUT_MS or default timeoutMs changes from 5000, this test fails
+    vi.useFakeTimers();
+    try {
+      const [serverStream] = createDuplexPair();
+      const key = crypto.randomBytes(32);
+      const replay = new ReplayWindow();
+
+      let settled = false;
+      let rejectError: any = null;
+
+      const serverPromise = serverHandshake(serverStream, { key, replay }).catch((err: any) => {
+        settled = true;
+        rejectError = err;
+      });
+
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await serverPromise;
+
+      expect(settled).toBe(true);
+      expect(rejectError).toBeInstanceOf(BridgeError);
+      expect(rejectError.code).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans up stream listeners and timers after a successful handshake on both sides', async () => {
+    // Mutation: if cleanup() fails to remove listeners or clear timer on success, this test fails
+    vi.useFakeTimers();
+    try {
+      const [serverStream, clientStream] = createDuplexPair();
+      const key = crypto.randomBytes(32);
+      const replay = new ReplayWindow();
+
+      const serverStartData = serverStream.listenerCount('data');
+      const serverStartError = serverStream.listenerCount('error');
+      const serverStartClose = serverStream.listenerCount('close');
+
+      const clientStartData = clientStream.listenerCount('data');
+      const clientStartError = clientStream.listenerCount('error');
+      const clientStartClose = clientStream.listenerCount('close');
+
+      const [serverRes, clientRes] = await Promise.all([
+        serverHandshake(serverStream, { key, replay }),
+        clientHandshake(clientStream, { key }),
+      ]);
+
+      expect(serverRes.sessionId).toBe(clientRes.sessionId);
+
+      expect(serverStream.listenerCount('data')).toBe(serverStartData);
+      expect(serverStream.listenerCount('error')).toBe(serverStartError);
+      expect(serverStream.listenerCount('close')).toBe(serverStartClose);
+
+      expect(clientStream.listenerCount('data')).toBe(clientStartData);
+      expect(clientStream.listenerCount('error')).toBe(clientStartError);
+      expect(clientStream.listenerCount('close')).toBe(clientStartClose);
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans up stream listeners and timers after an auth failure on both sides', async () => {
+    // Mutation: if cleanup() fails to remove listeners or clear timer on auth failure, this test fails
+    vi.useFakeTimers();
+    try {
+      // 1. Server-side auth failure
+      {
+        const [serverStream, clientStream] = createDuplexPair();
+        const key = crypto.randomBytes(32);
+        const replay = new ReplayWindow();
+
+        const sStartData = serverStream.listenerCount('data');
+        const sStartError = serverStream.listenerCount('error');
+        const sStartClose = serverStream.listenerCount('close');
+
+        const serverPromise = serverHandshake(serverStream, { key, replay });
+
+        const clientNonce = crypto.randomBytes(NONCE_BYTES);
+        clientStream.write(encodeFrame({ t: 'hello', v: 1, clientNonce: clientNonce.toString('base64') }));
+
+        const decoder = new FrameDecoder();
+        await new Promise<void>((resolve) => {
+          const onData = (chunk: Buffer) => {
+            const frames = decoder.push(chunk);
+            if (frames.length > 0) {
+              clientStream.removeListener('data', onData);
+              resolve();
+            }
+          };
+          clientStream.on('data', onData);
+        });
+
+        const badProof = Buffer.alloc(32, 0xee).toString('base64');
+        clientStream.write(encodeFrame({ t: 'proof', clientProof: badProof }));
+
+        await expect(serverPromise).rejects.toThrow();
+
+        expect(serverStream.listenerCount('data')).toBe(sStartData);
+        expect(serverStream.listenerCount('error')).toBe(sStartError);
+        expect(serverStream.listenerCount('close')).toBe(sStartClose);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+
+      // 2. Client-side auth failure
+      {
+        const [serverStream, clientStream] = createDuplexPair();
+        const key = crypto.randomBytes(32);
+
+        const cStartData = clientStream.listenerCount('data');
+        const cStartError = clientStream.listenerCount('error');
+        const cStartClose = clientStream.listenerCount('close');
+
+        const clientPromise = clientHandshake(clientStream, { key });
+
+        const sDecoder = new FrameDecoder();
+        await new Promise<void>((resolve) => {
+          const onData = (chunk: Buffer) => {
+            const frames = sDecoder.push(chunk);
+            if (frames.length > 0) {
+              serverStream.removeListener('data', onData);
+              resolve();
+            }
+          };
+          serverStream.on('data', onData);
+        });
+
+        serverStream.write(encodeFrame({
+          t: 'challenge',
+          serverNonce: crypto.randomBytes(NONCE_BYTES).toString('base64'),
+          serverProof: Buffer.alloc(32, 0xdd).toString('base64'),
+        }));
+
+        await expect(clientPromise).rejects.toThrow();
+
+        expect(clientStream.listenerCount('data')).toBe(cStartData);
+        expect(clientStream.listenerCount('error')).toBe(cStartError);
+        expect(clientStream.listenerCount('close')).toBe(cStartClose);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('client rejects challenge with 31-byte serverNonce with bad_frame and writes no proof', async () => {
+    // Mutation: if clientHandshake does not check serverNonce length or writes proof before validation, this test fails
+    const [serverStream, clientStream] = createDuplexPair();
+    const key = crypto.randomBytes(32);
+
+    const clientPromise = clientHandshake(clientStream, { key });
+
+    const serverDecoder = new FrameDecoder();
+    await new Promise<void>((resolve) => {
+      const onData = (chunk: Buffer) => {
+        const frames = serverDecoder.push(chunk);
+        if (frames.length > 0) {
+          serverStream.removeListener('data', onData);
+          resolve();
+        }
+      };
+      serverStream.on('data', onData);
+    });
+
+    let clientWroteAfterChallenge = false;
+    serverStream.on('data', () => {
+      clientWroteAfterChallenge = true;
+    });
+
+    const shortNonce = Buffer.alloc(31, 0x77);
+    serverStream.write(encodeFrame({
+      t: 'challenge',
+      serverNonce: shortNonce.toString('base64'),
+      serverProof: Buffer.alloc(32, 0x88).toString('base64'),
+    }));
+
+    let thrownError: any = null;
+    try {
+      await clientPromise;
+    } catch (err) {
+      thrownError = err;
+    }
+
+    expect(thrownError).toBeInstanceOf(BridgeError);
+    expect(thrownError.code).toBe('bad_frame');
+    expect(clientWroteAfterChallenge).toBe(false);
   });
 });
