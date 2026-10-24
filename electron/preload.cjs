@@ -37,12 +37,26 @@ contextBridge.exposeInMainWorld("uniview", {
   },
   ready: () => ipcRenderer.send("uniview:ready"),
 
-  // Review tab desktop IPC.
+  // Review tab desktop IPC. Receipts are named by the grant token of a file the person opened, never by a
+  // path; main resolves the token itself. Only the known fields are forwarded, with their types checked.
   review: {
-    open: (args) => ipcRenderer.invoke("review:open", args),
-    decide: (args) => ipcRenderer.invoke("review:decide", args),
-    dismiss: (reviewId) => ipcRenderer.invoke("review:dismiss", reviewId == null ? undefined : String(reviewId)),
-    refresh: (reviewId) => ipcRenderer.invoke("review:refresh", reviewId == null ? undefined : String(reviewId)),
+    open: (args) => {
+      const a = args && typeof args === "object" ? args : {};
+      const out = {};
+      if (a.receiptToken != null) out.receiptToken = String(a.receiptToken);
+      if (a.receiptBytes != null) out.receiptBytes = a.receiptBytes;
+      return ipcRenderer.invoke("review:open", out);
+    },
+    decide: (args) => {
+      const a = args && typeof args === "object" ? args : {};
+      return ipcRenderer.invoke("review:decide", {
+        reviewId: String(a.reviewId),
+        decision: String(a.decision),
+        comment: a.comment == null ? undefined : String(a.comment),
+      });
+    },
+    dismiss: (reviewId) => ipcRenderer.invoke("review:dismiss", String(reviewId)),
+    refresh: (reviewId) => ipcRenderer.invoke("review:refresh", String(reviewId)),
   },
 
   // Sharing this computer with paired devices (host side).

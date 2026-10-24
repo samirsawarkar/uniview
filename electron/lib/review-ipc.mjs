@@ -1,12 +1,100 @@
 // Review IPC handlers and registration for desktop review decisions.
 // Pure functions testable without Electron.
+//
+// Trust model: the renderer is not trusted with paths. It names a receipt by the opaque grant token of a
+// file the person opened (GrantStore, core.mjs); main resolves the token to a path itself, reads at most
+// 2 MiB through that file, and derives the decision sidecar location only from that granted path. Inline
+// receipts (bytes) never write beside anything. Every argument is type- and size-checked, and failures
+// come back as fixed codes with fixed messages: no file content, no error text from the OS, no paths.
 
 import crypto from "node:crypto";
 import path from "node:path";
 import defaultFs from "node:fs/promises";
-import { openReview, createVerifier, decide, ReviewError } from "./review-verify.mjs";
+import { openReview, createVerifier, decide } from "./review-verify.mjs";
 import { createDecisionStore } from "./review-store.mjs";
 import { openAgentPath as defaultOpenAgentPath } from "./agent-paths.mjs";
+
+export const REVIEW_IPC_LIMITS = Object.freeze({
+  /** Receipt file / inline body, same as the receipt format limit. */
+  maxReceiptBytes: 2 * 1024 * 1024,
+  maxCommentBytes: 8192,
+  /** Reviews that are open (opened, not yet decided) at once, including opens still in flight. */
+  maxOpenUndecided: 32,
+  /** Decided reviews stay answerable ("already decided") for this long, then are forgotten. */
+  decidedRetentionMs: 60_000,
+  /** Hard bound on remembered decided reviews inside the retention window. */
+  maxDecidedKept: 64,
+  maxTokenLength: 64,
+});
+
+const MESSAGES = Object.freeze({
+  bad_args: "Invalid request",
+  not_granted: "This file is no longer available. Open it again.",
+  unreadable: "The receipt could not be read",
+  too_large: "The receipt is larger than 2 MiB",
+  invalid_receipt: "This is not a valid review receipt",
+  verify_failed: "The files could not be checked",
+  too_many_reviews: "Too many reviews are open. Decide or close one first.",
+  not_found: "Review not found",
+  already_decided: "This review has already been decided",
+  busy: "Another action on this review is in progress",
+  bad_decision: "Invalid decision",
+  bad_comment: "Comment exceeds 8 KiB",
+  changed: "A file changed since you looked — review again",
+  identity_unavailable: "A file cannot be identified reliably, so it cannot be approved",
+  invalid_decision: "The decision could not be recorded",
+  failed: "The review could not be completed",
+});
+
+/** Short fixed text per validation error code. The validator's own messages can echo receipt content. */
+const VALIDATION_TEXT = Object.freeze({
+  schema: "does not match the receipt format",
+  bad_path: "is not an acceptable path",
+  too_large: "is too large",
+  too_deep: "is nested too deeply",
+  invalid_json: "is not valid JSON",
+  unsupported_version: "is not a supported version",
+});
+const MAX_VALIDATION_ERRORS = 20;
+const MAX_ERROR_PATH = 120;
+
+function fail(code, extra = {}) {
+  const known = Object.hasOwn(MESSAGES, code) ? code : "failed";
+  return { ok: false, code: known, error: MESSAGES[known], ...extra };
+}
+
+function safeCode(code) {
+  return typeof code === "string" && Object.hasOwn(MESSAGES, code) ? code : "failed";
+}
+
+function sanitizeValidationErrors(details) {
+  if (!Array.isArray(details)) return [];
+  const out = [];
+  for (const d of details) {
+    if (out.length >= MAX_VALIDATION_ERRORS) break;
+    if (typeof d !== "object" || d === null) continue;
+    const code = typeof d.code === "string" && Object.hasOwn(VALIDATION_TEXT, d.code) ? d.code : "schema";
+    const rawPath = typeof d.path === "string" ? d.path : "";
+    // eslint-disable-next-line no-control-regex
+    const cleanPath = rawPath.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, "").slice(0, MAX_ERROR_PATH);
+    out.push({ code, path: cleanPath, message: VALIDATION_TEXT[code] });
+  }
+  return out;
+}
+
+function isPlainObject(v) {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+const REVIEW_ID = /^[0-9a-f]{32}$/;
+
+function toBytes(v) {
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  return null;
+}
 
 export function createReviewIpcHandlers({
   store,
@@ -16,147 +104,208 @@ export function createReviewIpcHandlers({
   now = Date.now,
   randomBytes = crypto.randomBytes,
   fs = defaultFs,
+  /** token -> { path } | undefined. Without one, every token is refused. */
+  resolveGrant = () => undefined,
+  limits = REVIEW_IPC_LIMITS,
 } = {}) {
   const actualStore = store || (storeDir ? createDecisionStore({ dir: storeDir, fs, now }) : null);
   const actualVerifier = verifier || createVerifier({ openAgentPath, now });
   const openReviews = new Map();
+  let pendingOpens = 0;
 
-  async function handleReviewOpen(args = {}) {
-    let bytes = args.receiptBytes;
-    if (!bytes && args.receiptPath) {
-      try {
-        bytes = await fs.readFile(args.receiptPath);
-      } catch (err) {
-        return { ok: false, error: err?.message || "Failed to read receipt file" };
-      }
-    }
-    if (!bytes) {
-      return { ok: false, error: "Missing receipt bytes" };
-    }
-    if (typeof bytes === "string") {
-      bytes = new TextEncoder().encode(bytes);
-    } else if (bytes instanceof ArrayBuffer) {
-      bytes = new Uint8Array(bytes);
-    } else if (ArrayBuffer.isView(bytes) && !(bytes instanceof Uint8Array)) {
-      bytes = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    }
-
-    let review;
-    try {
-      review = await openReview({
-        receiptBytes: bytes,
-        receiptPath: args.receiptPath ?? null,
-        randomBytes,
-      });
-    } catch (err) {
-      return {
-        ok: false,
-        error: err?.message || String(err),
-        code: err?.code,
-        details: err?.details,
-      };
-    }
-
-    let shown;
-    try {
-      shown = await actualVerifier.verify(review.receipt.files);
-    } catch (err) {
-      return { ok: false, error: err?.message || "Verification failed" };
-    }
-
-    const reviewRecord = {
-      reviewId: review.reviewId,
-      review,
-      shown,
-      decided: false,
-    };
-    openReviews.set(review.reviewId, reviewRecord);
-
-    return {
-      ok: true,
-      reviewId: review.reviewId,
-      receiptDigest: review.receiptDigest,
-      receipt: review.receipt,
-      receiptPath: review.receiptPath,
-      files: shown.results,
-      verifiedAt: shown.verifiedAt,
-    };
+  function undecidedCount() {
+    let n = 0;
+    for (const rec of openReviews.values()) if (!rec.decided) n++;
+    return n;
   }
 
-  async function handleReviewDecide(args = {}) {
-    const { reviewId, decision, comment = "" } = args;
-    const rec = openReviews.get(reviewId);
-    if (!rec) {
-      return { ok: false, error: `Review ${reviewId} not found`, code: "not_found" };
+  /** Forget decided reviews past their retention, and the oldest ones beyond the hard bound. */
+  function sweep() {
+    const t = now();
+    const decided = [];
+    for (const [id, rec] of openReviews) {
+      if (!rec.decided) continue;
+      if (rec.inFlight) continue;
+      if (t - rec.decidedAt > limits.decidedRetentionMs) openReviews.delete(id);
+      else decided.push([id, rec]);
     }
-    if (rec.decided) {
-      return { ok: false, error: `Review ${reviewId} is already decided`, code: "already_decided" };
+    if (decided.length > limits.maxDecidedKept) {
+      decided.sort((a, b) => a[1].decidedAt - b[1].decidedAt);
+      for (const [id] of decided.slice(0, decided.length - limits.maxDecidedKept)) openReviews.delete(id);
     }
-    if (!["approved", "changes_requested"].includes(decision)) {
-      return { ok: false, error: `Invalid decision: ${decision}`, code: "bad_decision" };
-    }
+  }
 
-    const commentBytes = new TextEncoder().encode(comment ?? "").byteLength;
-    if (commentBytes > 8192) {
-      return { ok: false, error: "Comment exceeds 8 KiB", code: "bad_comment" };
-    }
-
-    const writeNextToReceipt = Boolean(rec.review.receiptPath);
-    let result;
+  /** Reads the granted file: at most maxReceiptBytes; a bigger file is refused without reading it. */
+  async function readGranted(filePath) {
+    let fh;
     try {
-      result = await decide({
-        review: rec.review,
-        shown: rec.shown,
-        decision,
-        comment: comment ?? "",
-        verifier: actualVerifier,
-        store: actualStore,
-        writeNextToReceipt,
-        now,
+      fh = await fs.open(filePath, "r");
+      const st = await fh.stat();
+      if (!st.isFile()) return { code: "unreadable" };
+      if (st.size > limits.maxReceiptBytes) return { code: "too_large" };
+      // One byte more than the limit, so a file that grew after the check is still caught.
+      const buf = Buffer.allocUnsafe(limits.maxReceiptBytes + 1);
+      let total = 0;
+      while (total < buf.length) {
+        const { bytesRead } = await fh.read(buf, total, buf.length - total, total);
+        if (!bytesRead) break;
+        total += bytesRead;
+      }
+      if (total > limits.maxReceiptBytes) return { code: "too_large" };
+      return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, total) };
+    } catch {
+      return { code: "unreadable" };
+    } finally {
+      try {
+        await fh?.close();
+      } catch {
+        /* nothing useful to do */
+      }
+    }
+  }
+
+  async function handleReviewOpen(args) {
+    sweep();
+    if (!isPlainObject(args)) return fail("bad_args");
+    for (const k of Object.keys(args)) {
+      if (k !== "receiptToken" && k !== "receiptBytes" && args[k] !== undefined) return fail("bad_args");
+    }
+    const hasToken = args.receiptToken !== undefined && args.receiptToken !== null;
+    const hasBytes = args.receiptBytes !== undefined && args.receiptBytes !== null;
+    if (hasToken === hasBytes) return fail("bad_args");
+
+    if (undecidedCount() + pendingOpens >= limits.maxOpenUndecided) return fail("too_many_reviews");
+    pendingOpens++;
+    try {
+      let bytes;
+      let receiptPath = null;
+      if (hasToken) {
+        const token = args.receiptToken;
+        if (typeof token !== "string" || token.length > limits.maxTokenLength) return fail("bad_args");
+        const entry = resolveGrant(token);
+        if (!entry || typeof entry.path !== "string") return fail("not_granted");
+        const read = await readGranted(entry.path);
+        if (!read.bytes) return fail(read.code);
+        bytes = read.bytes;
+        receiptPath = entry.path;
+      } else {
+        bytes = toBytes(args.receiptBytes);
+        if (!bytes) return fail("bad_args");
+        if (bytes.byteLength > limits.maxReceiptBytes) return fail("too_large");
+        bytes = new Uint8Array(bytes); // own copy: the review's digest is of these exact bytes
+      }
+
+      let review;
+      try {
+        review = await openReview({ receiptBytes: bytes, receiptPath, randomBytes });
+      } catch (err) {
+        const code = safeCode(err?.code);
+        if (code === "invalid_receipt") {
+          return fail("invalid_receipt", { errors: sanitizeValidationErrors(err?.details) });
+        }
+        return fail(code);
+      }
+
+      let shown;
+      try {
+        shown = await actualVerifier.verify(review.receipt.files);
+      } catch {
+        return fail("verify_failed");
+      }
+
+      openReviews.set(review.reviewId, {
+        reviewId: review.reviewId,
+        review,
+        shown,
+        decided: false,
+        inFlight: false,
+        decidedAt: 0,
       });
-    } catch (err) {
-      return {
-        ok: false,
-        error: err?.message || String(err),
-        code: err?.code,
-        details: err?.details,
-      };
-    }
 
-    if (!result.ok && result.code === "changed") {
-      rec.shown = result.current;
-      return {
-        ok: false,
-        code: "changed",
-        message: "A file changed since you looked — review again",
-        current: result.current.results,
-        verifiedAt: result.current.verifiedAt,
-      };
-    }
-
-    if (result.ok) {
-      rec.decided = true;
       return {
         ok: true,
-        decision: result.decision,
+        reviewId: review.reviewId,
+        receiptDigest: review.receiptDigest,
+        receipt: review.receipt,
+        files: shown.results,
+        verifiedAt: shown.verifiedAt,
       };
+    } finally {
+      pendingOpens--;
+    }
+  }
+
+  async function handleReviewDecide(args) {
+    sweep();
+    if (!isPlainObject(args)) return fail("bad_args");
+    const { reviewId, decision } = args;
+    const comment = args.comment === undefined || args.comment === null ? "" : args.comment;
+    if (typeof reviewId !== "string" || !REVIEW_ID.test(reviewId)) return fail("bad_args");
+    if (typeof comment !== "string") return fail("bad_args");
+    if (typeof decision !== "string" || !["approved", "changes_requested"].includes(decision)) return fail("bad_decision");
+    // A string longer than the limit in UTF-16 units is longer in UTF-8 bytes too: no need to encode it.
+    if (comment.length > limits.maxCommentBytes || new TextEncoder().encode(comment).byteLength > limits.maxCommentBytes) {
+      return fail("bad_comment");
     }
 
-    return result;
+    const rec = openReviews.get(reviewId);
+    if (!rec) return fail("not_found");
+    if (rec.decided) return fail("already_decided");
+    if (rec.inFlight) return fail("busy");
+
+    rec.inFlight = true;
+    try {
+      let result;
+      try {
+        result = await decide({
+          review: rec.review,
+          shown: rec.shown,
+          decision,
+          comment,
+          verifier: actualVerifier,
+          store: actualStore,
+          writeNextToReceipt: Boolean(rec.review.receiptPath),
+          now,
+        });
+      } catch (err) {
+        return fail(safeCode(err?.code));
+      }
+
+      if (result?.ok) {
+        rec.decided = true;
+        rec.decidedAt = now();
+        return { ok: true, decision: result.decision };
+      }
+
+      if (result && (result.code === "changed" || result.code === "identity_unavailable") && result.current) {
+        rec.shown = result.current;
+        return {
+          ok: false,
+          code: result.code,
+          message: MESSAGES[result.code],
+          current: result.current.results,
+          verifiedAt: result.current.verifiedAt,
+        };
+      }
+
+      return fail(safeCode(result?.code));
+    } finally {
+      rec.inFlight = false;
+    }
   }
 
   async function handleReviewDismiss(reviewId) {
-    const id = typeof reviewId === "object" && reviewId !== null ? reviewId.reviewId : reviewId;
-    const rec = openReviews.get(id);
-    if (!rec) {
-      return { ok: false, error: `Review ${id} not found`, code: "not_found" };
-    }
+    sweep();
+    if (typeof reviewId !== "string" || !REVIEW_ID.test(reviewId)) return fail("bad_args");
+    const rec = openReviews.get(reviewId);
+    if (!rec) return fail("not_found");
+    if (rec.inFlight) return fail("busy");
     if (rec.decided) {
-      openReviews.delete(id);
+      openReviews.delete(reviewId);
       return { ok: true, dismissed: false, alreadyDecided: true };
     }
 
-    const writeNextToReceipt = Boolean(rec.review.receiptPath);
+    rec.inFlight = true;
     try {
       const result = await decide({
         review: rec.review,
@@ -165,39 +314,53 @@ export function createReviewIpcHandlers({
         comment: "",
         verifier: actualVerifier,
         store: actualStore,
-        writeNextToReceipt,
+        writeNextToReceipt: Boolean(rec.review.receiptPath),
         now,
       });
       rec.decided = true;
-      openReviews.delete(id);
-      return {
-        ok: true,
-        dismissed: true,
-        decision: result.decision,
-      };
+      rec.decidedAt = now();
+      openReviews.delete(reviewId);
+      return { ok: true, dismissed: true, decision: result.decision };
     } catch (err) {
-      openReviews.delete(id);
-      return { ok: false, error: err?.message || String(err), code: err?.code };
+      openReviews.delete(reviewId);
+      return fail(safeCode(err?.code));
+    } finally {
+      rec.inFlight = false;
     }
   }
 
   async function handleReviewRefresh(reviewId) {
-    const id = typeof reviewId === "object" && reviewId !== null ? reviewId.reviewId : reviewId;
-    const rec = openReviews.get(id);
-    if (!rec) {
-      return { ok: false, error: `Review ${id} not found`, code: "not_found" };
-    }
+    sweep();
+    if (typeof reviewId !== "string" || !REVIEW_ID.test(reviewId)) return fail("bad_args");
+    const rec = openReviews.get(reviewId);
+    if (!rec) return fail("not_found");
+    if (rec.decided) return fail("already_decided");
+    if (rec.inFlight) return fail("busy");
+    rec.inFlight = true;
     try {
       const fresh = await actualVerifier.verify(rec.review.receipt.files);
       rec.shown = fresh;
-      return {
-        ok: true,
-        files: fresh.results,
-        verifiedAt: fresh.verifiedAt,
-      };
-    } catch (err) {
-      return { ok: false, error: err?.message || "Refresh failed" };
+      return { ok: true, files: fresh.results, verifiedAt: fresh.verifiedAt };
+    } catch {
+      return fail("verify_failed");
+    } finally {
+      rec.inFlight = false;
     }
+  }
+
+  function hasUndecided() {
+    return undecidedCount() > 0;
+  }
+
+  /** Window closed or app quitting: every review still open is recorded as dismissed. */
+  async function dismissAll() {
+    let n = 0;
+    for (const [id, rec] of [...openReviews]) {
+      if (rec.decided || rec.inFlight) continue;
+      const res = await handleReviewDismiss(id);
+      if (res.ok && res.dismissed) n++;
+    }
+    return n;
   }
 
   return {
@@ -205,18 +368,56 @@ export function createReviewIpcHandlers({
     handleReviewDecide,
     handleReviewDismiss,
     handleReviewRefresh,
+    hasUndecided,
+    dismissAll,
     openReviews,
   };
+}
+
+/**
+ * "Closing the review means dismissed" also when the window closes or the app quits: before-quit waits
+ * (bounded) for the open reviews to be recorded as dismissed, then quits for real.
+ */
+export function installShutdownDismiss({ app, manager, timeoutMs = 3000 } = {}) {
+  let started = false;
+  app.on("before-quit", (event) => {
+    if (started || !manager.hasUndecided()) return;
+    started = true;
+    event.preventDefault();
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    let dismissing;
+    try {
+      dismissing = Promise.resolve(manager.dismissAll());
+    } catch (err) {
+      dismissing = Promise.reject(err);
+    }
+    Promise.race([dismissing, timeout])
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(timer);
+        app.quit();
+      });
+  });
 }
 
 export async function registerReviewIpc({
   ipcMain: injectedIpcMain,
   fromApp,
+  grants,
+  resolveGrant,
   manager,
   userDataPath,
   openAgentPath = defaultOpenAgentPath,
   fs = defaultFs,
 } = {}) {
+  // Fail closed: without a sender check these handlers would answer any frame.
+  if (typeof fromApp !== "function") {
+    throw new TypeError("registerReviewIpc requires a fromApp(event) sender check");
+  }
+
   let electronIpc = injectedIpcMain;
   let dataPath = userDataPath;
 
@@ -230,22 +431,28 @@ export async function registerReviewIpc({
     }
   }
 
+  const grantResolver = resolveGrant || (grants && typeof grants.get === "function" ? (t) => grants.get(t) : undefined);
   const reviewManager = manager || createReviewIpcHandlers({
     storeDir: dataPath ? path.join(dataPath, "reviews") : undefined,
     openAgentPath,
     fs,
+    ...(grantResolver ? { resolveGrant: grantResolver } : {}),
   });
 
   if (electronIpc) {
     const guard = (fn) => async (e, ...args) => {
-      if (fromApp && !fromApp(e)) throw new Error("Request refused: unknown sender");
-      return fn(...args);
+      if (!fromApp(e)) throw new Error("Request refused: unknown sender");
+      try {
+        return await fn(args[0]);
+      } catch {
+        return fail("failed");
+      }
     };
 
-    electronIpc.handle("review:open", guard(async (_e, args) => reviewManager.handleReviewOpen(args)));
-    electronIpc.handle("review:decide", guard(async (_e, args) => reviewManager.handleReviewDecide(args)));
-    electronIpc.handle("review:dismiss", guard(async (_e, reviewId) => reviewManager.handleReviewDismiss(reviewId)));
-    electronIpc.handle("review:refresh", guard(async (_e, reviewId) => reviewManager.handleReviewRefresh(reviewId)));
+    electronIpc.handle("review:open", guard((a) => reviewManager.handleReviewOpen(a)));
+    electronIpc.handle("review:decide", guard((a) => reviewManager.handleReviewDecide(a)));
+    electronIpc.handle("review:dismiss", guard((id) => reviewManager.handleReviewDismiss(id)));
+    electronIpc.handle("review:refresh", guard((id) => reviewManager.handleReviewRefresh(id)));
   }
 
   return reviewManager;

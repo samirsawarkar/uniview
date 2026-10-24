@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setupRemote, thumbnailPng } from "./lib/remote-main.mjs";
-import { registerReviewIpc } from "./lib/review-ipc.mjs";
+import { installShutdownDismiss, registerReviewIpc } from "./lib/review-ipc.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -202,7 +202,9 @@ async function start() {
   lockDown(session.defaultSession);
   registerIpc();
   await setupRemote({ fromApp, getWindow: () => win });
-  await registerReviewIpc({ fromApp });
+  // Reviews open by grant token only; open reviews are recorded as dismissed when the app quits.
+  const reviews = await registerReviewIpc({ fromApp, grants });
+  installShutdownDismiss({ app, manager: reviews });
   buildMenu();
 
   app.on("web-contents-created", (_e, contents) => {
@@ -234,7 +236,10 @@ async function start() {
   });
   win.once("ready-to-show", () => win?.show());
   win.webContents.on("render-process-gone", (_e, details) => {
-    if (details.reason !== "clean-exit") win?.reload();
+    if (details.reason !== "clean-exit") {
+      void reviews.dismissAll(); // the tabs that held these reviews are gone with the renderer
+      win?.reload();
+    }
   });
   win.on("closed", () => {
     win = null;
