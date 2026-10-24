@@ -76,7 +76,8 @@ export function createFakeBridge(): FakeBridge {
         case "review.open": {
           if (params.path) byMarker(params.path);
           const reviewId = String(nextReview++).padStart(32, "0");
-          reviews.set(reviewId, { decided: Boolean(params.path?.includes("approved")) });
+          // A path containing "approved", or an inline receipt whose text contains "approved-now", is decided at once.
+          reviews.set(reviewId, { decided: Boolean(params.path?.includes("approved") || body?.toString("utf8").includes("approved-now")) });
           return { result: { reviewId } };
         }
         case "review.wait": {
@@ -241,4 +242,41 @@ export function paddedLine(msg: unknown, bytes: number): string {
   const pad = bytes - Buffer.byteLength(json);
   if (pad < 0) throw new Error("message larger than requested line");
   return json.slice(0, -1) + " ".repeat(pad) + "}";
+}
+
+/** A valid receipt/1 document (compact JSON) with the given task and summary. */
+export function validReceipt(task = "Add a feature", summary = "Implemented it.", extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    uniview: "receipt/1",
+    createdAt: "2026-10-24T00:00:00.000Z",
+    agent: { name: "transcript-agent" },
+    task,
+    summary,
+    files: [{ path: "C:\\work\\a.txt", sha256: "0".repeat(63) + "1", role: "created" }],
+    ...extra,
+  });
+}
+
+/**
+ * A VALID receipt of exactly `bytes` UTF-8 bytes whose summary and check evidence are made of
+ * quotes, backslashes, newlines and control characters (each JSON-escaped to 2 to 6 bytes),
+ * padded with JSON whitespace to the exact size.
+ */
+export function escapeHeavyReceipt(bytes: number): string {
+  const unit = '"\\\u0001\n';
+  const checks: unknown[] = [];
+  const build = () => validReceipt("escape heavy", unit.repeat(60000), { checks });
+  let text = build();
+  for (;;) {
+    checks.push({ name: `check ${checks.length}`, status: "pass", evidence: unit.repeat(4096) });
+    const next = build();
+    if (Buffer.byteLength(next) > bytes - 64 || checks.length >= 200) {
+      checks.pop();
+      break;
+    }
+    text = next;
+  }
+  const pad = bytes - Buffer.byteLength(text);
+  if (pad < 0) throw new Error("receipt larger than requested size");
+  return text.slice(0, -1) + " ".repeat(pad) + "}";
 }

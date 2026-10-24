@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { startServer, createFakeClock, flush, toolCall, escapeHeavySpec, paddedLine } from "./mcp-helpers";
+import { startServer, createFakeClock, flush, toolCall, escapeHeavySpec, paddedLine, validReceipt } from "./mcp-helpers";
 
 // @ts-expect-error plain ESM module without types
 import { MCP_LIMITS, LineSplitter } from "../../electron/lib/mcp-server.mjs";
@@ -326,6 +326,7 @@ describe("MCP bridge connection", () => {
   it("invalid UTF-8 is a parse error; a client response is ignored", async () => {
     // Mutation: decoding invalid UTF-8 leniently, or answering a response.
     const s = startServer();
+    await s.initialize();
     s.stdin.write(Buffer.from([0x7b, 0xff, 0x7d, 0x0a]));
     expect(await s.nextJson()).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
     s.send({ jsonrpc: "2.0", id: 5, result: {} });
@@ -348,6 +349,7 @@ describe("MCP bridge connection", () => {
       onRequest: async (_s: unknown, header: any, body: Buffer) => {
         seen.push({ method: header.method, params: header.params, body });
         if (header.method === "view.show") return { result: { scopeId: "real-scope" } };
+        if (header.method === "review.open") return { result: { reviewId: "real-review" } };
         return { result: {} };
       },
     });
@@ -359,6 +361,13 @@ describe("MCP bridge connection", () => {
     const shown = seen.find((r) => r.method === "view.show")!;
     expect(shown.params).toEqual({ inline: true });
     expect(shown.body.equals(Buffer.from(spec, "utf8"))).toBe(true);
+
+    const receipt = validReceipt("Überprüfung \u{1F680} 日本語", 'quote " backslash \\ tab\t crlf\r\n');
+    s.send(toolCall(2, "request_review", { receiptText: receipt }));
+    expect((await s.nextJson(30000)).result.structuredContent).toEqual({ status: "pending", reviewId: "real-review" });
+    const reviewed = seen.find((r) => r.method === "review.open")!;
+    expect(reviewed.params).toEqual({ inline: true });
+    expect(reviewed.body.equals(Buffer.from(receipt, "utf8"))).toBe(true);
     await s.end();
     await server.close();
     await fs.rm(testDir, { recursive: true, force: true });

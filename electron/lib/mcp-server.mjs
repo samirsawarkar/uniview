@@ -29,6 +29,12 @@ export const MCP_LIMITS = Object.freeze({
   WAIT_GRACE_MS: 10_000,
   MAX_CLIENT_NAME_LENGTH: 80,
   MAX_CLIENT_VERSION_LENGTH: 40,
+  /** Tool calls in flight at once; the 17th is answered `busy` (the bridge allows 16 in flight per connection). */
+  MAX_INFLIGHT_CALLS: 16,
+  /** Local deadline for connecting, the hello and every bridge request except a review wait. */
+  REQUEST_DEADLINE_MS: 30_000,
+  /** Output written to stdout but not yet flushed; above this the server stops. */
+  MAX_QUEUED_OUTPUT_BYTES: 8 * 1024 * 1024,
 });
 
 export const LATEST_PROTOCOL = "2025-06-18";
@@ -329,6 +335,7 @@ function toolFailureFrom(err) {
  *   startApp?: () => Promise<void> | void,
  *   clientInfo?: { name: string, version: string },
  *   clock?: { now: () => number, setTimeout: (fn: () => void, ms: number) => any, clearTimeout: (h: any) => void },
+ *   maxQueuedOutputBytes?: number,
  * }} options  clientInfo names this UniView build; it is reported as serverInfo in `initialize`.
  * @returns {Promise<void>}
  */
@@ -340,6 +347,7 @@ export function runMcp({
   startApp,
   clientInfo = { name: "UniView", version: "0.0.0" },
   clock = { now: Date.now, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout },
+  maxQueuedOutputBytes = MCP_LIMITS.MAX_QUEUED_OUTPUT_BYTES,
 }) {
   const splitter = new LineSplitter();
   /** "new" -> "initializing" (initialize answered) -> "ready" (notifications/initialized) */
@@ -350,6 +358,11 @@ export function runMcp({
   let bridge = null;
   let connecting = null;
   const inflight = new Map();
+  /** Complete lines read from stdin but not yet handled (held back while stdout is not draining). */
+  const queue = [];
+  let blocked = false;
+  let queuedBytes = 0;
+  let finish = () => {};
 
   const sleep = (ms) => new Promise((resolve) => clock.setTimeout(resolve, ms));
 
@@ -361,11 +374,52 @@ export function runMcp({
 
   function send(message) {
     if (closed) return;
+    const line = `${JSON.stringify(message)}\n`;
+    const size = Buffer.byteLength(line);
+    queuedBytes += size;
+    let ok = true;
     try {
-      stdout.write(`${JSON.stringify(message)}\n`);
+      ok = stdout.write(line, () => {
+        queuedBytes -= size;
+      });
     } catch (err) {
+      queuedBytes -= size;
       log(`stdout write failed: ${err?.message}`);
+      return;
     }
+    if (queuedBytes > maxQueuedOutputBytes) {
+      // The reader is not keeping up and answers keep arriving: stop instead of growing without bound.
+      log(`output backlog larger than ${maxQueuedOutputBytes} bytes; closing`);
+      closed = true;
+      queue.length = 0;
+      finish();
+      return;
+    }
+    if (ok === false) {
+      // Honour backpressure: read no more input until stdout drains.
+      blocked = true;
+      stdin.pause();
+    }
+  }
+
+  function pump() {
+    while (!blocked && !closed && queue.length > 0) handleLine(queue.shift());
+    if (!blocked && !closed && queue.length === 0) stdin.resume();
+  }
+
+  function withDeadline(promise, ms, onTimeout) {
+    promise.catch(() => {});
+    let timer;
+    const guard = new Promise((_, reject) => {
+      timer = clock.setTimeout(() => {
+        try {
+          onTimeout?.();
+        } finally {
+          reject(new ToolFailure("app_unavailable"));
+        }
+      }, ms);
+    });
+    return Promise.race([promise, guard]).finally(() => clock.clearTimeout(timer));
   }
 
   function reply(id, result) {
@@ -397,7 +451,7 @@ export function runMcp({
     }
   }
 
-  async function connectWithStart() {
+  async function connectWithStart(attempt) {
     const first = await connectOnce();
     if (first) return first;
     if (!startApp) throw new ToolFailure("app_unavailable");
@@ -411,7 +465,7 @@ export function runMcp({
     let delay = 100;
     for (;;) {
       const left = MCP_LIMITS.CONNECT_DEADLINE_MS - (clock.now() - start);
-      if (left <= 0) throw new ToolFailure("app_unavailable");
+      if (left <= 0 || attempt.abandoned) throw new ToolFailure("app_unavailable");
       await sleep(Math.min(delay, left));
       const b = await connectOnce();
       if (b) return b;
@@ -419,15 +473,20 @@ export function runMcp({
     }
   }
 
-  async function openBridge() {
-    const b = await connectWithStart();
+  async function openBridge(attempt) {
+    const b = await connectWithStart(attempt);
+    attempt.bridge = b;
+    if (attempt.abandoned) {
+      b.close().catch(() => {});
+      throw new ToolFailure("app_unavailable");
+    }
     try {
       await b.request("mcp.hello", { client: agent, protocolVersion: revision });
     } catch (err) {
       b.close().catch(() => {});
       throw toolFailureFrom(err);
     }
-    if (closed) {
+    if (closed || attempt.abandoned) {
       b.close().catch(() => {});
       throw new ToolFailure("app_unavailable");
     }
@@ -437,25 +496,40 @@ export function runMcp({
   function getBridge() {
     if (bridge) return Promise.resolve(bridge);
     if (!connecting) {
-      connecting = openBridge().then(
+      // Connecting, starting the app and the hello share one deadline; a late result is closed.
+      const attempt = { abandoned: false, bridge: null };
+      const opening = openBridge(attempt);
+      const mine = withDeadline(opening, MCP_LIMITS.REQUEST_DEADLINE_MS, () => {
+        attempt.abandoned = true;
+        attempt.bridge?.close().catch(() => {});
+      }).then(
         (b) => {
-          connecting = null;
+          if (connecting === mine) connecting = null;
           bridge = b;
           return b;
         },
         (err) => {
-          connecting = null;
+          if (connecting === mine) connecting = null;
           throw err;
         },
       );
+      connecting = mine;
     }
     return connecting;
   }
 
-  async function call(method, params, body) {
+  async function call(method, params, body, { wait = false } = {}) {
     const b = await getBridge();
     try {
-      const res = await b.request(method, params, body);
+      const pending = Promise.resolve().then(() => b.request(method, params, body));
+      // A review wait has its own guard (waitSeconds + grace); everything else is answered within the deadline,
+      // or the stuck connection is dropped so the next call starts a new one.
+      const res = wait
+        ? await pending
+        : await withDeadline(pending, MCP_LIMITS.REQUEST_DEADLINE_MS, () => {
+            if (bridge === b) bridge = null;
+            b.close().catch(() => {});
+          });
       return isPlainObject(res?.result) ? res.result : {};
     } catch (err) {
       if (err?.code === "closed" && bridge === b) {
@@ -539,7 +613,7 @@ export function runMcp({
           entry.cancel = () => resolve("cancelled");
           timer = clock.setTimeout(() => resolve("timeout"), timeoutMs + MCP_LIMITS.WAIT_GRACE_MS);
         });
-        const waited = call("review.wait", { reviewId, timeoutMs });
+        const waited = call("review.wait", { reviewId, timeoutMs }, undefined, { wait: true });
         waited.catch(() => {});
         const outcome = await Promise.race([waited, stop]).finally(() => {
           clock.clearTimeout(timer);
@@ -643,10 +717,6 @@ export function runMcp({
       fail(id, INVALID_REQUEST, "Invalid Request: id is already in use");
       return;
     }
-    if (method === "ping") {
-      reply(id, {});
-      return;
-    }
     if (method === "initialize") {
       if (phase !== "new") {
         fail(id, INVALID_REQUEST, "Invalid Request: already initialized");
@@ -671,7 +741,12 @@ export function runMcp({
       return;
     }
     if (phase !== "ready") {
+      // Only `initialize` and the initialized notification are accepted first, ping included.
       fail(id, NOT_INITIALIZED, "Server not initialized");
+      return;
+    }
+    if (method === "ping") {
+      reply(id, {});
       return;
     }
     if (method === "tools/list") {
@@ -680,6 +755,10 @@ export function runMcp({
       return;
     }
     if (method === "tools/call") {
+      if (inflight.size >= MCP_LIMITS.MAX_INFLIGHT_CALLS) {
+        reply(id, toolError("busy", TOOL_ERROR_MESSAGES.busy));
+        return;
+      }
       toolsCall(id, params).catch((err) => {
         log(`tools/call crashed: ${err?.message || err}`);
         fail(id, -32603, "Internal error");
@@ -690,6 +769,7 @@ export function runMcp({
   }
 
   function handleLine(item) {
+    if (closed) return;
     if ("tooLong" in item) {
       fail(null, INVALID_REQUEST, `Invalid Request: line longer than ${MCP_LIMITS.MAX_LINE_BYTES} bytes`);
       return;
@@ -707,10 +787,11 @@ export function runMcp({
 
   return new Promise((resolve) => {
     let finished = false;
-    function finish() {
+    finish = () => {
       if (finished) return;
       finished = true;
-      for (const item of splitter.end()) handleLine(item);
+      for (const item of splitter.end()) queue.push(item);
+      while (queue.length > 0) handleLine(queue.shift());
       closed = true;
       for (const entry of inflight.values()) {
         entry.cancelled = true;
@@ -719,10 +800,17 @@ export function runMcp({
       const b = bridge;
       bridge = null;
       Promise.resolve(b?.close()).catch(() => {}).then(() => resolve());
-    }
+    };
+    stdout.on("drain", () => {
+      if (!blocked) return;
+      blocked = false;
+      pump();
+    });
+    stdout.on("error", (err) => log(`stdout error: ${err?.message || err}`));
     stdin.on("data", (chunk) => {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      for (const item of splitter.push(buf)) handleLine(item);
+      for (const item of splitter.push(buf)) queue.push(item);
+      pump();
     });
     stdin.once("end", finish);
     stdin.once("close", finish);
