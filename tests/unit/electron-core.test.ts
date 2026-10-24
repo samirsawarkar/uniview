@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolve, sep } from "node:path";
 // @ts-expect-error plain ESM module without types
-import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame, isLanHost, canDecodeThumbnailFallback } from "../../electron/lib/core.mjs";
+import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame, isLanHost, canDecodeThumbnailFallback, makeThumbnailPng } from "../../electron/lib/core.mjs";
 
 describe("parseRange", () => {
   it("handles open, closed, suffix and clamped ranges", () => {
@@ -133,5 +133,99 @@ describe("canDecodeThumbnailFallback", () => {
     expect(canDecodeThumbnailFallback("a.tiff", 1024)).toBe(false);
     expect(canDecodeThumbnailFallback("a.pdf", 1024)).toBe(false);
     expect(canDecodeThumbnailFallback("a.mp4", 1024)).toBe(false);
+  });
+});
+
+describe("makeThumbnailPng", () => {
+  it("never calls createFromPath when file size exceeds 20 MiB", async () => {
+    // Catches mutation: bypassing fallback file size limit check (> 20 MiB)
+    const createThumbnailFromPath = vi.fn().mockRejectedValue(new Error("no thumbnailer"));
+    const createFromPath = vi.fn();
+    const stat = vi.fn().mockResolvedValue({ size: 20 * 1024 * 1024 + 1 });
+    const thumbnailPng = makeThumbnailPng({
+      nativeImage: { createThumbnailFromPath, createFromPath },
+      stat,
+    });
+
+    const res = await thumbnailPng("big.png", 128);
+    expect(res).toBeNull();
+    expect(createFromPath).not.toHaveBeenCalled();
+  });
+
+  it("never calls createFromPath for unsupported extension like tiff", async () => {
+    // Catches mutation: allowing unsupported extension in fallback decoding
+    const createThumbnailFromPath = vi.fn().mockRejectedValue(new Error("no thumbnailer"));
+    const createFromPath = vi.fn();
+    const stat = vi.fn().mockResolvedValue({ size: 1024 });
+    const thumbnailPng = makeThumbnailPng({
+      nativeImage: { createThumbnailFromPath, createFromPath },
+      stat,
+    });
+
+    const res = await thumbnailPng("a.tiff", 128);
+    expect(res).toBeNull();
+    expect(createFromPath).not.toHaveBeenCalled();
+  });
+
+  it("never calls createFromPath when stat throws", async () => {
+    // Catches mutation: attempting createFromPath when stat throws an error
+    const createThumbnailFromPath = vi.fn().mockRejectedValue(new Error("no thumbnailer"));
+    const createFromPath = vi.fn();
+    const stat = vi.fn().mockRejectedValue(new Error("ENOENT"));
+    const thumbnailPng = makeThumbnailPng({
+      nativeImage: { createThumbnailFromPath, createFromPath },
+      stat,
+    });
+
+    const res = await thumbnailPng("a.png", 128);
+    expect(res).toBeNull();
+    expect(createFromPath).not.toHaveBeenCalled();
+  });
+
+  it("calls createFromPath and resizes to fit size for valid 1 KiB image when OS thumbnailer fails", async () => {
+    // Catches mutation: failing to fallback-decode and resize supported image within size limit
+    const createThumbnailFromPath = vi.fn().mockResolvedValue({
+      isEmpty: () => true,
+      toPNG: () => Buffer.from([]),
+    });
+    const fakeResized = {
+      toPNG: () => Buffer.from([1, 2, 3, 4]),
+    };
+    const fakeImg = {
+      isEmpty: () => false,
+      getSize: () => ({ width: 400, height: 200 }),
+      resize: vi.fn().mockReturnValue(fakeResized),
+    };
+    const createFromPath = vi.fn().mockReturnValue(fakeImg);
+    const stat = vi.fn().mockResolvedValue({ size: 1024 });
+    const thumbnailPng = makeThumbnailPng({
+      nativeImage: { createThumbnailFromPath, createFromPath },
+      stat,
+    });
+
+    const res = await thumbnailPng("a.png", 100);
+    expect(createFromPath).toHaveBeenCalledWith("a.png");
+    expect(fakeImg.resize).toHaveBeenCalledWith({ width: 100, height: 50, quality: "good" });
+    expect(res).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it("does not call stat or createFromPath when OS thumbnail succeeds", async () => {
+    // Catches mutation: querying stat or createFromPath when OS thumbnailing succeeds
+    const fakeOsImg = {
+      isEmpty: () => false,
+      toPNG: () => Buffer.from([9, 8, 7]),
+    };
+    const createThumbnailFromPath = vi.fn().mockResolvedValue(fakeOsImg);
+    const createFromPath = vi.fn();
+    const stat = vi.fn();
+    const thumbnailPng = makeThumbnailPng({
+      nativeImage: { createThumbnailFromPath, createFromPath },
+      stat,
+    });
+
+    const res = await thumbnailPng("a.png", 128);
+    expect(res).toEqual(new Uint8Array([9, 8, 7]));
+    expect(stat).not.toHaveBeenCalled();
+    expect(createFromPath).not.toHaveBeenCalled();
   });
 });

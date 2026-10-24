@@ -34,21 +34,22 @@ export function toGrid(s: ParsedSheet): Grid {
 export function SheetTruncatedNotice({ sheet }: { sheet?: ParsedSheet }) {
   if (!sheet || !sheet.truncated) return null;
 
-  let msg = "";
-  if (sheet.totalRows !== undefined) {
-    msg = `Showing the first ${sheet.rows.toLocaleString()} of ${sheet.totalRows.toLocaleString()} rows.`;
-  } else if (sheet.totalCols === undefined) {
-    msg = `Showing the first ${sheet.rows.toLocaleString()} rows. The rest of the file is not shown.`;
+  const parts: string[] = [];
+  if (sheet.rowsTruncated) {
+    if (sheet.totalRows !== undefined) {
+      parts.push(`Showing the first ${sheet.rows.toLocaleString()} of ${sheet.totalRows.toLocaleString()} rows.`);
+    } else {
+      parts.push(`Showing the first ${sheet.rows.toLocaleString()} rows. The rest of the file is not shown.`);
+    }
   }
 
   if (sheet.totalCols !== undefined) {
-    const colMsg = `Showing the first ${sheet.cols.toLocaleString()} of ${sheet.totalCols.toLocaleString()} columns.`;
-    msg = msg ? `${msg} ${colMsg}` : colMsg;
+    parts.push(`Showing the first ${sheet.cols.toLocaleString()} of ${sheet.totalCols.toLocaleString()} columns.`);
   }
 
   return (
     <p className="sheet-truncated" role="status">
-      {msg}
+      {parts.join(" ")}
     </p>
   );
 }

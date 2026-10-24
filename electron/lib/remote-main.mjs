@@ -6,7 +6,7 @@ import { readFile, stat } from "node:fs/promises";
 import { hostname, homedir } from "node:os";
 import { join } from "node:path";
 import { ShareHost } from "./share-host.mjs";
-import { isLanHost, canDecodeThumbnailFallback } from "./core.mjs";
+import { isLanHost, makeThumbnailPng } from "./core.mjs";
 
 const TRANSPORT_PATHS = new Set(["/v1/pair", "/v1/session", "/v1/rpc", "/v1/hello"]);
 const MAX_REQUEST = 64 * 1024;
@@ -41,26 +41,8 @@ export function lanPost(host, port, path, body, contentType, timeoutMs = 15000) 
   });
 }
 
-/** OS thumbnail as PNG bytes (Windows/macOS shell thumbnailers; images elsewhere). */
-export async function thumbnailPng(path, size) {
-  try {
-    const img = await nativeImage.createThumbnailFromPath(path, { width: size, height: size });
-    if (!img.isEmpty()) return new Uint8Array(img.toPNG());
-  } catch {
-    /* no thumbnailer for this type, or unsupported platform */
-  }
-  try {
-    const st = await stat(path);
-    if (!canDecodeThumbnailFallback(path, st.size)) return null;
-  } catch {
-    return null;
-  }
-  const img = nativeImage.createFromPath(path);
-  if (img.isEmpty()) return null;
-  const { width, height } = img.getSize();
-  const scale = Math.min(1, size / Math.max(width, height));
-  return new Uint8Array(img.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: "good" }).toPNG());
-}
+/** OS thumbnail as PNG bytes (Windows/macOS shell thumbnailers; bounded image fallback elsewhere). */
+export const thumbnailPng = makeThumbnailPng({ nativeImage, stat });
 
 /** Syncthing folders from its local config.xml (no network). */
 export async function syncthingFolders() {

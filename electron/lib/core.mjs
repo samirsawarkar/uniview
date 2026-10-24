@@ -160,3 +160,31 @@ export function canDecodeThumbnailFallback(path, sizeBytes) {
     ext === "ico"
   );
 }
+
+/**
+ * Factory for thumbnailPng: tries OS thumbnailer first, falls back to nativeImage.createFromPath
+ * only if canDecodeThumbnailFallback passes.
+ * @param {{ nativeImage: any, stat: (path: string) => Promise<{ size: number }> }} deps
+ * @returns {(path: string, size: number) => Promise<Uint8Array | null>}
+ */
+export function makeThumbnailPng({ nativeImage, stat }) {
+  return async function thumbnailPng(path, size) {
+    try {
+      const img = await nativeImage.createThumbnailFromPath(path, { width: size, height: size });
+      if (!img.isEmpty()) return new Uint8Array(img.toPNG());
+    } catch {
+      /* no thumbnailer for this type, or unsupported platform */
+    }
+    try {
+      const st = await stat(path);
+      if (!canDecodeThumbnailFallback(path, st.size)) return null;
+    } catch {
+      return null;
+    }
+    const img = nativeImage.createFromPath(path);
+    if (img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    const scale = Math.min(1, size / Math.max(width, height));
+    return new Uint8Array(img.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: "good" }).toPNG());
+  };
+}

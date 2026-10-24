@@ -140,4 +140,15 @@ describe("large spreadsheet truncation", { timeout: 60_000 }, () => {
     expect(parsed[0]?.truncated).toBe(true);
     expect(parsed[0]?.totalRows).toBeUndefined();
   });
+
+  it("parses 100 001-record by 16 385-column CSV with rowsTruncated and totalCols set", () => {
+    // Catches mutation: failing to set rowsTruncated when rows are dropped in a CSV
+    const header = ",".repeat(16384) + "\n";
+    const body = "\n".repeat(100000);
+    const data = new TextEncoder().encode(header + body);
+    const sheets = parseSpreadsheet(data, { ext: "csv" });
+    const sheet = sheets[0];
+    expect(sheet?.rowsTruncated).toBe(true);
+    expect(sheet?.totalCols).toBe(16385);
+  });
 });

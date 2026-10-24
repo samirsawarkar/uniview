@@ -25,6 +25,7 @@ export interface ParsedSheet {
   totalRows?: number;
   totalCols?: number;
   truncated?: boolean;
+  rowsTruncated?: boolean;
 }
 
 export interface ParseSpreadsheetOptions {
@@ -55,6 +56,7 @@ interface SheetPlan {
   totalRows?: number;
   totalCols?: number;
   truncated?: boolean;
+  rowsTruncated?: boolean;
 }
 
 /** Pure spreadsheet parsing: handles CSV/TSV with UTF-8 decoding and ZIP-based workbooks with budget checks. */
@@ -299,15 +301,16 @@ export function parseSpreadsheet(
       }
     }
 
-    plans.push({ name, ws, range, rows: keptRows, cols: keptCols, merges, totalRows, totalCols, truncated: isTruncated });
+    plans.push({ name, ws, range, rows: keptRows, cols: keptCols, merges, totalRows, totalCols, truncated: isTruncated, rowsTruncated: rowsDropped || undefined });
   }
 
-  return plans.map(({ name, ws, range, rows, cols, merges, totalRows, totalCols, truncated }) => {
+  return plans.map(({ name, ws, range, rows, cols, merges, totalRows, totalCols, truncated, rowsTruncated }) => {
     if (!ws) {
       const emptySheet: ParsedSheet = { name, rows: 0, cols: 0, colWidths: [], cells: [], merges: [] };
       if (totalRows !== undefined) emptySheet.totalRows = totalRows;
       if (totalCols !== undefined) emptySheet.totalCols = totalCols;
       if (truncated) emptySheet.truncated = true;
+      if (rowsTruncated) emptySheet.rowsTruncated = true;
       return emptySheet;
     }
 
@@ -345,6 +348,7 @@ export function parseSpreadsheet(
     if (totalRows !== undefined) parsed.totalRows = totalRows;
     if (totalCols !== undefined) parsed.totalCols = totalCols;
     if (truncated) parsed.truncated = true;
+    if (rowsTruncated) parsed.rowsTruncated = true;
     return parsed;
   });
 }

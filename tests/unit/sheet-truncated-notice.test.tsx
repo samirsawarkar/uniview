@@ -39,6 +39,7 @@ describe("SheetTruncatedNotice", () => {
       merges: [],
       totalRows: 120_000,
       truncated: true,
+      rowsTruncated: true,
     };
     act(() => {
       root!.render(<SheetTruncatedNotice sheet={sheet} />);
@@ -58,6 +59,7 @@ describe("SheetTruncatedNotice", () => {
       cells: [],
       merges: [],
       truncated: true,
+      rowsTruncated: true,
     };
     act(() => {
       root!.render(<SheetTruncatedNotice sheet={sheet} />);
@@ -79,6 +81,7 @@ describe("SheetTruncatedNotice", () => {
       totalRows: 120_000,
       totalCols: 20_000,
       truncated: true,
+      rowsTruncated: true,
     };
     act(() => {
       root!.render(<SheetTruncatedNotice sheet={sheet} />);
@@ -130,4 +133,63 @@ describe("SheetTruncatedNotice", () => {
     const notice = container!.querySelector(".sheet-truncated");
     expect(notice?.textContent).toBe("Showing the first 100,000 rows. The rest of the file is not shown.");
   }, 30_000);
+
+  it("shows rows and columns notice when rows cut with unknown total and columns cut", async () => {
+    // Catches mutation: omitting row truncation notice when columns are also cut and totalRows is undefined
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <SheetTruncatedNotice
+          sheet={{
+            name: "Sheet1",
+            rows: 30,
+            cols: 16384,
+            colWidths: [],
+            cells: [],
+            merges: [],
+            truncated: true,
+            rowsTruncated: true,
+            totalCols: 16385,
+          }}
+        />,
+      );
+    });
+    expect(container.textContent).toBe(
+      "Showing the first 30 rows. The rest of the file is not shown. Showing the first 16,384 of 16,385 columns.",
+    );
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows only columns notice when only columns are cut", async () => {
+    // Catches mutation: displaying row truncation text when rowsTruncated is undefined
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <SheetTruncatedNotice
+          sheet={{
+            name: "Sheet1",
+            rows: 30,
+            cols: 16384,
+            colWidths: [],
+            cells: [],
+            merges: [],
+            truncated: true,
+            totalCols: 16385,
+          }}
+        />,
+      );
+    });
+    expect(container.textContent).toBe("Showing the first 16,384 of 16,385 columns.");
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
 });
