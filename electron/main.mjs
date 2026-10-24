@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setupRemote, thumbnailPng } from "./lib/remote-main.mjs";
+import { registerReviewIpc } from "./lib/review-ipc.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -201,6 +202,7 @@ async function start() {
   lockDown(session.defaultSession);
   registerIpc();
   await setupRemote({ fromApp, getWindow: () => win });
+  await registerReviewIpc({ fromApp });
   buildMenu();
 
   app.on("web-contents-created", (_e, contents) => {

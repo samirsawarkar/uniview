@@ -1,6 +1,47 @@
 import type { FileSource, RemoteTransport, ShareApi, ShellBridge } from "../core/types";
+import type { Receipt, Decision, FileState } from "../../shared/receipt.d.mts";
 import { AccessDeniedError } from "../core/errors";
 import { nextId } from "./sources";
+
+export interface ReviewOpenParams {
+  receiptBytes?: Uint8Array;
+  receiptPath?: string | null;
+}
+
+export interface ReviewOpenResult {
+  ok: boolean;
+  reviewId?: string;
+  receiptDigest?: string;
+  receipt?: Receipt;
+  receiptPath?: string | null;
+  files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>;
+  verifiedAt?: string;
+  error?: string;
+  code?: string;
+}
+
+export interface ReviewDecideParams {
+  reviewId: string;
+  decision: "approved" | "changes_requested";
+  comment?: string;
+}
+
+export interface ReviewDecideResult {
+  ok: boolean;
+  decision?: Decision;
+  code?: string;
+  message?: string;
+  current?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>;
+  verifiedAt?: string;
+  error?: string;
+}
+
+export interface ReviewApi {
+  open(params: ReviewOpenParams): Promise<ReviewOpenResult>;
+  decide(params: ReviewDecideParams): Promise<ReviewDecideResult>;
+  dismiss(reviewId: string): Promise<{ ok: boolean; dismissed?: boolean; error?: string }>;
+  refresh(reviewId: string): Promise<{ ok: boolean; files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>; verifiedAt?: string; error?: string }>;
+}
 
 /** What electron/preload.cjs exposes on window.uniview. Keep in sync with the preload. */
 export interface ElectronApi {
@@ -13,6 +54,7 @@ export interface ElectronApi {
   thumbnail(token: string, size: number): Promise<Uint8Array | null>;
   share: ShareApi;
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
+  review?: ReviewApi;
 }
 
 export interface GrantedFile {

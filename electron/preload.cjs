@@ -37,6 +37,14 @@ contextBridge.exposeInMainWorld("uniview", {
   },
   ready: () => ipcRenderer.send("uniview:ready"),
 
+  // Review tab desktop IPC.
+  review: {
+    open: (args) => ipcRenderer.invoke("review:open", args),
+    decide: (args) => ipcRenderer.invoke("review:decide", args),
+    dismiss: (reviewId) => ipcRenderer.invoke("review:dismiss", reviewId == null ? undefined : String(reviewId)),
+    refresh: (reviewId) => ipcRenderer.invoke("review:refresh", reviewId == null ? undefined : String(reviewId)),
+  },
+
   // Sharing this computer with paired devices (host side).
   share: {
     state: () => ipcRenderer.invoke("share:state"),

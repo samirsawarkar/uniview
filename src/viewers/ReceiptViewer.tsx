@@ -22,6 +22,8 @@ import {
 } from "../core/receipt-verify-web";
 import { createLanReader } from "../remote/receipt-lan";
 import { getBridge } from "../shells";
+import { hasElectronApi, type ReviewApi } from "../shells/electron";
+import ReviewTab from "./ReviewTab";
 
 const MAX_RECEIPT_BYTES = 2 * 1024 * 1024; // 2 MiB limit for receipt file itself
 const NOT_AVAILABLE = "not available on this device";
@@ -32,6 +34,7 @@ export interface ReceiptViewerProps extends ViewerProps {
    * paired computer; null means this device cannot read the share. Tests inject a fake remote here.
    */
   lanReader?: LanReader | null;
+  reviewApi?: ReviewApi;
 }
 
 type LoadedReceipt =
@@ -121,7 +124,28 @@ export default function ReceiptViewer({
   onFallback,
   onOpen,
   lanReader: lanReaderProp,
+  reviewApi: reviewApiProp,
 }: ReceiptViewerProps): React.ReactElement {
+  const desktopReviewApi = useMemo(() => {
+    if (reviewApiProp) return reviewApiProp;
+    if (hasElectronApi() && (window as any).uniview?.review) {
+      return (window as any).uniview.review as ReviewApi;
+    }
+    return null;
+  }, [reviewApiProp]);
+
+  if (desktopReviewApi) {
+    return (
+      <ReviewTab
+        source={source}
+        reviewApi={desktopReviewApi}
+        onReady={onReady}
+        onFallback={onFallback}
+        onOpen={onOpen}
+      />
+    );
+  }
+
   const [loaded, setLoaded] = useState<LoadedReceipt | null>(null);
   const [verifiedFiles, setVerifiedFiles] = useState<Record<number, WebVerifiedFile>>({});
   const [companions, setCompanions] = useState<CompanionFile[]>([]);
