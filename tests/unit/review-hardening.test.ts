@@ -9,7 +9,7 @@ import { getEventListeners } from "node:events";
 // @ts-expect-error plain ESM module without types
 import { openReview, createVerifier, decide, REVIEW_LIMITS } from "../../electron/lib/review-verify.mjs";
 // @ts-expect-error plain ESM module without types
-import { createDecisionStore, writeDecisionNextToReceipt } from "../../electron/lib/review-store.mjs";
+import { createDecisionStore, writeDecisionNextToReceipt, comparablePath } from "../../electron/lib/review-store.mjs";
 
 function getTempBaseDir(): string {
   return process.platform === "win32" ? "I:\\AES\\tmp" : os.tmpdir();
@@ -770,7 +770,7 @@ describe("review hardening (P14b-1b)", () => {
       const put = (dir: string, id: string, ageMs: number) =>
         fs.writeFile(path.join(dir, `${id}.json`), JSON.stringify(makeDecision(id, { decidedAt: new Date(fakeNow - ageMs).toISOString() })));
       const store = createDecisionStore({ dir: storeDir, fs, now: () => fakeNow });
-      expect(store.limits).toEqual({ max: 500, ttlDays: 30 });
+      expect(store.limits).toEqual({ max: 500, ttlDays: 30, staleTempMs: 600_000 });
 
       // 30-day ttl: 31 days old goes, 29 days old stays.
       await put(storeDir, "b".repeat(32), 31 * day);
@@ -805,4 +805,242 @@ describe("review hardening (P14b-1b)", () => {
       expect(open.mock.calls.filter((c) => String(c[0]) === p)).toEqual([]);
     });
   });
+
+  // ---------------------------------------------------------------------------------------------
+  // P14b-1c: real-fs link check, temp-file cleanup, claim release on store failure
+  // ---------------------------------------------------------------------------------------------
+  describe("P14b-1c: real filesystem parent check", () => {
+    async function receiptIn(dir: string) {
+      await fs.mkdir(dir, { recursive: true });
+      const receiptPath = path.join(dir, "r.receipt.json");
+      await fs.writeFile(receiptPath, "{}");
+      return receiptPath;
+    }
+
+    // Mutation caught: a parent check that rejects every ordinary directory (e.g. comparing against a native realpath
+    // form that never equals the resolved path). Uses the real node:fs/promises with no realpath mock.
+    it("writes the sidecar into an ordinary temp directory using the real realpath", async () => {
+      const receiptPath = await receiptIn(path.join(testDir, "plain dir"));
+      const ok = await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs });
+      expect(ok).toBe(true);
+      expect(JSON.parse(await fs.readFile(`${receiptPath}.decision.json`, "utf8")).reviewId).toBe("0123456789abcdef0123456789abcdef");
+      // default fs (no option) behaves the same
+      const second = await receiptIn(path.join(testDir, "plain dir two"));
+      expect(await writeDecisionNextToReceipt(second, makeDecision("f".repeat(32)))).toBe(true);
+    });
+
+    // Mutation caught: a real junction/symlink anywhere in the parent chain being accepted; the receipt sits in a
+    // sub-directory below the link so the link is an ancestor, not the immediate parent.
+    it("refuses a receipt below a real junction (real filesystem, no mocks)", async () => {
+      const realDir = path.join(testDir, "real-target");
+      await fs.mkdir(path.join(realDir, "sub"), { recursive: true });
+      const linkDir = path.join(testDir, "junction-link");
+      await fs.symlink(realDir, linkDir, process.platform === "win32" ? "junction" : "dir");
+      const receiptPath = path.join(linkDir, "sub", "r.receipt.json");
+      await fs.writeFile(receiptPath, "{}");
+      expect(await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs })).toBe(false);
+      expect(await fs.readdir(path.join(realDir, "sub"))).toEqual(["r.receipt.json"]);
+    });
+
+    // Mutation caught: comparablePath not stripping the extended-length prefix (a native-style realpath result
+    // would then reject a normal directory).
+    it.runIf(process.platform === "win32")("treats a realpath in extended-length form as the same directory", async () => {
+      const receiptPath = await receiptIn(path.join(testDir, "ext"));
+      const fakeFs = { ...fs, realpath: async (p: string) => `\\\\?\\${path.resolve(String(p))}` };
+      expect(await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs: fakeFs })).toBe(true);
+    });
+
+    // Mutation caught: no prefix normalisation (drive form, UNC form, device form) or case folding.
+    it.runIf(process.platform === "win32")("comparablePath normalises extended-length drive and UNC prefixes", () => {
+      expect(comparablePath("\\\\?\\C:\\Users\\Foo", "win32")).toBe(comparablePath("c:\\users\\foo", "win32"));
+      expect(comparablePath("\\\\?\\C:\\Users\\Foo", "win32")).toBe("c:\\users\\foo");
+      expect(comparablePath("\\\\?\\UNC\\Srv\\Share\\Dir", "win32")).toBe("\\\\srv\\share\\dir");
+      expect(comparablePath("\\\\?\\UNC\\Srv\\Share\\Dir", "win32")).toBe(comparablePath("\\\\SRV\\share\\DIR", "win32"));
+      expect(comparablePath("\\\\.\\C:\\x", "win32")).toBe("c:\\x");
+      // a different directory is still different
+      expect(comparablePath("\\\\?\\C:\\Users\\Foo", "win32")).not.toBe(comparablePath("C:\\Users\\Bar", "win32"));
+    });
+
+    // Mutation caught: case folding applied on non-Windows hosts.
+    it("keeps paths case-sensitive off Windows", () => {
+      expect(comparablePath(path.resolve("/Tmp/A"), "linux")).not.toBe(comparablePath(path.resolve("/tmp/a"), "linux"));
+    });
+  });
+
+  describe("P14b-1c: temp files are not leaked", () => {
+    /** An fs whose temp file handle fails at the given step. */
+    function failingHandleFs(step: "writeFile" | "sync", onlyFor?: (p: string) => boolean) {
+      return {
+        ...fs,
+        open: async (p: string, flags: string) => {
+          const handle = await fs.open(p, flags as any);
+          if (onlyFor && !onlyFor(String(p))) return handle;
+          return new Proxy(handle, {
+            get(target, prop) {
+              if (prop === step) {
+                return async () => {
+                  throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+                };
+              }
+              const v = (target as any)[prop];
+              return typeof v === "function" ? v.bind(target) : v;
+            },
+          });
+        },
+      };
+    }
+    const leftovers = async (dir: string) => (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp"));
+
+    for (const step of ["writeFile", "sync"] as const) {
+      // Mutation caught: temp creation outside the try/finally, so a failed write or flush leaves the .tmp behind.
+      it(`removes the sidecar temp file when ${step} fails`, async () => {
+        const dir = path.join(testDir, `sc-${step}`);
+        await fs.mkdir(dir, { recursive: true });
+        const receiptPath = path.join(dir, "r.receipt.json");
+        await fs.writeFile(receiptPath, "{}");
+        const ok = await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs: failingHandleFs(step) });
+        expect(ok).toBe(false);
+        expect(await leftovers(dir)).toEqual([]);
+        await expect(fs.access(`${receiptPath}.decision.json`)).rejects.toBeTruthy();
+      });
+
+      // Mutation caught: same leak in store.save.
+      it(`removes the store temp file when ${step} fails during save`, async () => {
+        const store = createDecisionStore({ dir: storeDir, fs: failingHandleFs(step) as typeof fs });
+        await expect(store.save(makeDecision("a1".repeat(16)))).rejects.toMatchObject({ code: "ENOSPC" });
+        expect(await leftovers(storeDir)).toEqual([]);
+        expect(await fs.readdir(storeDir)).toEqual([]);
+      });
+    }
+
+    // Mutation caught: store.rewrite writing its temp outside the cleanup path.
+    it("removes the rewrite temp file and keeps the original record when the write fails", async () => {
+      const id = "b2".repeat(16);
+      await createDecisionStore({ dir: storeDir, fs }).save(makeDecision(id));
+      const store = createDecisionStore({ dir: storeDir, fs: failingHandleFs("writeFile") as typeof fs });
+      await expect(store.rewrite(makeDecision(id, { persisted: false }))).rejects.toMatchObject({ code: "ENOSPC" });
+      expect(await leftovers(storeDir)).toEqual([]);
+      expect((await createDecisionStore({ dir: storeDir, fs }).load(id)).persisted).toBe(true);
+    });
+
+    // Mutation caught: prune ignoring stale temp files, or using the wrong boundary (limit stays, limit+1 goes).
+    it("prune removes temp files older than the stale limit (limit stays, limit+1 ms goes), only in the store dir", async () => {
+      const tmpName = ".tmp-aaaa.json-1-x.tmp";
+      const tmpPath = path.join(storeDir, tmpName);
+      const otherTmp = path.join(storeDir, "unrelated.tmp");
+      await fs.writeFile(tmpPath, "partial");
+      await fs.writeFile(otherTmp, "not ours");
+      const mtime = (await fs.stat(tmpPath)).mtimeMs;
+      const limit = 10 * 60 * 1000;
+
+      const store = createDecisionStore({ dir: storeDir, fs, now: () => mtime + limit });
+      expect(store.limits.staleTempMs).toBe(limit);
+      await store.prune();
+      await fs.access(tmpPath); // exactly at the limit: kept
+
+      const later = createDecisionStore({ dir: storeDir, fs, now: () => mtime + limit + 1 });
+      await later.prune();
+      await expect(fs.access(tmpPath)).rejects.toBeTruthy(); // limit + 1: removed
+      await fs.access(otherTmp); // not one of our temp names: untouched
+
+      // a stale temp in a user's project folder is never swept by writing a sidecar there
+      const projectDir = path.join(testDir, "project");
+      await fs.mkdir(projectDir, { recursive: true });
+      const stale = path.join(projectDir, ".tmp-x.json-1-y.tmp");
+      await fs.writeFile(stale, "user data");
+      await fs.utimes(stale, new Date(0), new Date(0));
+      const receiptPath = path.join(projectDir, "r.receipt.json");
+      await fs.writeFile(receiptPath, "{}");
+      expect(await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs })).toBe(true);
+      await fs.access(stale);
+    });
+
+    // Mutation caught: save never pruning (stale temps would accumulate until a restart).
+    it("save sweeps stale temp files left by an earlier failure", async () => {
+      const stale = path.join(storeDir, ".tmp-old.json-1-z.tmp");
+      await fs.writeFile(stale, "partial");
+      const mtime = (await fs.stat(stale)).mtimeMs;
+      const store = createDecisionStore({ dir: storeDir, fs, now: () => mtime + 11 * 60 * 1000 });
+      await store.save(makeDecision("c3".repeat(16), { decidedAt: new Date(mtime + 11 * 60 * 1000).toISOString() }));
+      await expect(fs.access(stale)).rejects.toBeTruthy();
+    });
+  });
+
+  describe("P14b-1c: claim release on store failure", () => {
+    async function setup(receiptPath: string | null = null) {
+      const w = fakeWorld();
+      const p = path.join(testDir, "a.txt");
+      const review = await makeReview([{ path: p, content: "x" }], receiptPath);
+      w.files.set(p, { ino: 1, content: "x" });
+      const verifier = createVerifier({ openAgentPath: w.openAgentPath });
+      const shown = await verifier.verify(review.receipt.files);
+      return { review, verifier, shown };
+    }
+
+    // Mutation caught: keeping the claim after a store write that recorded nothing (retry would say already_decided).
+    it("releases the claim when the store save failed, so a retry can decide", async () => {
+      const { review, verifier, shown } = await setup();
+      let saves = 0;
+      const store = {
+        fs,
+        claims: new Set<string>(),
+        hasDecision: async () => false,
+        save: async () => {
+          saves++;
+          if (saves === 1) throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+        },
+        rewrite: async () => {},
+      };
+      const first = await decide({ review, shown, decision: "approved", verifier, store });
+      expect(first.ok).toBe(true);
+      expect(first.decision.persisted).toBe(false);
+      expect(store.claims.has(review.reviewId)).toBe(false);
+
+      const retry = await decide({ review, shown, decision: "approved", verifier, store });
+      expect(retry.ok).toBe(true);
+      expect(retry.decision.persisted).toBe(true);
+      expect(saves).toBe(2);
+    });
+
+    // Mutation caught: releasing the claim even though the store holds a record (second decision possible while hasDecision lags).
+    it("keeps the claim when the store record exists but the sidecar failed", async () => {
+      const receiptPath = path.join(testDir, "r.receipt.json");
+      await fs.writeFile(receiptPath, "{}");
+      const { review, verifier, shown } = await setup(receiptPath);
+      const denyingFs = {
+        ...fs,
+        link: async () => {
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        },
+        copyFile: async () => {
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        },
+      };
+      let saves = 0;
+      const store = {
+        fs: denyingFs,
+        claims: new Set<string>(),
+        hasDecision: async () => false, // so only the claim can stop a second decision
+        save: async () => {
+          saves++;
+        },
+        rewrite: async () => {},
+      };
+      const first = await decide({ review, shown, decision: "approved", verifier, store });
+      expect(first.ok).toBe(true);
+      expect(first.decision.persisted).toBe(false);
+      expect(store.claims.has(review.reviewId)).toBe(true);
+      await expect(decide({ review, shown, decision: "dismissed", verifier, store })).rejects.toMatchObject({ code: "already_decided" });
+      expect(saves).toBe(1);
+    });
+
+    // Mutation caught: the claim kept for an ordinary successful decision (it must stay, one decision per review).
+    it("keeps the claim after a fully persisted decision", async () => {
+      const { review, verifier, shown } = await setup();
+      const store = createDecisionStore({ dir: storeDir, fs });
+      expect((await decide({ review, shown, decision: "approved", verifier, store })).ok).toBe(true);
+      expect(store.claims.has(review.reviewId)).toBe(true);
+    });
+  });
+
 });

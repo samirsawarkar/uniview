@@ -348,10 +348,13 @@ export async function decide(args) {
   }
   claims.add(review.reviewId);
 
+  // The claim is kept only while a record of the decision exists (store record or sidecar). A failed
+  // verification, or a store write that failed so nothing was recorded, releases it for a retry.
+  const outcome = { recorded: false };
   let keepClaim = false;
   try {
-    const result = await decideClaimed(args);
-    keepClaim = result.ok === true;
+    const result = await decideClaimed({ ...args, outcome });
+    keepClaim = result.ok === true && outcome.recorded;
     return result;
   } finally {
     if (!keepClaim) claims.delete(review.reviewId);
@@ -367,6 +370,7 @@ async function decideClaimed({
   store,
   writeNextToReceipt = true,
   now = Date.now,
+  outcome = { recorded: false },
 }) {
   const commentStr = comment ?? "";
 
@@ -440,6 +444,8 @@ async function decideClaimed({
   if (wantsSidecar && (storeOk || !store)) {
     nextOk = await writeDecisionNextToReceipt(review.receiptPath, decisionObj, { fs: store?.fs });
   }
+  // A record exists when the store holds it, or (without a store) the sidecar was written.
+  outcome.recorded = storeOk || (!store && wantsSidecar && nextOk);
 
   // 3. Make the store copy agree with what is returned when the sidecar failed.
   if (storeOk && !nextOk) {

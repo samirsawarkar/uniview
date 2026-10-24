@@ -27,8 +27,9 @@ async function writeTempDurably(fs, tempPath, text) {
  */
 async function createExclusive(fs, targetPath, text) {
   const tempPath = tempNameFor(path.dirname(targetPath), path.basename(targetPath));
-  await writeTempDurably(fs, tempPath, text);
   try {
+    // Inside the try so a failed write or flush (ENOSPC, EIO) still removes the partial temp file.
+    await writeTempDurably(fs, tempPath, text);
     try {
       await fs.link(tempPath, targetPath);
       return "created";
@@ -50,7 +51,7 @@ async function createExclusive(fs, targetPath, text) {
   }
 }
 
-export const STORE_DEFAULTS = Object.freeze({ max: 500, ttlDays: 30 });
+export const STORE_DEFAULTS = Object.freeze({ max: 500, ttlDays: 30, staleTempMs: 10 * 60 * 1000 });
 
 export function createDecisionStore({
   dir,
@@ -58,6 +59,7 @@ export function createDecisionStore({
   now = Date.now,
   max = STORE_DEFAULTS.max,
   ttlDays = STORE_DEFAULTS.ttlDays,
+  staleTempMs = STORE_DEFAULTS.staleTempMs,
 }) {
   const knownIds = new Set();
   // In-memory claims taken synchronously by decide(): one decision per review per store.
@@ -90,6 +92,16 @@ export function createDecisionStore({
     const remaining = [];
 
     for (const entry of entries) {
+      // Leftover temp files from a crashed or failed write: removed once older than staleTempMs.
+      // Only this store directory is ever swept, never a project folder.
+      if (entry.startsWith(".tmp-") && entry.endsWith(".tmp")) {
+        const tempFile = path.join(dir, entry);
+        try {
+          const st = await fs.stat(tempFile);
+          if (currentTime - st.mtimeMs > staleTempMs) await fs.unlink(tempFile);
+        } catch {}
+        continue;
+      }
       if (!entry.endsWith(".json") || entry.endsWith(".tmp") || entry.endsWith(".decision.json")) {
         continue;
       }
@@ -158,8 +170,8 @@ export function createDecisionStore({
       throw Object.assign(new Error("Existing record belongs to another review"), { code: "EEXIST" });
     }
     const tempPath = tempNameFor(dir, path.basename(targetPath));
-    await writeTempDurably(fs, tempPath, JSON.stringify(decision, null, 2));
     try {
+      await writeTempDurably(fs, tempPath, JSON.stringify(decision, null, 2));
       await fs.rename(tempPath, targetPath);
     } catch (err) {
       try {
@@ -185,7 +197,7 @@ export function createDecisionStore({
   return {
     fs,
     claims,
-    limits: { max, ttlDays },
+    limits: { max, ttlDays, staleTempMs },
     hasDecision,
     save,
     rewrite,
@@ -194,9 +206,18 @@ export function createDecisionStore({
   };
 }
 
-function comparablePath(p) {
+/**
+ * Normal form used to compare a directory with its realpath. On Windows it is case-insensitive and a
+ * native-style prefix is dropped (extended-length drive form becomes the plain drive path, the UNC form
+ * becomes a plain UNC path), so a realpath result in that form never makes a normal directory look linked.
+ */
+export function comparablePath(p, platform = process.platform) {
   const resolved = path.resolve(p);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (platform !== "win32") return resolved;
+  let s = resolved;
+  if (/^\\\\[?.]\\UNC\\/i.test(s)) s = "\\\\" + s.slice(8);
+  else if (/^\\\\[?.]\\/.test(s)) s = s.slice(4);
+  return s.toLowerCase();
 }
 
 /** True when no component of `dir` is a symlink or junction (realpath equals the resolved path). */
