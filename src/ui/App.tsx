@@ -6,6 +6,7 @@ import { formatBytes } from "../core/errors";
 import { TabView } from "./TabView";
 import { badgeFor, KindBadge } from "./badges";
 import { loadRecents, rememberRecent, forgetRecent, type Recent } from "./recents";
+import { RecentThumb, captureRecentThumb } from "./recent-thumbs";
 import { SharingPanel } from "./remote/SharingPanel";
 import { PairDialog } from "./remote/PairDialog";
 import { RemoteBrowser, type RemoteLocation } from "./remote/RemoteBrowser";
@@ -308,7 +309,7 @@ export function App() {
         {tabs.map((t) => (
           <div key={t.id} className="tab-panel" hidden={t.id !== activeId} role="tabpanel">
             {t.source ? (
-              <TabView source={t.source} onDetected={(d) => onDetected(t.id, d)} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} active={t.id === activeId} />
+              <TabView source={t.source} onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} active={t.id === activeId} />
             ) : t.page?.kind === "sharing" && bridge.share ? (
               <SharingPanel share={bridge.share} />
             ) : t.page?.kind === "remote" && bridge.remoteTransport && hostFor(t.page.hostId) ? (
@@ -575,6 +576,7 @@ function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget,
                           : "Reopen by choosing the file again"
                     }
                   >
+                    <RecentThumb recent={r} />
                     <span className="recent-name">{r.name}</span>
                     <span className="muted small ellipsis">
                       {r.remote ? `🖥 ${computerName}` : (r.path ?? formatBytes(r.size))}

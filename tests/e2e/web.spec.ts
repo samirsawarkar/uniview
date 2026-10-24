@@ -185,3 +185,15 @@ test("closing a tab mid-load leaves no errors and no stray fonts (finding 7)", a
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => [...document.fonts].filter((f) => f.family.startsWith("uv-font-")).length)).toBe(0);
 });
+
+test("a recently opened image shows its thumbnail on the home page", async ({ page }) => {
+  await open(page, "pixel.png");
+  await expect(panel(page).locator("img").first()).toBeVisible();
+  await page.getByTestId("home-button").click();
+  const recent = page.locator(".recents .recent").filter({ hasText: "pixel.png" });
+  await expect(recent.locator("img.recent-thumb")).toBeVisible();
+  // Files without a thumbnail keep their kind badge.
+  await open(page, "notes.md");
+  await page.getByTestId("home-button").click();
+  await expect(page.locator(".recents .recent").filter({ hasText: "notes.md" }).locator(".badge")).toBeVisible();
+});

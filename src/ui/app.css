@@ -889,3 +889,31 @@ h5.vs-heading { font-size: 0.9rem; }
   padding: 6px 12px;
   margin: 0;
 }
+
+/* Recent files: thumbnail (or kind badge) on the left, name and location stacked on the right. */
+.recent {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+}
+.recent > .recent-thumb,
+.recent > .badge {
+  grid-row: span 2;
+  justify-self: center;
+}
+.recent > .recent-name,
+.recent > .muted {
+  grid-column: 2;
+  justify-self: start;
+  text-align: left;
+  max-width: 100%;
+}
+
+.recent-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
