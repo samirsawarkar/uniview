@@ -60,6 +60,9 @@ async function startStub() {
       const paths: string[] | undefined = body && body.length > 0 ? JSON.parse(body.toString("utf8")) : undefined;
       requests.push({ method: header.method, params: header.params, ...(paths ? { paths } : {}) });
       const refused = (p: string) => failPath.value !== "" && p.endsWith(failPath.value);
+      if (header.method === "cli.hello") {
+        return { result: { version: "1" } };
+      }
       if (header.method === "open") {
         if (refused(paths![0]!)) throw new BridgeError("bad_path");
         return { result: { opened: 1 } };
@@ -137,7 +140,10 @@ describe("cli process (real CLI process, real bridge server and key)", () => {
     const abs = path.join(stub.work, "a.txt");
     expect(r.stdout).toBe(`Opened in UniView: ${abs}\n`);
     expect(r.stderr).toBe("");
-    expect(stub.requests).toEqual([{ method: "open", params: {}, paths: [abs] }]);
+    expect(stub.requests).toEqual([
+      { method: "cli.hello", params: { version: "1" } },
+      { method: "open", params: {}, paths: [abs] },
+    ]);
   }, 30000);
 
   it("usage error: exit 2, usage line, no request reaches the app", async () => {
@@ -192,7 +198,11 @@ describe("cli process (real CLI process, real bridge server and key)", () => {
       expect(r.stderr).toBe(`Opened in UniView: ${path.join(stub.work, "r.receipt.json")}; waiting for the review decision\n`);
       expect(r.exitedAt - decidedAt).toBeLessThan(3000);
     }
-    expect(stub.requests.map((q) => q.method)).toEqual(["review.open", "review.wait", "review.open", "review.wait", "review.open", "review.wait"]);
+    expect(stub.requests.map((q) => q.method)).toEqual([
+      "cli.hello", "review.open", "review.wait",
+      "cli.hello", "review.open", "review.wait",
+      "cli.hello", "review.open", "review.wait",
+    ]);
   }, 60000);
 
   it("two simultaneous --wait processes each get their own decision", async () => {

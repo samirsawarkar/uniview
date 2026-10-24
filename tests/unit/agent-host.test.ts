@@ -9,9 +9,9 @@ import { enrollProof } from "../../electron/lib/bridge-proto.mjs";
 import { readClientKey } from "../../electron/lib/agent-enrollment.mjs";
 
 describe("agent host: dispatch and the canonical op set", () => {
-  it("the canonical op set is exactly the P17a set", async () => {
+  it("the canonical op set is exactly the P17a set plus cli.hello", async () => {
     // Mutation: adding, dropping or renaming a bridge op (the two clients must agree on one set)
-    expect([...BRIDGE_OPS]).toEqual(["mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get"]);
+    expect([...BRIDGE_OPS]).toEqual(["cli.hello", "mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get"]);
   });
 
   it("an unknown method (including the retired CLI ops) is unknown_method", async () => {
@@ -29,14 +29,17 @@ describe("agent host: dispatch and the canonical op set", () => {
     for (const p of [[], "x", 5, null]) expect(await t.fail(s, "review.get", p)).toBe("bad_request");
   });
 
-  it("a connection that never says hello is the command line: no approval dialog", async () => {
-    // Mutation: asking the CLI for approval (spec: the CLI is not subject to approval)
+  it("a session is unidentified until hello: first request without hello -> not_allowed; cli.hello then ops work with no dialog", async () => {
+    // Mutation: allowing ops without hello (treating un-helloed sessions as CLI) or asking CLI for approval
     const t = await makeHost();
     t.fakeFs.set("/w/a.txt", "a");
-    const cli = newSession();
+    const raw = newSession({ autoCli: false });
+    expect(await t.fail(raw, "open", {}, Buffer.from(JSON.stringify(["/w/a.txt"])))).toBe("not_allowed");
+    const cli = newSession({ autoCli: false });
+    expect(await t.call(cli, "cli.hello", { version: "1" })).toEqual({ version: "1" });
     expect(await t.open(cli, ["/w/a.txt"])).toEqual({ opened: 1 });
     expect(t.dialog.calls).toHaveLength(0);
-    expect(t.host.listSessions()[0]).toMatchObject({ kind: "cli", approval: "not_required" });
+    expect(t.host.listSessions().find((x: any) => x.sessionId === cli.sessionId)).toMatchObject({ kind: "cli", approval: "not_required" });
   });
 });
 

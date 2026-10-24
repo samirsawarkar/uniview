@@ -17,12 +17,16 @@ function codeError(code: string): Error {
 function makeBridge(handlers: Record<string, Handler>) {
   const requests: Req[] = [];
   let closed = 0;
+  const hMap: Record<string, Handler> = {
+    "cli.hello": async () => ({ result: { version: "1" } }),
+    ...handlers,
+  };
   const client = {
     sessionId: "0".repeat(32),
     request(method: string, params: any, body?: Buffer) {
       const paths: string[] | undefined = body ? JSON.parse(body.toString("utf8")) : undefined;
       requests.push({ method, params, ...(paths ? { paths } : {}) });
-      const h = handlers[method];
+      const h = hMap[method];
       return h ? h(params, paths) : Promise.reject(codeError("unknown_method"));
     },
     async close() {
@@ -150,6 +154,7 @@ describe("cli runCli", () => {
     expect(await s.run()).toBe(EXIT.OK);
     expect(s.startApp).not.toHaveBeenCalled();
     expect(s.bridge.requests).toEqual([
+      { method: "cli.hello", params: { version: "1" } },
       { method: "open", params: {}, paths: [abs("a.txt")] },
       { method: "view.show", params: { path: abs("v.uview.json") } },
     ]);
@@ -351,6 +356,7 @@ describe("cli runCli", () => {
     });
     expect(await s.run()).toBe(EXIT.OK);
     expect(s.bridge.requests).toEqual([
+      { method: "cli.hello", params: { version: "1" } },
       { method: "open", params: {}, paths: [abs("a.txt")] },
       { method: "open", params: {}, paths: [abs("b.txt")] },
       { method: "view.show", params: { path: abs("v.uview.json") } },
@@ -366,7 +372,7 @@ describe("cli runCli", () => {
       handlers: { ...ok(), "review.wait": async () => ({ result: { status: "decided", decision: decision("approved") } }) },
     });
     await s.run();
-    const canonical = new Set(["open", "view.show", "review.open", "review.wait"]);
+    const canonical = new Set(["cli.hello", "open", "view.show", "review.open", "review.wait"]);
     expect(s.bridge.requests.every((r) => canonical.has(r.method))).toBe(true);
   });
 
@@ -440,7 +446,7 @@ describe("cli runCli", () => {
       },
     });
     expect(await s.run()).toBe(EXIT.UNREACHABLE);
-    expect(s.bridge.requests.map((r) => r.paths?.[0])).toEqual([abs("a.txt"), abs("b.txt")]);
+    expect(s.bridge.requests.filter((r) => r.method === "open").map((r) => r.paths?.[0])).toEqual([abs("a.txt"), abs("b.txt")]);
     expect(s.stdout.text()).toBe(`Opened in UniView: ${abs("a.txt")}\n`);
     expect(s.stderr.text()).toMatch(/not reachable \(busy\)/);
   });
@@ -480,6 +486,7 @@ describe("cli runCli", () => {
         });
         expect(await s.run()).toBe(exit);
         expect(s.bridge.requests).toEqual([
+          { method: "cli.hello", params: { version: "1" } },
           { method: "open", params: {}, paths: [abs("a.txt")] },
           { method: "review.open", params: { path: abs("r.receipt.json") } },
           { method: "review.wait", params: { reviewId: "r1", timeoutMs: 3600 * 1000 } },
@@ -573,7 +580,7 @@ describe("cli runCli", () => {
         handlers: { ...ok(), "review.open": async () => ({ result: {} }) },
       });
       expect(await noId.run()).toBe(EXIT.UNREACHABLE);
-      expect(noId.bridge.requests.map((r) => r.method)).toEqual(["review.open"]);
+      expect(noId.bridge.requests.map((r) => r.method)).toEqual(["cli.hello", "review.open"]);
     });
 
     it("a partial failure does not wait and exits 2", async () => {
@@ -587,7 +594,7 @@ describe("cli runCli", () => {
         },
       });
       expect(await s.run()).toBe(EXIT.USAGE);
-      expect(s.bridge.requests.map((r) => r.method)).toEqual(["open", "review.open"]);
+      expect(s.bridge.requests.map((r) => r.method)).toEqual(["cli.hello", "open", "review.open"]);
       // It must not claim to be waiting.
       expect(s.stderr.text()).toBe(`Opened in UniView: ${abs("r.json")}\nUniView: cannot open ${abs("a.txt")}: bad_path\n`);
     });
@@ -599,7 +606,7 @@ describe("cli runCli", () => {
         handlers: { ...ok(), "review.open": async () => { throw codeError("invalid_receipt"); } },
       });
       expect(await s.run()).toBe(EXIT.USAGE);
-      expect(s.bridge.requests.map((r) => r.method)).toEqual(["review.open"]);
+      expect(s.bridge.requests.map((r) => r.method)).toEqual(["cli.hello", "review.open"]);
       expect(s.stderr.text()).toBe(`UniView: cannot open ${abs("r.json")}: invalid_receipt\n`);
     });
 
@@ -609,6 +616,7 @@ describe("cli runCli", () => {
       const waiters = new Map<string, (d: any) => void>();
       const makeClient = () => ({
         async request(method: string, params: any) {
+          if (method === "cli.hello") return { result: { version: "1" } };
           if (method === "review.open") return { result: { reviewId: `r${++next}` } };
           return new Promise((resolve) => waiters.set(params.reviewId, (d) => resolve({ result: { status: "decided", decision: d } })));
         },

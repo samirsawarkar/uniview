@@ -24,10 +24,13 @@
 //   Each returns a promise; rejecting (code "busy" for the renderer-not-ready queue) rolls the request back.
 //
 // ---- Bridge ops (the one canonical set; params in the frame header, documents as the raw body) ---------------
+//   cli.hello       {version}  must be the first request of a CLI connection; marks the session as CLI
+//                   (not subject to approval).
 //   mcp.hello       {client:{name,version}, protocolVersion, enroll?:{clientId, proof}}  must be the first request of an MCP
-//                   connection; it marks the session as MCP (subject to approval). A connection that never sends it is
-//                   the command line (not subject to approval). enroll.proof = base64 enrollProof over the connection's
-//                   nonces. -> {enrolled: boolean}. A bad or removed enrolment -> not_allowed.
+//                   connection; it marks the session as MCP (subject to approval). A connection that never sends hello
+//                   is rejected: any first request other than cli.hello or mcp.hello returns not_allowed.
+//                   enroll.proof = base64 enrollProof over the connection's nonces. -> {enrolled: boolean}. A bad or
+//                   removed enrolment -> not_allowed.
 //   open            {}  body = UTF-8 JSON array of 1..20 absolute paths    -> {opened: n}   all or nothing (bad_path / busy)
 //   view.show       {path} | {inline: true} + body = spec bytes            -> {scopeId}
 //   review.open     {path} | {inline: true} + body = receipt bytes         -> {reviewId}
@@ -48,7 +51,7 @@
 //   host.listSessions() / listClients() / listActivity()
 //   host.revokeClient(clientId)                     removes the enrolment, cancels its waits, closes its sessions
 //   host.dispose()                                  shutdown: cancels waits, closes every agent handle
-
+// 
 import path from "node:path";
 import { BridgeError } from "./bridge-proto.mjs";
 import { AgentGrantStore, MAX_AGENT_PATH } from "./agent-paths.mjs";
@@ -70,7 +73,7 @@ export const HOST_LIMITS = Object.freeze({
   decidedKeptPerSession: 100,
 });
 
-export const BRIDGE_OPS = Object.freeze(["mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get"]);
+export const BRIDGE_OPS = Object.freeze(["cli.hello", "mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get"]);
 
 const realClock = {
   now: () => Date.now(),
@@ -144,7 +147,7 @@ export function createAgentHost(deps) {
     if (!state) {
       state = {
         sessionId: session.sessionId,
-        kind: "cli",
+        kind: "unidentified",
         client: { name: "", version: "" },
         sawRequest: false,
         helloDone: false,
@@ -295,6 +298,17 @@ export function createAgentHost(deps) {
   }
 
   // ---- ops ------------------------------------------------------------------------------------------------
+
+  async function opCliHello(session, state, params) {
+    if (state.sawRequest || state.helloDone) throw err("bad_request");
+    if (!isObject(params)) throw err("bad_request");
+    const rawVersion = params.version !== undefined ? String(params.version) : "1";
+    state.helloDone = true;
+    state.kind = "cli";
+    state.client = { name: "command line", version: cleanLabel(rawVersion, 40) };
+    log("session_opened", state, "cli");
+    return { result: { version: state.client.version } };
+  }
 
   async function opHello(session, state, params) {
     if (state.sawRequest || state.helloDone) throw err("bad_request");
@@ -473,6 +487,8 @@ export function createAgentHost(deps) {
         review,
         shown: null,
         decision: null,
+        finalized: false,
+        verifyControllers: new Set(),
         waiters: new Set(),
       };
       reviews.set(review.reviewId, record);
@@ -554,6 +570,25 @@ export function createAgentHost(deps) {
 
   // ---- bridge entry points --------------------------------------------------------------------------------
 
+  async function closeSessionScopes(sessionId) {
+    for (const [scopeId, tab] of [...tabs.entries()]) {
+      if (tab.sessionId === sessionId) {
+        tabs.delete(scopeId);
+        await grants.closeScope(scopeId);
+      }
+    }
+  }
+
+  function cancelVerifications(record) {
+    if (!record?.verifyControllers) return;
+    for (const c of record.verifyControllers) {
+      try {
+        c.abort();
+      } catch {}
+    }
+    record.verifyControllers.clear();
+  }
+
   async function onRequest(session, header, body) {
     const method = header?.method;
     if (typeof method !== "string" || !BRIDGE_OPS.includes(method)) throw err("unknown_method");
@@ -561,11 +596,19 @@ export function createAgentHost(deps) {
     if (!isObject(params)) throw err("bad_request");
     const state = stateFor(session);
     try {
-      if (method === "mcp.hello") return await opHello(session, state, params);
+      if (!state.helloDone) {
+        if (method === "mcp.hello") return await opHello(session, state, params);
+        if (method === "cli.hello") return await opCliHello(session, state, params);
+        throw err("not_allowed");
+      }
+      if (method === "mcp.hello" || method === "cli.hello") throw err("bad_request");
       state.sawRequest = true;
       // Consent comes first: an MCP session that is not approved gets nothing, not even parameter errors.
       // Cancelling a wait is cleanup of something the session already holds, so it never asks.
-      if (state.kind === "mcp" && method !== "review.cancelWait") await approval.require(state.sessionId, state.client);
+      if (state.kind === "mcp" && method !== "review.cancelWait") {
+        await approval.require(state.sessionId, state.client);
+        if (!sessions.has(state.sessionId)) throw err("not_allowed");
+      }
       return await OPS[method](state, params, body);
     } catch (e) {
       if (e instanceof BridgeError) throw e;
@@ -578,31 +621,55 @@ export function createAgentHost(deps) {
     const state = sessions.get(sessionId);
     for (const record of reviews.values()) {
       if (record.ownerSessionId !== sessionId) continue;
+      cancelVerifications(record);
       cancelWaits(sessionId, record);
       if (record.decision) reviews.delete(record.reviewId);
     }
     decidedBySession.delete(sessionId);
     if (state && state.kind === "mcp") log("session_closed", state);
     sessions.delete(sessionId);
+    return closeSessionScopes(sessionId);
   }
 
   // ---- reviews, for the app -------------------------------------------------------------------------------
 
   function finalizeReview(record, decision) {
-    record.decision = decision;
+    if (record.finalized) {
+      if (decision && !record.decision) {
+        record.decision = decision;
+        const owner = sessions.get(record.ownerSessionId);
+        if (owner) {
+          reviews.set(record.reviewId, record);
+          const kept = decidedBySession.get(owner.sessionId) ?? [];
+          if (!kept.includes(record.reviewId)) {
+            kept.push(record.reviewId);
+            while (kept.length > L.decidedKeptPerSession) reviews.delete(kept.shift());
+            decidedBySession.set(owner.sessionId, kept);
+          }
+        }
+      }
+      return;
+    }
+    record.finalized = true;
+    cancelVerifications(record);
+    if (decision) record.decision = decision;
     const owner = sessions.get(record.ownerSessionId);
     if (owner) {
-      owner.pendingReviews--;
-      const kept = decidedBySession.get(owner.sessionId) ?? [];
-      kept.push(record.reviewId);
-      while (kept.length > L.decidedKeptPerSession) reviews.delete(kept.shift());
-      decidedBySession.set(owner.sessionId, kept);
+      if (owner.pendingReviews > 0) owner.pendingReviews--;
+      if (record.decision) {
+        const kept = decidedBySession.get(owner.sessionId) ?? [];
+        kept.push(record.reviewId);
+        while (kept.length > L.decidedKeptPerSession) reviews.delete(kept.shift());
+        decidedBySession.set(owner.sessionId, kept);
+      } else {
+        reviews.delete(record.reviewId);
+      }
     } else {
       reviews.delete(record.reviewId);
     }
-    pendingTotal--;
+    if (pendingTotal > 0) pendingTotal--;
     for (const waiter of [...record.waiters]) waiter.finish();
-    log("review_decided", owner, decision.decision);
+    if (decision) log("review_decided", owner, decision.decision);
   }
 
   function recordOf(reviewId) {
@@ -613,9 +680,18 @@ export function createAgentHost(deps) {
 
   async function verifyReview(reviewId) {
     const record = recordOf(reviewId);
-    const result = await verifier.verify(record.review.receipt.files, { baseline: record.shown ?? undefined });
-    record.shown = result;
-    return result;
+    const controller = new AbortController();
+    record.verifyControllers.add(controller);
+    try {
+      const result = await verifier.verify(record.review.receipt.files, {
+        baseline: record.shown ?? undefined,
+        signal: controller.signal,
+      });
+      record.shown = result;
+      return result;
+    } finally {
+      record.verifyControllers.delete(controller);
+    }
   }
 
   /**
@@ -636,7 +712,7 @@ export function createAgentHost(deps) {
 
   async function decideReview({ reviewId, decision, comment = "" }) {
     const record = recordOf(reviewId);
-    if (record.decision) throw new ReviewError("already_decided", `Review ${reviewId} is already decided`);
+    if (record.decision || record.finalized) throw new ReviewError("already_decided", `Review ${reviewId} is already decided`);
     const shown = decision === "dismissed" && !record.shown ? unverified(record) : record.shown;
     const result = await decide({ review: record.review, shown, decision, comment, verifier, store });
     if (!result.ok) {
@@ -654,7 +730,8 @@ export function createAgentHost(deps) {
     tabs.delete(scopeId);
     await grants.closeScope(scopeId);
     const record = tab.reviewId ? reviews.get(tab.reviewId) : undefined;
-    if (!record || record.decision) return;
+    if (!record || record.finalized || record.decision) return;
+    cancelVerifications(record);
     try {
       const result = await decide({ review: record.review, shown: record.shown ?? unverified(record), decision: "dismissed", verifier, store });
       if (result.ok) {
@@ -663,11 +740,7 @@ export function createAgentHost(deps) {
       }
     } catch {}
     // The dismissal could not be recorded; the review must not stay pending forever.
-    const owner = sessions.get(record.ownerSessionId);
-    if (owner) owner.pendingReviews--;
-    pendingTotal--;
-    reviews.delete(record.reviewId);
-    for (const waiter of [...record.waiters]) waiter.finish();
+    finalizeReview(record, null);
   }
 
   async function viewGrant(scopeId, requestedPath) {
@@ -717,17 +790,26 @@ export function createAgentHost(deps) {
     const removed = await enrollment.remove(clientId);
     const ids = approval.revokeClient(clientId);
     for (const id of ids) {
-      for (const record of reviews.values()) if (record.ownerSessionId === id) cancelWaits(id, record);
+      for (const record of reviews.values()) {
+        if (record.ownerSessionId === id) {
+          cancelVerifications(record);
+          cancelWaits(id, record);
+        }
+      }
       try {
         closeSession?.(id);
       } catch {}
+      await closeSessionScopes(id);
     }
     log("revoked", undefined, `${removed ? "removed" : "not enrolled"}; ${ids.length} session(s) closed`);
     return { removed, sessionsClosed: ids.length };
   }
 
   async function dispose() {
-    for (const record of reviews.values()) for (const waiter of [...record.waiters]) waiter.finish();
+    for (const record of reviews.values()) {
+      cancelVerifications(record);
+      for (const waiter of [...record.waiters]) waiter.finish();
+    }
     tabs.clear();
     await grants.closeAll();
   }

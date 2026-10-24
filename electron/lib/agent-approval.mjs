@@ -112,7 +112,7 @@ export function createApprovalManager({ ask, enrollment, activity, clock = realC
       }
     } finally {
       pending.delete(entry.sessionId);
-      if (status === "denied") entry.reject(notAllowed());
+      if (entry.gone || status === "denied") entry.reject(notAllowed());
       else entry.resolve();
       presentNext();
     }

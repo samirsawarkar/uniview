@@ -129,24 +129,33 @@ export function makeDialog() {
   return { calls, ask, answer };
 }
 
-export type TestSession = { sessionId: string; clientNonce: Buffer; serverNonce: Buffer };
+export type TestSession = { sessionId: string; clientNonce: Buffer; serverNonce: Buffer; autoCli?: boolean };
 let sessionCounter = 0;
-export function newSession(): TestSession {
+export function newSession(opts: { autoCli?: boolean } = {}): TestSession {
   const n = ++sessionCounter;
-  return { sessionId: n.toString(16).padStart(32, "0"), clientNonce: crypto.randomBytes(32), serverNonce: crypto.randomBytes(32) };
+  return {
+    sessionId: n.toString(16).padStart(32, "0"),
+    clientNonce: crypto.randomBytes(32),
+    serverNonce: crypto.randomBytes(32),
+    autoCli: opts.autoCli ?? true,
+  };
 }
 
-export async function makeHost() {
-  const clock = createFakeClock();
-  const fakeFs = makeFakeFs();
-  const ui = makeUi();
-  const dialog = makeDialog();
-  const root = await makeTempDir("uv-host");
-  const enrollment = createEnrollmentStore({ dir: path.join(root, "agents") });
-  await enrollment.load();
-  const activity = createActivityLog({ store: { async load() { return []; }, async save() {} }, now: clock.now });
-  const store = createDecisionStore({ dir: path.join(root, "reviews") });
-  const verifier = createVerifier({ openAgentPath: fakeFs.openAgentPath, now: clock.now });
+export function newRawSession(): TestSession {
+  return newSession({ autoCli: false });
+}
+
+export async function makeHost(overrides: Record<string, any> = {}) {
+  const clock = overrides.clock ?? createFakeClock();
+  const fakeFs = overrides.fakeFs ?? makeFakeFs();
+  const ui = overrides.ui ?? makeUi();
+  const dialog = overrides.dialog ?? makeDialog();
+  const root = overrides.root ?? (await makeTempDir("uv-host"));
+  const enrollment = overrides.enrollment ?? createEnrollmentStore({ dir: path.join(root, "agents") });
+  if (!overrides.enrollment) await enrollment.load();
+  const activity = overrides.activity ?? createActivityLog({ store: { async load() { return []; }, async save() {} }, now: clock.now });
+  const store = overrides.store ?? createDecisionStore({ dir: path.join(root, "reviews") });
+  const verifier = overrides.verifier ?? createVerifier({ openAgentPath: fakeFs.openAgentPath, now: clock.now });
   const closedSessions: string[] = [];
   const host = createAgentHost({
     openAgentPath: fakeFs.openAgentPath,
@@ -158,9 +167,16 @@ export async function makeHost() {
     ui,
     closeSession: (id: string) => closedSessions.push(id),
     clock,
+    ...overrides,
   });
 
   const call = async (s: TestSession, method: string, params: unknown = {}, body?: Buffer): Promise<any> => {
+    if (s.autoCli && method !== "cli.hello" && method !== "mcp.hello") {
+      try {
+        await host.onRequest(s, { t: "req", id: 0, method: "cli.hello", params: { version: "1" } });
+      } catch {}
+      s.autoCli = false;
+    }
     const res = await host.onRequest(s, { t: "req", id: 1, method, params }, body);
     return res.result;
   };
@@ -174,9 +190,14 @@ export async function makeHost() {
     return "no error";
   };
   const open = (s: TestSession, paths: unknown) => call(s, "open", {}, Buffer.from(JSON.stringify(paths)));
-  /** A CLI-like session (no hello) or an approved MCP one. */
+  /** A CLI session (explicit cli.hello) or an approved MCP one. */
+  const cli = async (version = "1") => {
+    const s = newSession({ autoCli: false });
+    await call(s, "cli.hello", { version });
+    return s;
+  };
   const mcp = async (name = "Claude Code") => {
-    const s = newSession();
+    const s = newSession({ autoCli: false });
     await call(s, "mcp.hello", { client: { name, version: "1" }, protocolVersion: "2025-06-18" });
     return s;
   };
@@ -191,7 +212,7 @@ export async function makeHost() {
     return s;
   };
 
-  return { host, clock, fakeFs, ui, dialog, enrollment, activity, store, closedSessions, root, call, fail, open, mcp, approvedMcp };
+  return { host, clock, fakeFs, ui, dialog, enrollment, activity, store, verifier, closedSessions, root, call, fail, open, cli, mcp, approvedMcp };
 }
 
 export function receiptJson(files: Array<{ path: string; sha256: string }>, extra: Record<string, unknown> = {}) {

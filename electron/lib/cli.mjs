@@ -2,6 +2,7 @@
 // main.mjs injects the bridge connection and the app launcher.
 //
 // Bridge ops used: the canonical set shared with the MCP server (electron/lib/agent-host.mjs answers them).
+//   cli.hello     params { version }; result { version }
 //   open          params {}; body = UTF-8 JSON array holding ONE absolute path (one request per file, so a refused
 //                 file is named and the others still open); result { opened: 1 }
 //   view.show     params { path } (--view); result { scopeId }
@@ -9,7 +10,7 @@
 //   review.wait   params { reviewId, timeoutMs } (--wait only, after everything opened without a failure);
 //                 result { status: "decided", decision: decision/1 } | { status: "pending" } (the wait ran out)
 // The CLI enforces --timeout itself too and closes the connection (which cancels the server-side wait) when it
-// gives up. It never says mcp.hello, so the app treats it as the command line (not subject to agent approval).
+// gives up. It sends cli.hello first, so the app treats it as the command line (not subject to agent approval).
 // Order: files, then --view, then --receipt (so the review is the last tab). Every item is tried; failures are
 // listed and the exit code is 2. Error codes read from failed requests: bad_path, invalid_receipt, invalid_spec,
 // too_large, bad_request are request/path problems (exit 2, item named); anything else (busy, internal, closed,
@@ -288,6 +289,12 @@ export async function runCli({ argv, cwd, stdout, stderr, connect, startApp, now
   };
 
   try {
+    try {
+      await client.request("cli.hello", { version: "1" });
+    } catch (err) {
+      return fail(err);
+    }
+
     const items = [
       ...args.files.map((p) => ({ kind: "file", path: p })),
       ...(args.view !== undefined ? [{ kind: "view", path: args.view }] : []),

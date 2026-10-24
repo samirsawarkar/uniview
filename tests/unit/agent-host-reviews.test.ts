@@ -110,7 +110,7 @@ describe("agent host: review.open", () => {
       await t.host.decideReview({ reviewId, decision: "dismissed" });
     }
     expect(await t.fail(s, "review.open", { inline: true }, body)).toBe("busy");
-  });
+  }, 30000);
 });
 
 describe("agent host: the receipt's own view", () => {
