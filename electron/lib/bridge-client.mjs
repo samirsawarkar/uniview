@@ -11,6 +11,8 @@ import { BridgeError, encodeFrame, clientHandshake } from "./bridge-proto.mjs";
  * }} options
  * @returns {Promise<{
  *   sessionId: string,
+ *   clientNonce: Buffer,
+ *   serverNonce: Buffer,
  *   request: (method: string, params?: any, body?: Buffer) => Promise<{ result: any, body?: Buffer }>,
  *   close: () => Promise<void>
  * }>}
@@ -38,7 +40,7 @@ export async function connectBridge({
     });
   }
 
-  const { sessionId, decoder, pending: early } = await clientHandshake(socket, {
+  const { sessionId, decoder, pending: early, clientNonce, serverNonce } = await clientHandshake(socket, {
     key,
     timeoutMs: handshakeTimeoutMs,
   });
@@ -100,6 +102,9 @@ export async function connectBridge({
 
   return {
     sessionId,
+    // The handshake nonces, for proofs bound to this connection (enrollProof).
+    clientNonce,
+    serverNonce,
     request(method, params = {}, body) {
       if (closed || socket.destroyed || !socket.writable) {
         return Promise.reject(new BridgeError("closed"));

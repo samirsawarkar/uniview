@@ -90,7 +90,7 @@ export const defaultAuthFailureLogger = createAuthFailureLogger();
  * @param {{
  *   endpoint: string,
  *   key: Buffer,
- *   onRequest: (session: { sessionId: string }, header: any, body?: Buffer) => Promise<{ result?: any, body?: Buffer }>,
+ *   onRequest: (session: { sessionId: string, clientNonce: Buffer, serverNonce: Buffer }, header: any, body?: Buffer) => Promise<{ result?: any, body?: Buffer }>,
  *   onSessionClosed?: (sessionId: string) => void,
  *   maxConnections?: number,
  *   maxHandshakes?: number,
@@ -300,7 +300,9 @@ export async function startBridgeServer({
       activeConnections.delete(socket);
     });
 
-    const { sessionId, decoder, pending } = handshakeResult;
+    const { sessionId, decoder, pending, clientNonce, serverNonce } = handshakeResult;
+    // Handed to onRequest so an enrolled client's proof (bound to these nonces) can be verified.
+    const session = { sessionId, clientNonce, serverNonce };
     let sessionClosedFired = false;
     const fireSessionClosed = () => {
       if (!sessionClosedFired) {
@@ -386,7 +388,7 @@ export async function startBridgeServer({
       inFlightIds.add(header.id);
       (async () => {
         try {
-          const res = await onRequest({ sessionId }, header, body);
+          const res = await onRequest(session, header, body);
           const result =
             res && typeof res === "object" && "result" in res
               ? res.result
