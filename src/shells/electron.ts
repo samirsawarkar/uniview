@@ -45,6 +45,7 @@ export interface ReviewDecideResult {
   current?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>;
   verifiedAt?: string;
   error?: string;
+  sidecarConflict?: boolean;
 }
 
 export interface ReviewApi {
@@ -88,6 +89,11 @@ const tokens = new WeakMap<FileSource, string>();
 /** The grant token of a file the person opened on this computer; undefined for any other source. */
 export function grantTokenOf(source: FileSource): string | undefined {
   return tokens.get(source);
+}
+
+/** Associates a grant token with a file source (e.g. in tests or when creating from a granted file). */
+export function attachGrantToken(source: FileSource, token: string): void {
+  tokens.set(source, token);
 }
 
 function toSource(f: GrantedFile): FileSource {

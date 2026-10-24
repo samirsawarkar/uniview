@@ -180,7 +180,7 @@ describe("ReceiptViewer reference resolution", () => {
       await mount(makeSource(receiptOf([{ path: "/w/a.txt", sha256: h }])));
       await pick([fakeFile("a.txt", "hello"), fakeFile("a.txt", "hello")]);
       await waitFor(() => choiceButtons().length === 2, "picker");
-      expect(stateOf(0)).toBe("missing");
+      expect(stateOf(0)).toBe("choose a file");
       await act(async () => choiceButtons()[1]!.click());
       await waitFor(() => stateOf(0) === "unchanged", "unchanged after choosing");
       expect(choiceButtons().length).toBe(0);

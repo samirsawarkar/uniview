@@ -8,6 +8,7 @@ import ViewSpecViewer from "./ViewSpecViewer";
 import { ViewReferenceContext, type ViewReferenceResolver } from "./viewspec-nodes";
 import {
   createReferenceResolver,
+  fileChoiceKey,
   nextCompanionId,
   resolveLanPath,
   type LanContext,
@@ -112,11 +113,10 @@ type ViewState =
   | { status: "missing" }
   | { status: "unreadable" }
   | { status: "ambiguous"; candidates: CompanionFile[] }
-  | { status: "found"; sig: string; source: FileSource; basePath: string | undefined };
+  | { status: "found"; sig: string; source: FileSource; basePath: string | undefined; via: "lan" | "companion" };
 
 const VIEW_KEY = "view";
 const noop = () => {};
-const fileKey = (i: number) => `file:${i}`;
 
 /**
  * Desktop: a receipt the person opened from a file on this computer (it carries a grant token) gets the
@@ -264,7 +264,7 @@ function ReadOnlyReceiptViewer({
         await verifyReceiptWeb(
           filesToVerify,
           async (file, index) => {
-            const key = fileKey(index);
+            const key = fileChoiceKey(file.path, file.expectedSha256);
             const out = await resolve({
               key,
               path: file.path,
@@ -330,6 +330,7 @@ function ReadOnlyReceiptViewer({
             sig: `${out.via}:${out.id}`,
             source: targetSource(out),
             basePath: lan && lan.ok ? lan.resolvedPath : undefined,
+            via: out.via,
           };
         } else if (out.status === "ambiguous") {
           next = { status: "ambiguous", candidates: out.candidates };
@@ -349,13 +350,14 @@ function ReadOnlyReceiptViewer({
 
   // Images and fileRefs inside the view resolve against the view's own folder (or the picked files).
   const viewBase = view.status === "found" ? view.basePath : undefined;
+  const viewVia = view.status === "found" ? view.via : undefined;
   const referenceResolver = useMemo<ViewReferenceResolver | null>(() => {
     if (view.status !== "found") return null;
     return {
       async resolve(ref) {
         const resolve = createReferenceResolver({
-          lan: lanContext,
-          lanReader,
+          lan: viewVia === "companion" ? undefined : lanContext,
+          lanReader: viewVia === "companion" ? null : lanReader,
           companions,
           chosen: {},
           hashCache: hashCache.current,
@@ -373,7 +375,7 @@ function ReadOnlyReceiptViewer({
         }
       },
     };
-  }, [view.status, lanContext, lanReader, companions, viewBase]);
+  }, [view.status, viewVia, lanContext, lanReader, companions, viewBase]);
 
   const handlePickCompanions = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     // Keep the File handles only; their bytes are read lazily, one file at a time, when hashing.
@@ -429,9 +431,9 @@ function ReadOnlyReceiptViewer({
         <ul className="receipt-error-list">
           {errors.slice(0, 20).map((err, i) => (
             <li key={i} className="receipt-error-item">
-              <span className="receipt-err-code">{err.code}</span>
-              {err.path && <span className="receipt-err-path"> ({err.path})</span>}
-              <span className="receipt-err-message">: {err.message}</span>
+              <span className="receipt-err-code">{sanitizeLabel(String(err.code), 120)}</span>
+              {err.path && <span className="receipt-err-path"> ({sanitizeLabel(err.path, 4096)})</span>}
+              <span className="receipt-err-message">: {sanitizeLabel(err.message, 4096)}</span>
             </li>
           ))}
         </ul>
@@ -552,8 +554,10 @@ function ReadOnlyReceiptViewer({
           <ul className="receipt-files-list">
             {receipt.files.map((file, i) => {
               const verified = verifiedFiles[i];
-              const state = verified?.state ?? "not checked";
-              const choices = ambiguousChoices[fileKey(i)];
+              const fKey = fileChoiceKey(file.path, file.sha256);
+              const choices = ambiguousChoices[fKey];
+              const isAmbiguous = choices && choices.length > 0;
+              const state = isAmbiguous ? "choose a file" : (verified?.state ?? "not checked");
               const name = sanitizeLabel(file.relPath || file.path, 4096);
 
               return (
@@ -583,8 +587,8 @@ function ReadOnlyReceiptViewer({
                     )}
                   </div>
 
-                  {choices && choices.length > 0 && (
-                    <Chooser name={name} choices={choices} onChoose={(c) => handleSelectChoice(fileKey(i), c)} />
+                  {isAmbiguous && (
+                    <Chooser name={name} choices={choices} onChoose={(c) => handleSelectChoice(fKey, c)} />
                   )}
                 </li>
               );

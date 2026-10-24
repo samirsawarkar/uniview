@@ -184,6 +184,8 @@ export function createReviewIpcHandlers({
         if (typeof token !== "string" || token.length > limits.maxTokenLength) return fail("bad_args");
         const entry = resolveGrant(token);
         if (!entry || typeof entry.path !== "string") return fail("not_granted");
+        const base = path.basename(entry.path);
+        if (!base.toLowerCase().endsWith(".receipt.json")) return fail("bad_args");
         const read = await readGranted(entry.path);
         if (!read.bytes) return fail(read.code);
         bytes = read.bytes;
@@ -220,6 +222,10 @@ export function createReviewIpcHandlers({
         decided: false,
         inFlight: false,
         decidedAt: 0,
+        pendingDismiss: false,
+        inFlightPromise: null,
+        dismissResult: null,
+        decision: null,
       });
 
       return {
@@ -232,6 +238,33 @@ export function createReviewIpcHandlers({
       };
     } finally {
       pendingOpens--;
+    }
+  }
+
+  async function executeDismiss(rec) {
+    if (rec.decided) {
+      openReviews.delete(rec.reviewId);
+      return { ok: true, dismissed: false, alreadyDecided: true, decision: rec.decision };
+    }
+    try {
+      const result = await decide({
+        review: rec.review,
+        shown: rec.shown,
+        decision: "dismissed",
+        comment: "",
+        verifier: actualVerifier,
+        store: actualStore,
+        writeNextToReceipt: Boolean(rec.review.receiptPath),
+        now,
+      });
+      rec.decided = true;
+      rec.decidedAt = now();
+      rec.decision = result?.decision ?? null;
+      openReviews.delete(rec.reviewId);
+      return { ok: true, dismissed: true, decision: result?.decision };
+    } catch (err) {
+      openReviews.delete(rec.reviewId);
+      return fail(safeCode(err?.code));
     }
   }
 
@@ -253,7 +286,12 @@ export function createReviewIpcHandlers({
     if (rec.decided) return fail("already_decided");
     if (rec.inFlight) return fail("busy");
 
+    let resolveInFlight;
     rec.inFlight = true;
+    rec.inFlightPromise = new Promise((resolve) => {
+      resolveInFlight = resolve;
+    });
+
     try {
       let result;
       try {
@@ -274,7 +312,25 @@ export function createReviewIpcHandlers({
       if (result?.ok) {
         rec.decided = true;
         rec.decidedAt = now();
-        return { ok: true, decision: result.decision };
+        rec.decision = result.decision;
+        let sidecarConflict = false;
+        if (result.decision?.persisted === false && rec.review?.receiptPath) {
+          try {
+            const sidecarPath = `${path.resolve(rec.review.receiptPath)}.decision.json`;
+            const content = await fs.readFile(sidecarPath, "utf8");
+            const parsed = JSON.parse(content);
+            if (parsed && typeof parsed === "object" && parsed.reviewId && parsed.reviewId !== rec.review.reviewId) {
+              sidecarConflict = true;
+            }
+          } catch {
+            // Not a conflict or file doesn't exist
+          }
+        }
+        return {
+          ok: true,
+          decision: result.decision,
+          ...(sidecarConflict ? { sidecarConflict: true } : {}),
+        };
       }
 
       if (result && (result.code === "changed" || result.code === "identity_unavailable") && result.current) {
@@ -291,6 +347,11 @@ export function createReviewIpcHandlers({
       return fail(safeCode(result?.code));
     } finally {
       rec.inFlight = false;
+      if (rec.pendingDismiss && !rec.decided) {
+        rec.dismissResult = await executeDismiss(rec);
+      }
+      resolveInFlight();
+      rec.inFlightPromise = null;
     }
   }
 
@@ -299,34 +360,24 @@ export function createReviewIpcHandlers({
     if (typeof reviewId !== "string" || !REVIEW_ID.test(reviewId)) return fail("bad_args");
     const rec = openReviews.get(reviewId);
     if (!rec) return fail("not_found");
-    if (rec.inFlight) return fail("busy");
     if (rec.decided) {
       openReviews.delete(reviewId);
-      return { ok: true, dismissed: false, alreadyDecided: true };
+      return { ok: true, dismissed: false, alreadyDecided: true, decision: rec.decision };
+    }
+    if (rec.inFlight) {
+      rec.pendingDismiss = true;
+      await rec.inFlightPromise;
+      if (rec.dismissResult) {
+        return rec.dismissResult;
+      }
+      if (rec.decided) {
+        openReviews.delete(reviewId);
+        return { ok: true, dismissed: false, alreadyDecided: true, decision: rec.decision };
+      }
+      return executeDismiss(rec);
     }
 
-    rec.inFlight = true;
-    try {
-      const result = await decide({
-        review: rec.review,
-        shown: rec.shown,
-        decision: "dismissed",
-        comment: "",
-        verifier: actualVerifier,
-        store: actualStore,
-        writeNextToReceipt: Boolean(rec.review.receiptPath),
-        now,
-      });
-      rec.decided = true;
-      rec.decidedAt = now();
-      openReviews.delete(reviewId);
-      return { ok: true, dismissed: true, decision: result.decision };
-    } catch (err) {
-      openReviews.delete(reviewId);
-      return fail(safeCode(err?.code));
-    } finally {
-      rec.inFlight = false;
-    }
+    return executeDismiss(rec);
   }
 
   async function handleReviewRefresh(reviewId) {
@@ -336,7 +387,13 @@ export function createReviewIpcHandlers({
     if (!rec) return fail("not_found");
     if (rec.decided) return fail("already_decided");
     if (rec.inFlight) return fail("busy");
+
+    let resolveInFlight;
     rec.inFlight = true;
+    rec.inFlightPromise = new Promise((resolve) => {
+      resolveInFlight = resolve;
+    });
+
     try {
       const fresh = await actualVerifier.verify(rec.review.receipt.files);
       rec.shown = fresh;
@@ -345,6 +402,11 @@ export function createReviewIpcHandlers({
       return fail("verify_failed");
     } finally {
       rec.inFlight = false;
+      if (rec.pendingDismiss && !rec.decided) {
+        rec.dismissResult = await executeDismiss(rec);
+      }
+      resolveInFlight();
+      rec.inFlightPromise = null;
     }
   }
 
@@ -354,13 +416,9 @@ export function createReviewIpcHandlers({
 
   /** Window closed or app quitting: every review still open is recorded as dismissed. */
   async function dismissAll() {
-    let n = 0;
-    for (const [id, rec] of [...openReviews]) {
-      if (rec.decided || rec.inFlight) continue;
-      const res = await handleReviewDismiss(id);
-      if (res.ok && res.dismissed) n++;
-    }
-    return n;
+    const list = [...openReviews].filter(([_, rec]) => !rec.decided);
+    const results = await Promise.all(list.map(([id]) => handleReviewDismiss(id)));
+    return results.filter((res) => res && res.ok && res.dismissed).length;
   }
 
   return {

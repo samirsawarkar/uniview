@@ -101,6 +101,7 @@ export default function ReviewTab({
 
   const [decisionOutcome, setDecisionOutcome] = useState<Decision | null>(null);
   const [persistedError, setPersistedError] = useState<boolean>(false);
+  const [sidecarConflict, setSidecarConflict] = useState<boolean>(false);
   const [changeWarning, setChangeWarning] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -167,6 +168,7 @@ export default function ReviewTab({
     setFiles([]);
     setDecisionOutcome(null);
     setPersistedError(false);
+    setSidecarConflict(false);
     setChangeWarning(null);
     setLoading(true);
     setLoadError(null);
@@ -278,6 +280,9 @@ export default function ReviewTab({
           setDecisionOutcome(res.decision);
           if (res.decision.persisted === false) {
             setPersistedError(true);
+            if (res.sidecarConflict) {
+              setSidecarConflict(true);
+            }
           }
         }
       } catch (err: any) {
@@ -455,7 +460,9 @@ export default function ReviewTab({
 
       {persistedError && (
         <div className="banner danger review-persist-error" role="alert" data-testid="persist-error">
-          Error: Decision could not be saved to disk (persisted: false)
+          {sidecarConflict
+            ? "A decision file from an earlier review already exists next to this receipt; this decision was kept inside UniView only."
+            : "Error: Decision could not be saved to disk (persisted: false)"}
         </div>
       )}
 

@@ -263,17 +263,23 @@ describe("review-ipc handlers", () => {
     // Mutation caught: error text echoes file content or full paths
     it("returns generic errors without file content or paths for a non-receipt, missing or directory grant", async () => {
       const { handlers, grants } = await createFixture();
-      const notReceipt = path.join(testDir, "notes.json");
+      // Mixed case and non-.receipt.json extensions
+      const badExt = path.join(testDir, "bad.receipt.json.txt");
+      await fs.writeFile(badExt, "{}");
+      const badExtToken = grants.grant(badExt, 2);
+
+      const notReceipt = path.join(testDir, "notes.receipt.json");
       await fs.writeFile(notReceipt, '{"password":"TOP-SECRET-CONTENT"');
       const gone = path.join(testDir, "gone.receipt.json");
       await fs.writeFile(gone, "{}");
       const goneToken = grants.grant(gone, 2);
       await fs.rm(gone);
-      const dir = path.join(testDir, "adir");
+      const dir = path.join(testDir, "adir.receipt.json");
       await fs.mkdir(dir);
 
       const cases = [
         { token: grants.grant(notReceipt, 10), code: "invalid_receipt" },
+        { token: badExtToken, code: "bad_args" },
         { token: goneToken, code: "unreadable" },
         { token: grants.grant(dir, 0), code: "unreadable" },
         { token: "f".repeat(32), code: "not_granted" },
@@ -379,6 +385,66 @@ describe("review-ipc handlers", () => {
       const res = await handlers.handleReviewOpen({ receiptToken: "a".repeat(32) });
       expect(res.ok).toBe(false);
       expect(res.code).toBe("not_granted");
+    });
+
+    // Mutation caught: review:open accepts granted file not ending in .receipt.json or case-sensitive check fails
+    it("review:open accepts only files ending in .receipt.json (case-insensitive)", async () => {
+      const { handlers, grants, targetFile, hash } = await createFixture();
+
+      // Mixed case .RECEIPT.JSON accepted
+      const mixed1 = path.join(testDir, "mixed1.RECEIPT.JSON");
+      await fs.writeFile(mixed1, JSON.stringify(receiptFor(targetFile, hash)));
+      const res1 = await handlers.handleReviewOpen({ receiptToken: grants.grant(mixed1, 100) });
+      expect(res1.ok).toBe(true);
+
+      // Mixed case .Receipt.Json accepted
+      const mixed2 = path.join(testDir, "mixed2.Receipt.Json");
+      await fs.writeFile(mixed2, JSON.stringify(receiptFor(targetFile, hash)));
+      const res2 = await handlers.handleReviewOpen({ receiptToken: grants.grant(mixed2, 100) });
+      expect(res2.ok).toBe(true);
+
+      // Trailing extension x.receipt.json.txt rejected
+      const txt = path.join(testDir, "x.receipt.json.txt");
+      await fs.writeFile(txt, JSON.stringify(receiptFor(targetFile, hash)));
+      const resTxt = await handlers.handleReviewOpen({ receiptToken: grants.grant(txt, 100) });
+      expect(resTxt.ok).toBe(false);
+      expect(["bad_args", "not_receipt"]).toContain(resTxt.code);
+
+      // Plain .json rejected
+      const plainJson = path.join(testDir, "task.json");
+      await fs.writeFile(plainJson, JSON.stringify(receiptFor(targetFile, hash)));
+      const resPlain = await handlers.handleReviewOpen({ receiptToken: grants.grant(plainJson, 100) });
+      expect(resPlain.ok).toBe(false);
+      expect(["bad_args", "not_receipt"]).toContain(resPlain.code);
+    });
+
+    // Mutation caught: handleReviewDecide does not report sidecarConflict when sidecar from earlier review exists
+    it("reports sidecarConflict when sidecar from earlier review already exists next to receipt", async () => {
+      const { handlers, receiptToken, receiptPath } = await createFixture();
+      // Pre-create the sidecar belonging to another review
+      const sidecarPath = `${receiptPath}.decision.json`;
+      await fs.writeFile(
+        sidecarPath,
+        JSON.stringify({
+          uniview: "decision/1",
+          reviewId: "0".repeat(32),
+          receiptDigest: "a".repeat(64),
+          decision: "approved",
+          comment: "",
+          decidedAt: new Date().toISOString(),
+          verifiedAt: new Date().toISOString(),
+          persisted: true,
+          files: [],
+        })
+      );
+
+      const open = await handlers.handleReviewOpen({ receiptToken });
+      expect(open.ok).toBe(true);
+
+      const dec = await handlers.handleReviewDecide({ reviewId: open.reviewId, decision: "approved" });
+      expect(dec.ok).toBe(true);
+      expect(dec.decision.persisted).toBe(false);
+      expect(dec.sidecarConflict).toBe(true);
     });
   });
 
@@ -614,8 +680,8 @@ describe("review-ipc handlers", () => {
   });
 
   describe("F6: shutdown and in-flight handling", () => {
-    // Mutation caught: decide in flight can be dismissed or decided twice concurrently
-    it("answers busy to a dismiss or second decide while a decide is in flight", async () => {
+    // Mutation caught: decide in flight can be decided twice or refreshed concurrently
+    it("answers busy to a second decide or refresh while a decide is in flight, and queues pending dismiss", async () => {
       let release!: () => void;
       const gate = new Promise<void>((r) => (release = r));
       let calls = 0;
@@ -634,9 +700,7 @@ describe("review-ipc handlers", () => {
 
       const first = handlers.handleReviewDecide({ reviewId: open.reviewId, decision: "approved" });
       await new Promise((r) => setTimeout(r, 20));
-      const dismiss = await handlers.handleReviewDismiss(open.reviewId);
-      expect(dismiss.ok).toBe(false);
-      expect(dismiss.code).toBe("busy");
+      const dismissPromise = handlers.handleReviewDismiss(open.reviewId);
       const second = await handlers.handleReviewDecide({ reviewId: open.reviewId, decision: "changes_requested" });
       expect(second.code).toBe("busy");
       const refresh = await handlers.handleReviewRefresh(open.reviewId);
@@ -646,6 +710,90 @@ describe("review-ipc handlers", () => {
       const done = await first;
       expect(done.ok).toBe(true);
       expect(done.decision.decision).toBe("approved");
+
+      const dismissRes = await dismissPromise;
+      expect(dismissRes.ok).toBe(true);
+      expect(dismissRes.alreadyDecided).toBe(true);
+    });
+
+    // Mutation caught: dismissing during refresh fails with busy and leaves review undecided, keeping cap slot
+    it("dismiss during refresh ends dismissed and frees the cap slot", async () => {
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((r) => (releaseRefresh = r));
+      let calls = 0;
+      const base = createVerifier({ openAgentPath: mockOpenAgentPath });
+      const verifier = {
+        ...base,
+        verify: async (...a: any[]) => {
+          calls++;
+          if (calls > 1) await refreshGate; // first verify is openReview, second is refresh
+          return (base.verify as any)(...a);
+        },
+      };
+      const { handlers, receiptToken, store } = await createFixture("file content", { verifier });
+      const open = await handlers.handleReviewOpen({ receiptToken });
+      expect(open.ok).toBe(true);
+      expect(handlers.openReviews.size).toBe(1);
+
+      // Start a refresh that stays in-flight
+      const refreshPromise = handlers.handleReviewRefresh(open.reviewId);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Dismiss while refresh is in-flight
+      const dismissPromise = handlers.handleReviewDismiss(open.reviewId);
+
+      // Release refresh gate
+      releaseRefresh();
+      const [refreshRes, dismissRes] = await Promise.all([refreshPromise, dismissPromise]);
+
+      expect(dismissRes.ok).toBe(true);
+      expect(dismissRes.dismissed).toBe(true);
+      // The review must be decided as dismissed in store
+      expect(await store.hasDecision(open.reviewId)).toBe(true);
+      // Cap slot must be freed: no longer in openReviews
+      expect(handlers.openReviews.has(open.reviewId)).toBe(false);
+      expect(handlers.hasUndecided()).toBe(false);
+    });
+
+    // Mutation caught: dismissAll skips in-flight reviews leaving them undecided
+    it("dismissAll covers in-flight reviews after they settle", async () => {
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((r) => (releaseRefresh = r));
+      let calls = 0;
+      const base = createVerifier({ openAgentPath: mockOpenAgentPath });
+      const verifier = {
+        ...base,
+        verify: async (...a: any[]) => {
+          calls++;
+          // First 2 calls are for the 2 opens. The 3rd call is for the refresh on a.
+          if (calls > 2) await refreshGate;
+          return (base.verify as any)(...a);
+        },
+      };
+      const { handlers, receiptToken, store } = await createFixture("file content", { verifier });
+      const a = await handlers.handleReviewOpen({ receiptToken });
+      const b = await handlers.handleReviewOpen({ receiptToken });
+      expect(a.ok).toBe(true);
+      expect(b.ok).toBe(true);
+      expect(handlers.openReviews.size).toBe(2);
+
+      // Start refresh on a
+      const refreshPromise = handlers.handleReviewRefresh(a.reviewId);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // dismissAll while a is in-flight and b is idle
+      const dismissAllPromise = handlers.dismissAll();
+
+      // Release the in-flight refresh
+      releaseRefresh();
+      const [_, count] = await Promise.all([refreshPromise, dismissAllPromise]);
+
+      expect(count).toBe(2);
+      expect(handlers.hasUndecided()).toBe(false);
+      expect(await store.hasDecision(a.reviewId)).toBe(true);
+      expect(await store.hasDecision(b.reviewId)).toBe(true);
+      expect(handlers.openReviews.has(a.reviewId)).toBe(false);
+      expect(handlers.openReviews.has(b.reviewId)).toBe(false);
     });
 
     // Mutation caught: dismissAll skips undecided reviews

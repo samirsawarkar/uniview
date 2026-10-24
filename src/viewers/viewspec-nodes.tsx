@@ -17,7 +17,7 @@ import type {
   ColumnsNode,
   FileRefNode,
 } from "../../shared/viewspec.d.mts";
-import { AgentMarkdown } from "./agent-markdown";
+import { AgentMarkdown, sanitizeLabel } from "./agent-markdown";
 import { highlight } from "./highlight";
 import { runDiff, parseUnified, type Hunk } from "./viewspec-diff";
 
@@ -653,10 +653,11 @@ export function ImageRenderer({ node }: { node: ImageNode }): React.ReactElement
 
 export function FileRefRenderer({ node }: { node: FileRefNode }): React.ReactElement {
   const ref = useViewReference("fileRef", node.path, node.relPath);
+  const labelText = sanitizeLabel(node.label ?? node.path, 4096);
   if (ref === null) {
     return (
       <div className="vs-placeholder vs-fileref-placeholder">
-        <span className="vs-fileref-text">{node.label ?? node.path}</span>
+        <span className="vs-fileref-text">{labelText}</span>
         <button type="button" disabled className="vs-fileref-btn">
           Open
         </button>
@@ -670,7 +671,7 @@ export function FileRefRenderer({ node }: { node: FileRefNode }): React.ReactEle
   const found = ref !== "checking" && ref.status === "found";
   return (
     <div className="vs-placeholder vs-fileref-placeholder">
-      <span className="vs-fileref-text">{node.label ?? node.path}</span>
+      <span className="vs-fileref-text">{labelText}</span>
       {found ? (
         <button
           type="button"

@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import ReceiptViewer from "../../src/viewers/ReceiptViewer";
+import ReviewTab from "../../src/viewers/ReviewTab";
+import { FileRefRenderer } from "../../src/viewers/viewspec-nodes";
+import { attachGrantToken } from "../../src/shells/electron";
 import type { Receipt } from "../../shared/receipt.d.mts";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -185,5 +188,276 @@ describe("ReceiptViewer for phone and web", () => {
     const errorView = container?.querySelector(".vs-error-view, .receipt-error-view, [role='alert']");
     expect(errorView).not.toBeNull();
     expect(container?.textContent).toContain("2 MiB limit");
+  });
+
+  it("FileRefRenderer sanitizes node.label and node.path stripping bidi and control characters", async () => {
+    // Mutation caught: FileRefRenderer renders unsanitized node.label or node.path containing bidi or control characters
+    await act(async () => {
+      root!.render(<FileRefRenderer node={{ type: "fileRef", path: "file.txt", label: "\u202Eevil\u202C.txt\u0000" }} />);
+    });
+    const textSpan = container?.querySelector(".vs-fileref-text");
+    expect(textSpan?.textContent).toBe("evil.txt");
+  });
+
+  it("ReceiptViewer sanitizes agent strings in validation errors list", async () => {
+    // Mutation caught: ReceiptViewer error list renders raw unsanitized error strings containing bidi/control characters
+    const sourceWithBidiErr = {
+      id: "err-src",
+      name: "task.receipt.json",
+      size: 10,
+      readAll: async () => {
+        throw new Error("\u202Ehostile-msg\u202C\u0007");
+      },
+      readRange: async () => new ArrayBuffer(0),
+      url: async () => "blob:test",
+      release: () => {},
+    };
+    await renderAndWait(sourceWithBidiErr);
+    const errItem = container?.querySelector(".receipt-error-item");
+    expect(errItem).not.toBeNull();
+    expect(errItem?.textContent).not.toContain("\u202E");
+    expect(errItem?.textContent).not.toContain("\u0007");
+    expect(errItem?.textContent).toContain("hostile-msg");
+  });
+
+  it("shows earlier review sidecar banner when persisted: false and sidecarConflict: true", async () => {
+    // Mutation caught: ReviewTab shows generic could not be saved banner instead of earlier-review conflict message
+    const mockReviewApi: any = {
+      open: vi.fn(async () => ({
+        ok: true,
+        reviewId: "0".repeat(32),
+        receiptDigest: "1".repeat(64),
+        receipt: sampleReceipt,
+        files: sampleReceipt.files.map((f) => ({ path: f.path, expectedSha256: f.sha256, observedSha256: f.sha256, state: "unchanged" })),
+      })),
+      decide: vi.fn(async () => ({
+        ok: true,
+        decision: {
+          uniview: "decision/1",
+          reviewId: "0".repeat(32),
+          receiptDigest: "1".repeat(64),
+          decision: "approved",
+          comment: "",
+          decidedAt: new Date().toISOString(),
+          verifiedAt: new Date().toISOString(),
+          persisted: false,
+          files: [],
+        },
+        sidecarConflict: true,
+      })),
+      dismiss: vi.fn(async () => ({ ok: true })),
+      refresh: vi.fn(async () => ({ ok: true })),
+    };
+
+    const source = {
+      ...makeSource(sampleReceipt),
+      path: "C:\\work\\task.receipt.json",
+    };
+    attachGrantToken(source, "test-token");
+
+    await act(async () => {
+      root!.render(
+        <ReviewTab
+          source={source}
+          reviewApi={mockReviewApi}
+          active={true}
+        />
+      );
+    });
+    // Wait for open and arming
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+
+    const approveBtn = container?.querySelector("[data-testid='approve-btn']") as HTMLButtonElement;
+    expect(approveBtn).not.toBeNull();
+    await act(async () => {
+      const key = Object.keys(approveBtn).find((k) => k.startsWith("__reactProps$"));
+      const props = (approveBtn as any)[key!];
+      props.onClick({
+        type: "click",
+        defaultPrevented: false,
+        nativeEvent: {
+          isTrusted: true,
+          detail: 1,
+          pointerType: "mouse",
+        },
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    const persistBanner = container?.querySelector("[data-testid='persist-error']");
+    expect(persistBanner).not.toBeNull();
+    expect(persistBanner?.textContent).toContain(
+      "A decision file from an earlier review already exists next to this receipt; this decision was kept inside UniView only."
+    );
+  });
+
+  it("ambiguous file awaiting choice displays 'choose a file' badge instead of 'missing'", async () => {
+    // Mutation caught: ambiguous file shows 'missing' badge while awaiting choice
+    const receiptWithAmbiguous: Receipt = {
+      ...sampleReceipt,
+      files: [
+        {
+          path: "/workspace/doc.txt",
+          relPath: "doc.txt",
+          sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          role: "created",
+        },
+      ],
+    };
+    const source = makeSource(receiptWithAmbiguous);
+    await renderAndWait(source);
+
+    // Pick 2 companion files with same name 'doc.txt' but different hashes (neither matching expected)
+    const fileInput = container?.querySelector("input[type='file']") as HTMLInputElement;
+    const file1 = new File(["content1"], "doc.txt", { type: "text/plain" });
+    const file2 = new File(["content2"], "doc.txt", { type: "text/plain" });
+    Object.defineProperty(fileInput, "files", { value: [file1, file2], configurable: true });
+
+    await act(async () => {
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    const stateBadge = container?.querySelector(".receipt-state-badge");
+    expect(stateBadge?.textContent).toBe("choose a file");
+    expect(stateBadge?.className).toContain("state-choose_a_file");
+  });
+
+  it("stored choices are keyed by path+sha256 so reloaded reordered receipt applies choice to the correct file", async () => {
+    // Mutation caught: stored choices keyed by array index instead of path+sha256, applying choice to wrong file on reload
+    const fileA = {
+      path: "/workspace/a.txt",
+      relPath: "a.txt",
+      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      role: "created" as const,
+    };
+    const fileB = {
+      path: "/workspace/b.txt",
+      relPath: "b.txt",
+      sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      role: "created" as const,
+    };
+
+    let currentReceipt: Receipt = {
+      ...sampleReceipt,
+      files: [fileA, fileB],
+    };
+
+    const source = {
+      ...makeSource(currentReceipt),
+      reopen: async () => makeSource(currentReceipt),
+    };
+
+    await renderAndWait(source);
+
+    // Pick 2 companion candidates for a.txt to make it ambiguous
+    const fileInput = container?.querySelector("input[type='file']") as HTMLInputElement;
+    const compA1 = new File(["file a candidate 1"], "a.txt", { type: "text/plain" });
+    const compA2 = new File(["file a candidate 2"], "a.txt", { type: "text/plain" });
+    Object.defineProperty(fileInput, "files", { value: [compA1, compA2], configurable: true });
+
+    await act(async () => {
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    // File A at index 0 should have choice buttons
+    const choiceBtn = container?.querySelector(".receipt-choice-btn") as HTMLButtonElement;
+    expect(choiceBtn).not.toBeNull();
+
+    // Click choice for file A
+    await act(async () => {
+      choiceBtn.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    // Now reload with reordered files: [fileB, fileA]
+    currentReceipt = {
+      ...sampleReceipt,
+      files: [fileB, fileA],
+    };
+
+    const reloadBtn = container?.querySelector(".receipt-reload-btn") as HTMLButtonElement;
+    await act(async () => {
+      reloadBtn.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    // File B is now index 0. It should NOT have File A's choice applied to it!
+    const fileItems = container?.querySelectorAll(".receipt-file-item");
+    expect(fileItems?.length).toBe(2);
+    // Index 0 is fileB
+    expect(fileItems?.[0]?.textContent).toContain("b.txt");
+    expect(fileItems?.[0]?.textContent).not.toContain("candidate");
+    // Index 1 is fileA
+    expect(fileItems?.[1]?.textContent).toContain("a.txt");
+  });
+
+  it("resolves view image/fileRef against picked companion files when view is a picked companion on a LAN receipt", async () => {
+    // Mutation caught: resolving view references against LAN share instead of picked companions when view is phone-local
+    const receiptWithView: Receipt = {
+      ...sampleReceipt,
+      view: "/remote/share/spec.uview.json",
+    };
+
+    const lanOpened = vi.fn();
+    const mockLanReader = {
+      open: async (path: string) => {
+        lanOpened(path);
+        throw new Error("File not found on share");
+      },
+    };
+
+    const remoteSource = makeSource(receiptWithView, undefined, {
+      hostId: "host-1",
+      rootId: "root-1",
+      path: "dir/task.receipt.json",
+    });
+
+    // spec.uview.json viewspec containing an image referencing relPath "chart.png"
+    const viewspecContent = JSON.stringify({
+      uniview: "view/1",
+      title: "View with Image",
+      body: [
+        { type: "image", path: "/workspace/chart.png", relPath: "chart.png", alt: "Test chart" },
+      ],
+    });
+
+    await renderAndWait(remoteSource, { lanReader: mockLanReader });
+
+    // Pick spec.uview.json and chart.png as companion files
+    const fileInput = container?.querySelector("input[type='file']") as HTMLInputElement;
+    const compView = new File([viewspecContent], "spec.uview.json", { type: "application/json" });
+    const compImg = new File(["fake image bytes"], "chart.png", { type: "image/png" });
+    Object.defineProperty(fileInput, "files", { value: [compView, compImg], configurable: true });
+
+    await act(async () => {
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    // The view should be found from companions and rendered
+    // When the image inside the view resolves: it must resolve against picked companion files (finding chart.png),
+    // and NOT call lanReader for chart.png!
+    expect(lanOpened).not.toHaveBeenCalledWith(expect.stringContaining("chart.png"));
+    const imagePlaceholder = container?.querySelector(".vs-image-placeholder");
+    expect(imagePlaceholder).not.toBeNull();
+    expect(imagePlaceholder?.textContent).toContain("This image is on this device");
   });
 });

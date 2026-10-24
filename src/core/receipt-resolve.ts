@@ -61,6 +61,10 @@ export function nextCompanionId(): string {
   return `comp-${companionCounter}`;
 }
 
+export function fileChoiceKey(path: string, sha256: string): string {
+  return `${path}:${sha256}`;
+}
+
 export function getReceiptFolder(receiptPath: string): string {
   const norm = receiptPath.replace(/\\/g, "/");
   const lastSlash = norm.lastIndexOf("/");
