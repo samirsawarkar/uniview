@@ -1,5 +1,15 @@
 // `UniView open` command-line client (P16). Plain Node ESM without Electron imports:
 // main.mjs injects the bridge connection and the app launcher.
+//
+// Bridge ops used (exactly what this client sends; the wiring packet reconciles them with the server):
+//   open        params { files: string[] (absolute), receipt?: string (absolute), view?: string (absolute), wait: boolean }
+//               no body; result { opened: string[], failed: { path: string, code: string }[], reviewId?: string }
+//               (reviewId is required when wait is true)
+//   wait_review params { reviewId: string }; no body; result { decision: decision/1 object }
+//               sent only after a fully successful `open` with wait; the CLI enforces --timeout itself and closes
+//               the connection (which cancels the server-side wait) when it gives up.
+// Nothing else is sent. Error codes read from failed requests: bad_path, invalid_receipt, invalid_spec, too_large
+// (exit 2); anything else (busy, internal, closed, ...) exits 6.
 
 import path from "node:path";
 
@@ -135,8 +145,18 @@ function defaultSleep(ms, signal) {
   });
 }
 
+/** Only plain identifiers are ever printed: an error code or class name can come from anywhere (launcher, OS, bridge). */
+const SAFE_IDENT = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+
 function errorCode(err) {
-  return (err && typeof err.code === "string" && err.code) || "unknown";
+  return err && typeof err.code === "string" && SAFE_IDENT.test(err.code) ? err.code : "unknown";
+}
+
+/** Code if safe, else the error's class name if safe, else "error" - never the message. */
+function errorKind(err) {
+  if (err && typeof err.code === "string" && SAFE_IDENT.test(err.code)) return err.code;
+  const name = err && typeof err.name === "string" ? err.name : "";
+  return SAFE_IDENT.test(name) ? name : "error";
 }
 
 function isStringArray(v) {
@@ -148,29 +168,62 @@ function isOpenResult(r) {
     r.failed.every((f) => f && typeof f.path === "string" && typeof f.code === "string");
 }
 
+const TIMED_OUT = Symbol("deadline");
+
+/**
+ * Runs one attempt (connect or startApp) against the time that is left of the cold-start budget.
+ * Resolves { ok, value } or { ok: false, err }, or TIMED_OUT once `ms` have passed; the attempt's own late
+ * outcome is handed to `onLate` (so a connection that arrives after we gave up is closed).
+ */
+async function attempt(fn, ms, sleep, onLate) {
+  const timer = new AbortController();
+  const settled = (async () => fn())().then(
+    (value) => ({ ok: true, value }),
+    (err) => ({ ok: false, err }),
+  );
+  try {
+    const outcome = await Promise.race([settled, sleep(Math.max(ms, 0), timer.signal).then(() => TIMED_OUT)]);
+    if (outcome === TIMED_OUT) settled.then((late) => { if (late.ok) onLate(late.value); });
+    return outcome;
+  } finally {
+    timer.abort();
+  }
+}
+
+const closeQuietly = async (client) => {
+  try {
+    await client?.close?.();
+  } catch {}
+};
+
 /**
  * Connects to the bridge; on failure starts the app once and polls with backoff
- * (100 ms doubling to 1 s) until COLD_START_MS have passed.
+ * (100 ms doubling to 1 s) until COLD_START_MS have passed. Every connect and startApp
+ * attempt is itself limited to what is left of that budget, and a connection obtained
+ * after the deadline is closed, not used.
  * @returns {Promise<{ ok: true, client: any } | { ok: false, message: string }>}
  */
 async function connectWithColdStart({ connect, startApp, now, sleep }) {
   const deadline = now() + COLD_START_MS;
+  const timedOut = { ok: false, message: "the app is not reachable (timeout)" };
   let delay = BACKOFF_START_MS;
   let started = false;
   for (;;) {
-    let lastErr;
-    try {
-      return { ok: true, client: await connect() };
-    } catch (err) {
-      lastErr = err;
+    const res = await attempt(connect, deadline - now(), sleep, closeQuietly);
+    if (res === TIMED_OUT) return timedOut;
+    if (res.ok) {
+      if (now() > deadline) {
+        await closeQuietly(res.value);
+        return timedOut;
+      }
+      return { ok: true, client: res.value };
     }
+    const lastErr = res.err;
     if (!started) {
       started = true;
-      try {
-        await startApp();
-      } catch (err) {
-        return { ok: false, message: `could not start the app (${err?.message || errorCode(err)})` };
-      }
+      const launched = await attempt(startApp, deadline - now(), sleep, () => {});
+      if (launched === TIMED_OUT) return timedOut;
+      if (!launched.ok) return { ok: false, message: `could not start the app (${errorKind(launched.err)})` };
     }
     const remaining = deadline - now();
     if (remaining <= 0) return { ok: false, message: `the app is not reachable (${errorCode(lastErr)})` };

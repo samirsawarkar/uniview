@@ -31,17 +31,34 @@ function makeBridge(handlers: Record<string, Handler>) {
   return { client, requests, closedCount: () => closed };
 }
 
-/** Fake clock: sleeps advance time at once, except those longer than holdAbove, which wait for fire(). */
+/**
+ * Fake clock. Sleeps without a signal (retry backoff) advance time at once, except those longer than holdAbove.
+ * Sleeps with a signal are cancellable timers (attempt deadlines, the --wait timeout): they are recorded in
+ * `timers`, wait in `held` for fire(), and leave `held` when their signal aborts.
+ */
 function makeClock(holdAbove = Infinity) {
   let t = 0;
   const sleeps: number[] = [];
-  const signals: (AbortSignal | undefined)[] = [];
+  const timers: { ms: number; signal: AbortSignal }[] = [];
   const held: { ms: number; resolve: () => void }[] = [];
   return {
     now: () => t,
+    advance(ms: number) {
+      t += ms;
+    },
     sleep(ms: number, signal?: AbortSignal) {
+      if (signal) {
+        timers.push({ ms, signal });
+        return new Promise<void>((resolve) => {
+          const entry = { ms, resolve };
+          held.push(entry);
+          signal.addEventListener("abort", () => {
+            const i = held.indexOf(entry);
+            if (i >= 0) held.splice(i, 1);
+          }, { once: true });
+        });
+      }
       sleeps.push(ms);
-      signals.push(signal);
       if (ms > holdAbove) return new Promise<void>((resolve) => held.push({ ms, resolve }));
       t += ms;
       return Promise.resolve();
@@ -53,7 +70,7 @@ function makeClock(holdAbove = Infinity) {
       }
     },
     sleeps,
-    signals,
+    timers,
     held,
   };
 }
@@ -112,20 +129,14 @@ describe("cli runCli", () => {
 
   it("the last retry sleep is clamped to the remaining budget and still gets a final attempt", async () => {
     // Mutation: giving up while 1 ms of the 15 s budget remains (remaining <= 1 instead of <= 0)
-    let t = 0;
-    const sleeps: number[] = [];
     let calls = 0;
     const s = setup({ argv: ["open", "a.txt"] });
     s.connect.mockImplementation(async () => {
-      if (++calls === 1) t = COLD_START_MS - 1;
+      if (++calls === 1) s.clock.advance(COLD_START_MS - 1);
       throw codeError("ENOENT");
     });
-    const code = await (runCli({
-      argv: ["open", "a.txt"], cwd, stdout: makeOut(), stderr: makeOut(), connect: s.connect, startApp: async () => {},
-      now: () => t, sleep: async (ms: number) => { sleeps.push(ms); t += ms; },
-    }) as Promise<number>);
-    expect(code).toBe(EXIT.UNREACHABLE);
-    expect(sleeps).toEqual([1]);
+    expect(await s.run()).toBe(EXIT.UNREACHABLE);
+    expect(s.clock.sleeps).toEqual([1]);
     expect(calls).toBe(2);
   });
 
@@ -210,7 +221,118 @@ describe("cli runCli", () => {
     expect(await s.run()).toBe(EXIT.UNREACHABLE);
     expect(s.connect).toHaveBeenCalledTimes(1);
     expect(s.clock.sleeps).toEqual([]);
-    expect(s.stderr.text()).toBe("UniView: could not start the app (spawn failed)\n");
+    expect(s.stderr.text()).toBe("UniView: could not start the app (Error)\n");
+  });
+
+  it("a connector that succeeds only after advancing the clock past 15 s is not used (exit 6) and its connection is closed", async () => {
+    // Mutation: awaiting connect() with no deadline (a 16 s success became exit 0)
+    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    s.connect.mockImplementation(async () => {
+      s.clock.advance(16000);
+      return s.bridge.client;
+    });
+    expect(await s.run()).toBe(EXIT.UNREACHABLE);
+    expect(s.bridge.requests).toEqual([]);
+    expect(s.bridge.closedCount()).toBe(1);
+    expect(s.stderr.text()).toBe("UniView: the app is not reachable (timeout)\n");
+    expect(s.stdout.text()).toBe("");
+  });
+
+  it("a connector that answers at exactly the 15 s deadline is still used (limit), 1 ms later is not (limit + 1)", async () => {
+    // Mutation: a post-connect deadline check using >= instead of >
+    const at = async (ms: number) => {
+      const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+      s.connect.mockImplementation(async () => {
+        s.clock.advance(ms);
+        return s.bridge.client;
+      });
+      return s.run();
+    };
+    expect(await at(15000)).toBe(EXIT.OK);
+    expect(await at(15001)).toBe(EXIT.UNREACHABLE);
+  });
+
+  it("a never-settling connect is abandoned at the 15 s deadline with exit 6; a late connection is closed", async () => {
+    // Mutation: no per-attempt deadline (the process would hang), or leaking a connection that arrives after giving up
+    let late!: (c: unknown) => void;
+    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    s.connect.mockImplementation(() => new Promise((resolve) => { late = resolve; }));
+    const done = s.run();
+    await flush();
+    expect(s.clock.held.map((h) => h.ms)).toEqual([COLD_START_MS]);
+    s.clock.fire();
+    expect(await done).toBe(EXIT.UNREACHABLE);
+    expect(s.clock.now()).toBe(COLD_START_MS);
+    expect(s.startApp).toHaveBeenCalledTimes(0);
+    expect(s.stderr.text()).toBe("UniView: the app is not reachable (timeout)\n");
+    expect(s.clock.held).toEqual([]);
+    late(s.bridge.client);
+    await flush();
+    expect(s.bridge.closedCount()).toBe(1);
+    expect(s.bridge.requests).toEqual([]);
+  });
+
+  it("a never-settling startApp is abandoned at the remaining budget with exit 6, without further attempts", async () => {
+    // Mutation: awaiting startApp() with no deadline
+    const s = setup({
+      argv: ["open", "a.txt"],
+      connect: async () => { throw codeError("ENOENT"); },
+      startApp: () => new Promise<void>(() => {}),
+    });
+    const done = s.run();
+    await flush();
+    expect(s.startApp).toHaveBeenCalledTimes(1);
+    expect(s.clock.held.map((h) => h.ms)).toEqual([COLD_START_MS]);
+    s.clock.fire();
+    expect(await done).toBe(EXIT.UNREACHABLE);
+    expect(s.connect).toHaveBeenCalledTimes(1);
+    expect(s.stderr.text()).toBe("UniView: the app is not reachable (timeout)\n");
+  });
+
+  it("the attempt deadline is the remaining budget, not a fresh 15 s", async () => {
+    // Mutation: arming each attempt with the full budget instead of what is left
+    let calls = 0;
+    const s = setup({ argv: ["open", "a.txt"] });
+    s.connect.mockImplementation(() => {
+      if (++calls === 1) { s.clock.advance(10000); return Promise.reject(codeError("ENOENT")); }
+      return new Promise(() => {});
+    });
+    const done = s.run();
+    await flush();
+    expect(s.clock.timers.map((x) => x.ms)).toEqual([COLD_START_MS, 5000, 4900]);
+    s.clock.fire();
+    expect(await done).toBe(EXIT.UNREACHABLE);
+  });
+
+  it("startApp's error message never reaches stdout or stderr (only its code or class)", async () => {
+    // Mutation: printing err.message (a launcher error can carry secrets such as key=...)
+    const s = setup({
+      argv: ["open", "a.txt"],
+      connect: async () => { throw codeError("ENOENT"); },
+      startApp: async () => { throw new Error("spawn failed: key=TEST_SECRET"); },
+    });
+    expect(await s.run()).toBe(EXIT.UNREACHABLE);
+    expect(s.stderr.text() + s.stdout.text()).not.toContain("TEST_SECRET");
+    expect(s.stderr.text()).toBe("UniView: could not start the app (Error)\n");
+    const coded = setup({
+      argv: ["open", "a.txt"],
+      connect: async () => { throw codeError("ENOENT"); },
+      startApp: async () => { throw Object.assign(new Error("key=TEST_SECRET"), { code: "EACCES" }); },
+    });
+    expect(await coded.run()).toBe(EXIT.UNREACHABLE);
+    expect(coded.stderr.text()).toBe("UniView: could not start the app (EACCES)\n");
+  });
+
+  it("an error code that is not a plain identifier is never echoed (connect and request errors)", async () => {
+    // Mutation: echoing err.code verbatim
+    const weird = codeError("key=TEST_SECRET");
+    const a = setup({ argv: ["open", "a.txt"], connect: async () => { throw weird; } });
+    expect(await a.run()).toBe(EXIT.UNREACHABLE);
+    expect(a.stderr.text() + a.stdout.text()).not.toContain("TEST_SECRET");
+    const b = setup({ argv: ["open", "a.txt"], handlers: { open: async () => { throw weird; } } });
+    expect(await b.run()).toBe(EXIT.UNREACHABLE);
+    expect(b.stderr.text() + b.stdout.text()).not.toContain("TEST_SECRET");
+    expect(b.stderr.text()).toMatch(/[(]unknown[)]/);
   });
 
   it("partial failure: opened files listed on stdout, each failure on stderr, exit 2", async () => {
@@ -297,8 +419,9 @@ describe("cli runCli", () => {
         holdAbove: 1000,
       });
       expect(await s.run()).toBe(EXIT.OK);
-      const signal = s.clock.signals[s.clock.sleeps.indexOf(3600 * 1000)];
-      expect(signal?.aborted).toBe(true);
+      const waitTimer = s.clock.timers.find((x) => x.ms === 3600 * 1000);
+      expect(waitTimer?.signal.aborted).toBe(true);
+      expect(s.clock.held).toEqual([]);
     });
 
     it("times out with exit 5 after the default 3600 s and closes the connection", async () => {
