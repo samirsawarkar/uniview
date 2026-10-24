@@ -169,4 +169,93 @@ describe("receipt-verify-web limits", () => {
     expect(result.files[0]!.state).toBe("unreadable");
     expect(result.files[0]!.observedSha256).toBeNull();
   });
+
+  it("stops before resolving the next file once the signal is aborted", async () => {
+    // Mutation: ignoring opts.signal so a cancelled pass keeps reading files
+    const ac = new AbortController();
+    const files: WebVerifyFile[] = [
+      { path: "/repo/1.txt", expectedSha256: dummyHash, role: "input" },
+      { path: "/repo/2.txt", expectedSha256: dummyHash, role: "input" },
+      { path: "/repo/3.txt", expectedSha256: dummyHash, role: "input" },
+    ];
+    const resolved: string[] = [];
+    const result = await verifyReceiptWeb(
+      files,
+      async (f) => {
+        resolved.push(f.path);
+        if (f.path.endsWith("1.txt")) ac.abort();
+        // digestHex: nothing is read, so only the loop's own check can stop the pass.
+        return { size: 1, readAll: async () => new Uint8Array(1).buffer, digestHex: async () => dummyHash };
+      },
+      { signal: ac.signal }
+    );
+    expect(resolved).toEqual(["/repo/1.txt"]);
+    expect(result.files.length).toBeLessThanOrEqual(1);
+  });
+
+  it("does not hash bytes that were read after the pass was aborted", async () => {
+    // Mutation: hashing and reporting a file whose pass was cancelled while it was being read
+    const ac = new AbortController();
+    const seen: string[] = [];
+    const result = await verifyReceiptWeb(
+      [{ path: "/repo/1.txt", expectedSha256: dummyHash, role: "input" }],
+      async () => ({
+        size: 1,
+        readAll: async () => {
+          ac.abort();
+          return new Uint8Array(1).buffer;
+        },
+      }),
+      { signal: ac.signal, onFile: (f) => seen.push(f.path) }
+    );
+    expect(result.files).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  it("reports each file through onFile in receipt order with its index", async () => {
+    // Mutation: dropping the progress callback so every file shows 'not checked' until the pass ends
+    const files: WebVerifyFile[] = [
+      { path: "/repo/a", expectedSha256: dummyHash, role: "input" },
+      { path: "/repo/b", expectedSha256: dummyHash, role: "input" },
+    ];
+    const seen: Array<[string, number, string]> = [];
+    await verifyReceiptWeb(files, async (f) => (f.path.endsWith("a") ? null : { size: 1, readAll: async () => { throw new Error("no"); } }), {
+      onFile: (f, i) => seen.push([f.path, i, f.state]),
+    });
+    expect(seen).toEqual([
+      ["/repo/a", 0, "missing"],
+      ["/repo/b", 1, "unreadable"],
+    ]);
+  });
+
+  it("counts prehashed bytes once: they are charged by the resolver, not again here", async () => {
+    // Mutation: charging a prehashed file's bytes a second time (a 512 MiB receipt would fail spuriously)
+    const half = WEB_HASH_LIMITS.MAX_RECEIPT_BYTES / 2;
+    const budget = { used: half }; // the resolver already charged 256 MiB for this file
+    const files: WebVerifyFile[] = [
+      { path: "/repo/a", expectedSha256: dummyHash, role: "input" },
+      { path: "/repo/b", expectedSha256: dummyHash, role: "input" },
+    ];
+    const result = await verifyReceiptWeb(
+      files,
+      async (f) =>
+        f.path.endsWith("a")
+          ? { size: half, readAll: async () => new ArrayBuffer(0), digestHex: async () => dummyHash, prehashed: true }
+          : { size: half, readAll: async () => new ArrayBuffer(0), digestHex: async () => dummyHash },
+      { budget }
+    );
+    expect(result.files.map((f) => f.state)).toEqual(["unchanged", "unchanged"]);
+    expect(budget.used).toBe(WEB_HASH_LIMITS.MAX_RECEIPT_BYTES);
+    expect(result.totalBytesHashed).toBe(WEB_HASH_LIMITS.MAX_RECEIPT_BYTES);
+  });
+
+  it("respects bytes already charged to a shared budget (limit and limit+1)", async () => {
+    // Mutation: starting every pass from zero instead of the shared budget
+    const files: WebVerifyFile[] = [{ path: "/repo/a", expectedSha256: dummyHash, role: "input" }];
+    const mk = (): WebVerifySource => ({ size: 1, readAll: async () => new ArrayBuffer(0), digestHex: async () => dummyHash });
+    const atLimit = await verifyReceiptWeb(files, async () => mk(), { budget: { used: WEB_HASH_LIMITS.MAX_RECEIPT_BYTES - 1 } });
+    expect(atLimit.files[0]!.state).toBe("unchanged");
+    const over = await verifyReceiptWeb(files, async () => mk(), { budget: { used: WEB_HASH_LIMITS.MAX_RECEIPT_BYTES } });
+    expect(over.files[0]!.state).toBe("too_large");
+  });
 });

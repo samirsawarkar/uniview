@@ -176,38 +176,6 @@ describe("ReceiptViewer for phone and web", () => {
     expect(text).toContain("https://www.ietf.org/rfc/rfc1951.txt");
   });
 
-  it("shows placeholder 'image not available on this device' for unresolved view images", async () => {
-    // Mutation: failing to display 'image not available on this device' for unresolved images
-    const receiptWithView: Receipt = {
-      ...sampleReceipt,
-      view: "/workspace/view.uview.json",
-      viewRelPath: "view.uview.json",
-    };
-    const source = makeSource(receiptWithView);
-    await renderAndWait(source, {
-      unresolvedImages: ["assets/screenshot.png"],
-    });
-
-    const placeholder = container?.querySelector(".agent-image-placeholder, [data-placeholder]");
-    expect(placeholder).not.toBeNull();
-    expect(placeholder?.textContent).toContain("image not available on this device");
-  });
-
-  it("disables unresolved fileRefs", async () => {
-    // Mutation: leaving unresolved fileRef buttons enabled
-    const receiptWithView: Receipt = {
-      ...sampleReceipt,
-      view: "/workspace/view.uview.json",
-    };
-    const source = makeSource(receiptWithView);
-    await renderAndWait(source, {
-      unresolvedFileRefs: ["src/missing.ts"],
-    });
-
-    const disabledRef = container?.querySelector("button[disabled].agent-fileref, .agent-fileref.disabled");
-    expect(disabledRef).not.toBeNull();
-  });
-
   it("rejects receipt file > 2 MiB with error view", async () => {
     // Mutation: allowing oversized receipt files > 2 MiB to be processed
     const hugeSize = 2 * 1024 * 1024 + 1; // 2 MiB + 1

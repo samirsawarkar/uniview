@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   resolveLanPath,
   matchCompanionFile,
-  resolveReference,
   type LanContext,
   type CompanionFile,
 } from "../../src/core/receipt-resolve";
@@ -125,6 +124,107 @@ describe("receipt-resolve LAN paths", () => {
   });
 });
 
+describe("receipt-resolve LAN path hardening", () => {
+  const lanRoot: LanContext = {
+    hostId: "host-alpha",
+    rootId: "shared-root-1",
+    receiptPath: "reviews/task-1/receipt.receipt.json",
+  };
+  const rootCtx: LanContext = { hostId: "h", rootId: "r", receiptPath: "receipt.receipt.json" };
+
+  function missing(rel: string, ctx: LanContext = lanRoot) {
+    const res = resolveLanPath(rel, ctx);
+    expect(res.ok, `expected missing for ${JSON.stringify(rel)}`).toBe(false);
+  }
+
+  it("treats segments that are '..' after trimming trailing dots and spaces as escapes", () => {
+    // Mutation: comparing the raw segment to '..' only (Windows hosts strip trailing dots and spaces)
+    missing("../../../outside.txt");
+    missing(".. /x.txt", rootCtx);
+    missing("... /x.txt", rootCtx);
+    missing(".. ../x.txt", rootCtx);
+    missing("a/.. /../../x.txt");
+    missing("..\\x.txt", rootCtx);
+    missing("sub/... /x.txt", rootCtx);
+  });
+
+  it("rejects segments with NUL or other control characters", () => {
+    // Mutation: letting a NUL or control character reach the host path
+    missing("a\u0000b.txt");
+    missing("dir/file.txt\u0000.png");
+    missing("a\u001fb.txt");
+    missing("a\u007fb.txt");
+    missing("a\nb.txt");
+    missing("a\tb.txt");
+  });
+
+  it("rejects a receipt path whose own folder escapes the root", () => {
+    // Mutation: trusting the receipt's own path and letting '..' in it leave the root
+    missing("x.txt", { ...lanRoot, receiptPath: "../receipt.receipt.json" });
+    missing("x.txt", { ...lanRoot, receiptPath: "a/../../receipt.receipt.json" });
+    missing("x.txt", { ...lanRoot, receiptPath: "..\\..\\receipt.receipt.json" });
+    const ok = resolveLanPath("x.txt", { ...lanRoot, receiptPath: "a/../receipt.receipt.json" });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.resolvedPath).toBe("x.txt");
+  });
+
+  it("rejects a relPath that resolves to the folder itself", () => {
+    // Mutation: returning ok with an empty resolvedPath for '.' or 'a/..'
+    missing(".", rootCtx);
+    missing("a/..", rootCtx);
+    missing("./", rootCtx);
+  });
+
+  it("keeps percent-encoded dots literal (no decoding)", () => {
+    // Mutation: decoding %2e%2e so an encoded traversal becomes '..'
+    const res = resolveLanPath("%2e%2e/x.txt", rootCtx);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.resolvedPath).toBe("%2e%2e/x.txt");
+    const res2 = resolveLanPath("%2E%2E%2Fx.txt", rootCtx);
+    expect(res2.ok).toBe(true);
+    if (res2.ok) expect(res2.resolvedPath).toBe("%2E%2E%2Fx.txt");
+  });
+
+  it("treats backslashes and mixed separators as separators", () => {
+    // Mutation: splitting on '/' only so a backslash '..' goes unnoticed
+    const res = resolveLanPath("a\\b/c\\d.txt", rootCtx);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.resolvedPath).toBe("a/b/c/d.txt");
+    missing("a\\..\\..\\x.txt", rootCtx);
+    missing("a/..\\../x.txt", rootCtx);
+    const inside = resolveLanPath("a/..\\b.txt", rootCtx);
+    expect(inside.ok).toBe(true);
+    if (inside.ok) expect(inside.resolvedPath).toBe("b.txt");
+  });
+
+  it("rejects drive-letter, drive-relative and UNC forms in every spelling", () => {
+    // Mutation: only checking 'C:\\' and not 'C:' or '//server' spellings
+    missing("C:\\x.txt");
+    missing("c:/x.txt");
+    missing("C:x.txt");
+    missing("\\\\server\\share\\x.txt");
+    missing("//server/share/x.txt");
+    missing("\\\\?\\C:\\x.txt");
+    missing("/x.txt");
+    missing("\\x.txt");
+  });
+
+  it("keeps unicode names literal and does not treat fullwidth dots as '..'", () => {
+    // Mutation: Unicode normalisation turning fullwidth dots into '..'
+    const name = "\u2025/\uff0e\uff0e/\u00e9t\u00e9/\u6587\u4ef6.txt";
+    const res = resolveLanPath(name, rootCtx);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.resolvedPath).toBe(name);
+  });
+
+  it("does not trim ordinary names with inner dots or spaces", () => {
+    // Mutation: over-eager trimming that rejects 'a b.txt' or 'v1.2.txt'
+    const res = resolveLanPath("my notes v1.2.txt", rootCtx);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.resolvedPath).toBe("my notes v1.2.txt");
+  });
+});
+
 describe("receipt-resolve companion files", () => {
   const hashA = "a".repeat(64);
   const hashB = "b".repeat(64);
@@ -200,45 +300,5 @@ describe("receipt-resolve companion files", () => {
     if (res.status === "ambiguous") {
       expect(res.candidates.length).toBe(2);
     }
-  });
-});
-
-describe("receipt-resolve references (images and fileRefs)", () => {
-  it("marks unresolved image with placeholder 'image not available on this device'", () => {
-    // Mutation: omitting placeholder text for unresolved images
-    const resolved = resolveReference({
-      kind: "image",
-      path: "/desktop/only/pic.png",
-      relPath: undefined,
-    });
-    expect(resolved.resolved).toBe(false);
-    expect(resolved.placeholder).toBe("image not available on this device");
-  });
-
-  it("disables unresolved fileRefs", () => {
-    // Mutation: leaving unresolved fileRef enabled
-    const resolved = resolveReference({
-      kind: "fileRef",
-      path: "C:\\projects\\file.ts",
-      relPath: undefined,
-    });
-    expect(resolved.resolved).toBe(false);
-    expect(resolved.disabled).toBe(true);
-  });
-
-  it("enables resolved fileRefs when LAN path resolves", () => {
-    // Mutation: disabling even resolved fileRefs
-    const lanRoot: LanContext = {
-      hostId: "host-1",
-      rootId: "root-1",
-      receiptPath: "dir/test.receipt.json",
-    };
-    const resolved = resolveReference(
-      { kind: "fileRef", path: "C:\\projects\\file.ts", relPath: "file.ts" },
-      lanRoot
-    );
-    expect(resolved.resolved).toBe(true);
-    expect(resolved.disabled).toBe(false);
-    expect(resolved.resolvedPath).toBe("dir/file.ts");
   });
 });

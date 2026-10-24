@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useContext, createContext } from "react";
 import type {
   ViewNode,
   HeadingNode,
@@ -566,13 +566,83 @@ export function ColumnsRenderer({ node }: { node: ColumnsNode }): React.ReactEle
   );
 }
 
+/**
+ * What a surrounding viewer knows about the files an agent view points at. Without a provider (the
+ * plain view viewer) images and fileRefs show the static "opens through UniView" placeholders. The
+ * phone/web receipt viewer provides one that looks each reference up on the LAN root or among the
+ * files the person picked.
+ */
+export type ViewReferenceState =
+  | { status: "found"; open: () => void }
+  | { status: "missing" }
+  | { status: "unreadable" };
+
+export interface ViewReferenceResolver {
+  resolve(ref: { kind: "image" | "fileRef"; path: string; relPath?: string }): Promise<ViewReferenceState>;
+}
+
+export const ViewReferenceContext = createContext<ViewReferenceResolver | null>(null);
+
+/** null: no resolver (static placeholders); "checking": lookup in flight. */
+function useViewReference(
+  kind: "image" | "fileRef",
+  path: string,
+  relPath: string | undefined
+): ViewReferenceState | "checking" | null {
+  const resolver = useContext(ViewReferenceContext);
+  const [state, setState] = useState<ViewReferenceState | "checking">("checking");
+  useEffect(() => {
+    if (!resolver) return;
+    let cancelled = false;
+    setState("checking");
+    resolver.resolve({ kind, path, relPath }).then(
+      (r) => {
+        if (!cancelled) setState(r);
+      },
+      () => {
+        if (!cancelled) setState({ status: "unreadable" });
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [resolver, kind, path, relPath]);
+  return resolver ? state : null;
+}
+
 export function ImageRenderer({ node }: { node: ImageNode }): React.ReactElement {
+  const ref = useViewReference("image", node.path, node.relPath);
+  if (ref === null) {
+    return (
+      <div className="vs-placeholder vs-image-placeholder">
+        <div className="vs-placeholder-header">Image: {node.alt}</div>
+        <div className="vs-placeholder-note">
+          Images in agent views appear when an agent opens this view through
+          UniView
+        </div>
+        {node.caption && (
+          <div className="vs-placeholder-caption">{node.caption}</div>
+        )}
+      </div>
+    );
+  }
+  const found = ref !== "checking" && ref.status === "found";
   return (
-    <div className="vs-placeholder vs-image-placeholder">
+    <div
+      className={
+        found
+          ? "vs-placeholder vs-image-placeholder"
+          : "vs-placeholder vs-image-placeholder agent-image-placeholder"
+      }
+      data-placeholder={found ? undefined : "true"}
+    >
       <div className="vs-placeholder-header">Image: {node.alt}</div>
       <div className="vs-placeholder-note">
-        Images in agent views appear when an agent opens this view through
-        UniView
+        {ref === "checking"
+          ? "Looking for this image on this device…"
+          : found
+            ? "This image is on this device, but showing images in views is not available on phone and web yet."
+            : "image not available on this device"}
       </div>
       {node.caption && (
         <div className="vs-placeholder-caption">{node.caption}</div>
@@ -582,16 +652,47 @@ export function ImageRenderer({ node }: { node: ImageNode }): React.ReactElement
 }
 
 export function FileRefRenderer({ node }: { node: FileRefNode }): React.ReactElement {
+  const ref = useViewReference("fileRef", node.path, node.relPath);
+  if (ref === null) {
+    return (
+      <div className="vs-placeholder vs-fileref-placeholder">
+        <span className="vs-fileref-text">{node.label ?? node.path}</span>
+        <button type="button" disabled className="vs-fileref-btn">
+          Open
+        </button>
+        <div className="vs-placeholder-note">
+          Images in agent views appear when an agent opens this view through
+          UniView
+        </div>
+      </div>
+    );
+  }
+  const found = ref !== "checking" && ref.status === "found";
   return (
     <div className="vs-placeholder vs-fileref-placeholder">
       <span className="vs-fileref-text">{node.label ?? node.path}</span>
-      <button type="button" disabled className="vs-fileref-btn">
-        Open
-      </button>
-      <div className="vs-placeholder-note">
-        Images in agent views appear when an agent opens this view through
-        UniView
-      </div>
+      {found ? (
+        <button
+          type="button"
+          className="vs-fileref-btn agent-fileref"
+          onClick={() => ref.open()}
+        >
+          Open
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled
+          aria-disabled="true"
+          className="vs-fileref-btn agent-fileref disabled"
+          title="File not available on this device"
+        >
+          Open
+        </button>
+      )}
+      {!found && ref !== "checking" && (
+        <div className="vs-placeholder-note">File not available on this device</div>
+      )}
     </div>
   );
 }

@@ -1014,6 +1014,8 @@ h5.vs-heading { font-size: 0.9rem; }
 .receipt-state-badge.state-missing { background: #f3f4f6; color: #4b5563; }
 .receipt-state-badge.state-unreadable { background: #fef3c7; color: #92400e; }
 .receipt-state-badge.state-too_large { background: #fee2e2; color: #991b1b; }
+.receipt-state-badge.state-not_checked { background: #e0e7ff; color: #3730a3; }
+.receipt-view-note { color: #4b5563; font-size: 0.9rem; }
 
 .agent-image-placeholder {
   padding: 1rem;

@@ -1,26 +1,37 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { ViewerProps } from "./types";
+import type { FileSource } from "../core/types";
 import { validateReceipt } from "../../shared/receipt.mjs";
 import type { Receipt, ReceiptValidationError } from "../../shared/receipt.d.mts";
 import { sanitizeLabel, AgentMarkdown } from "./agent-markdown";
+import ViewSpecViewer from "./ViewSpecViewer";
+import { ViewReferenceContext, type ViewReferenceResolver } from "./viewspec-nodes";
 import {
+  createReferenceResolver,
+  nextCompanionId,
   resolveLanPath,
-  matchCompanionFile,
   type LanContext,
+  type LanReader,
   type CompanionFile,
+  type ResolvedTarget,
 } from "../core/receipt-resolve";
 import {
   verifyReceiptWeb,
   type WebVerifyFile,
   type WebVerifiedFile,
-  type WebVerifySource,
 } from "../core/receipt-verify-web";
+import { createLanReader } from "../remote/receipt-lan";
+import { getBridge } from "../shells";
 
 const MAX_RECEIPT_BYTES = 2 * 1024 * 1024; // 2 MiB limit for receipt file itself
+const NOT_AVAILABLE = "not available on this device";
 
 export interface ReceiptViewerProps extends ViewerProps {
-  unresolvedImages?: string[];
-  unresolvedFileRefs?: string[];
+  /**
+   * Reads files of the LAN-shared root the receipt was opened from. By default it is built from the
+   * paired computer; null means this device cannot read the share. Tests inject a fake remote here.
+   */
+  lanReader?: LanReader | null;
 }
 
 type LoadedReceipt =
@@ -59,41 +70,108 @@ async function readReceipt(source: ViewerProps["source"]): Promise<LoadedReceipt
   }
 }
 
-function toArrayBuffer(data?: ArrayBuffer | Uint8Array): ArrayBuffer {
-  if (!data) return new ArrayBuffer(0);
-  if (data instanceof Uint8Array) {
-    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  }
-  return data.slice(0);
+/** Agent text that may span lines (check evidence): same stripping as labels, newlines kept. */
+function sanitizeBlock(text: string, max: number): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => sanitizeLabel(line, Number.MAX_SAFE_INTEGER))
+    .join("\n")
+    .slice(0, max);
 }
+
+/** A FileSource that reads the resolved target only when a viewer asks for it. */
+function targetSource(target: ResolvedTarget): FileSource {
+  let url: string | undefined;
+  let counter = 0;
+  const readAll = (): Promise<ArrayBuffer> => target.read();
+  return {
+    id: `receipt-ref-${nextCompanionId()}-${counter++}`,
+    name: target.name,
+    size: target.size,
+    readAll,
+    readRange: async (start, end) => (await readAll()).slice(start, end),
+    async url() {
+      if (url) return url;
+      url = URL.createObjectURL(new Blob([await readAll()]));
+      return url;
+    },
+    release() {
+      if (url) URL.revokeObjectURL(url);
+      url = undefined;
+    },
+  };
+}
+
+type ViewState =
+  | { status: "none" }
+  | { status: "checking" }
+  | { status: "missing" }
+  | { status: "unreadable" }
+  | { status: "ambiguous"; candidates: CompanionFile[] }
+  | { status: "found"; sig: string; source: FileSource; basePath: string | undefined };
+
+const VIEW_KEY = "view";
+const noop = () => {};
+const fileKey = (i: number) => `file:${i}`;
 
 export default function ReceiptViewer({
   source,
   onReady,
   onFallback,
-  unresolvedImages = [],
-  unresolvedFileRefs = [],
+  onOpen,
+  lanReader: lanReaderProp,
 }: ReceiptViewerProps): React.ReactElement {
   const [loaded, setLoaded] = useState<LoadedReceipt | null>(null);
-  const [verifiedFiles, setVerifiedFiles] = useState<WebVerifiedFile[]>([]);
+  const [verifiedFiles, setVerifiedFiles] = useState<Record<number, WebVerifiedFile>>({});
   const [companions, setCompanions] = useState<CompanionFile[]>([]);
-  const [ambiguousChoices, setAmbiguousChoices] = useState<
-    Record<string, CompanionFile[]>
-  >({});
-  const [chosenFiles, setChosenFiles] = useState<Record<string, CompanionFile>>(
-    {}
-  );
+  const [ambiguousChoices, setAmbiguousChoices] = useState<Record<string, CompanionFile[]>>({});
+  const [chosenFiles, setChosenFiles] = useState<Record<string, CompanionFile>>({});
+  const [view, setView] = useState<ViewState>({ status: "none" });
   const mounted = useRef(true);
+  const onOpenRef = useRef(onOpen);
+  onOpenRef.current = onOpen;
+  /** Verification passes run strictly one after another; a pass that is superseded stops early. */
+  const passChain = useRef<Promise<void>>(Promise.resolve());
+  /** Hashes of picked files (they never change), reused between passes. */
+  const hashCache = useRef(new Map<string, string | null>());
 
   const receipt = loaded?.receipt ?? null;
   const errors = loaded?.errors ?? null;
   const loading = loaded === null;
+
+  const lanContext = useMemo<LanContext | undefined>(
+    () =>
+      source.remote
+        ? {
+            hostId: source.remote.hostId,
+            rootId: source.remote.rootId,
+            receiptPath: source.remote.path,
+          }
+        : undefined,
+    [source.remote]
+  );
+
+  const lanReader = useMemo<LanReader | null>(() => {
+    if (lanReaderProp !== undefined) return lanReaderProp;
+    if (!source.remote) return null;
+    try {
+      return createLanReader(source.remote, { transport: getBridge().remoteTransport });
+    } catch {
+      return null;
+    }
+  }, [lanReaderProp, source.remote]);
 
   // Initial read and validation
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
     setLoaded(null);
+    setCompanions([]);
+    setChosenFiles({});
+    setAmbiguousChoices({});
+    setVerifiedFiles({});
+    hashCache.current = new Map();
 
     void readReceipt(source).then((r) => {
       if (!cancelled) setLoaded(r);
@@ -112,19 +190,13 @@ export default function ReceiptViewer({
     }
   }, [loading, onReady]);
 
-  // Verification pass for files
+  // Verification pass for files: one file at a time, one pass at a time.
   useEffect(() => {
     if (!receipt) return;
 
-    let cancelled = false;
-
-    const lanContext: LanContext | undefined = source.remote
-      ? {
-          hostId: source.remote.hostId,
-          rootId: source.remote.rootId,
-          receiptPath: source.remote.path,
-        }
-      : undefined;
+    const ac = new AbortController();
+    setVerifiedFiles({});
+    setAmbiguousChoices({});
 
     const filesToVerify: WebVerifyFile[] = receipt.files.map((f) => ({
       path: f.path,
@@ -133,91 +205,155 @@ export default function ReceiptViewer({
       role: f.role,
     }));
 
-    const resolver = async (
-      file: WebVerifyFile
-    ): Promise<WebVerifySource | null> => {
-      // 1. If chosen by user among ambiguous
-      if (chosenFiles[file.path]) {
-        const c = chosenFiles[file.path]!;
-        return {
-          size: c.size,
-          readAll: async () => toArrayBuffer(c.data),
-        };
-      }
-
-      // 2. Try LAN resolution
-      if (lanContext && file.relPath) {
-        const lan = resolveLanPath(file.relPath, lanContext);
-        if (lan.ok) {
-          // Resolved on LAN root
-          return null; // Remote file read handled by shell bridge or companion
-        }
-      }
-
-      // 3. Try Companion files matching
-      if (companions.length > 0) {
-        const namePath = file.relPath || file.path;
-        const match = matchCompanionFile(
-          namePath,
-          file.expectedSha256,
-          companions
-        );
-        if (match.status === "matched") {
-          return {
-            size: match.file.size,
-            readAll: async () => toArrayBuffer(match.file.data),
-          };
-        }
-        if (match.status === "ambiguous") {
-          if (mounted.current) {
-            setAmbiguousChoices((prev) => ({
-              ...prev,
-              [file.path]: match.candidates,
-            }));
+    const run = async () => {
+      if (ac.signal.aborted) return;
+      const budget = { used: 0 };
+      const resolve = createReferenceResolver({
+        lan: lanContext,
+        lanReader,
+        companions,
+        chosen: chosenFiles,
+        hashCache: hashCache.current,
+        budget,
+        signal: ac.signal,
+      });
+      try {
+        await verifyReceiptWeb(
+          filesToVerify,
+          async (file, index) => {
+            const key = fileKey(index);
+            const out = await resolve({
+              key,
+              path: file.path,
+              relPath: file.relPath,
+              sha256: file.expectedSha256,
+            });
+            if (out.status === "found") {
+              return {
+                size: out.size,
+                readAll: out.read,
+                digestHex: out.digestHex,
+                prehashed: out.prehashed,
+              };
+            }
+            if (out.status === "ambiguous" && !ac.signal.aborted) {
+              setAmbiguousChoices((prev) => ({ ...prev, [key]: out.candidates }));
+            }
+            return null;
+          },
+          {
+            signal: ac.signal,
+            budget,
+            onFile: (f, index) => {
+              if (!ac.signal.aborted) setVerifiedFiles((prev) => ({ ...prev, [index]: f }));
+            },
           }
-        }
+        );
+      } catch {
+        /* a failed pass leaves the remaining files "not checked" */
       }
-
-      return null;
     };
+    passChain.current = passChain.current.then(run, run);
 
-    void verifyReceiptWeb(filesToVerify, resolver).then((res) => {
-      if (!cancelled && mounted.current) {
-        setVerifiedFiles(res.files);
-      }
+    return () => {
+      ac.abort();
+    };
+  }, [receipt, lanContext, lanReader, companions, chosenFiles]);
+
+  // The receipt's view: resolved like any other reference, then shown by the view viewer.
+  useEffect(() => {
+    if (!receipt || !receipt.view) {
+      setView({ status: "none" });
+      return;
+    }
+    let cancelled = false;
+    setView((prev) => (prev.status === "found" ? prev : { status: "checking" }));
+    const resolve = createReferenceResolver({
+      lan: lanContext,
+      lanReader,
+      companions,
+      chosen: chosenFiles,
+      hashCache: hashCache.current,
+      budget: { used: 0 },
     });
-
+    void (async () => {
+      let next: ViewState;
+      try {
+        const out = await resolve({ key: VIEW_KEY, path: receipt.view!, relPath: receipt.viewRelPath });
+        if (out.status === "found") {
+          const lan = lanContext && receipt.viewRelPath ? resolveLanPath(receipt.viewRelPath, lanContext) : null;
+          next = {
+            status: "found",
+            sig: `${out.via}:${out.id}`,
+            source: targetSource(out),
+            basePath: lan && lan.ok ? lan.resolvedPath : undefined,
+          };
+        } else if (out.status === "ambiguous") {
+          next = { status: "ambiguous", candidates: out.candidates };
+        } else {
+          next = { status: "missing" };
+        }
+      } catch {
+        next = { status: "unreadable" };
+      }
+      if (cancelled) return;
+      setView((prev) => (prev.status === "found" && next.status === "found" && prev.sig === next.sig ? prev : next));
+    })();
     return () => {
       cancelled = true;
     };
-  }, [receipt, source.remote, companions, chosenFiles]);
+  }, [receipt, lanContext, lanReader, companions, chosenFiles]);
 
-  const handlePickCompanions = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const fileList = e.target.files;
-      if (!fileList || fileList.length === 0) return;
-
-      const picked: CompanionFile[] = [];
-      for (let i = 0; i < fileList.length; i++) {
-        const file = fileList[i]!;
-        const data = await file.arrayBuffer();
-        picked.push({
-          id: `comp-${Date.now()}-${i}`,
-          name: file.name,
-          size: file.size,
-          data,
+  // Images and fileRefs inside the view resolve against the view's own folder (or the picked files).
+  const viewBase = view.status === "found" ? view.basePath : undefined;
+  const referenceResolver = useMemo<ViewReferenceResolver | null>(() => {
+    if (view.status !== "found") return null;
+    return {
+      async resolve(ref) {
+        const resolve = createReferenceResolver({
+          lan: lanContext,
+          lanReader,
+          companions,
+          chosen: {},
+          hashCache: hashCache.current,
+          budget: { used: 0 },
         });
-      }
-      setCompanions((prev) => [...prev, ...picked]);
-    },
-    []
-  );
+        try {
+          const out = await resolve({ key: `${ref.kind}:${ref.path}`, path: ref.path, relPath: ref.relPath }, viewBase);
+          if (out.status !== "found") return { status: "missing" };
+          return {
+            status: "found",
+            open: () => onOpenRef.current([targetSource(out)]),
+          };
+        } catch {
+          return { status: "unreadable" };
+        }
+      },
+    };
+  }, [view.status, lanContext, lanReader, companions, viewBase]);
 
-  const handleSelectChoice = (filePath: string, comp: CompanionFile) => {
-    setChosenFiles((prev) => ({ ...prev, [filePath]: comp }));
+  const handlePickCompanions = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    // Keep the File handles only; their bytes are read lazily, one file at a time, when hashing.
+    const picked: CompanionFile[] = Array.from(e.target.files ?? []).map((file) => ({
+      id: nextCompanionId(),
+      name: file.name,
+      size: file.size,
+      handle: file,
+    }));
+    try {
+      e.target.value = "";
+    } catch {
+      /* some browsers refuse to clear a file input */
+    }
+    if (picked.length === 0) return;
+    setCompanions((prev) => [...prev, ...picked]);
+  }, []);
+
+  const handleSelectChoice = (key: string, comp: CompanionFile) => {
+    setChosenFiles((prev) => ({ ...prev, [key]: comp }));
     setAmbiguousChoices((prev) => {
       const next = { ...prev };
-      delete next[filePath];
+      delete next[key];
       return next;
     });
   };
@@ -331,14 +467,14 @@ export default function ReceiptViewer({
             </span>
           </div>
           <div className="receipt-created-at">
-            Created: {receipt.createdAt}
+            Created: {sanitizeLabel(receipt.createdAt, 64)}
           </div>
         </div>
 
         {/* Task */}
         <div className="receipt-section receipt-task-section">
           <h2 className="receipt-section-heading">Task</h2>
-          <div className="receipt-task-body">{receipt.task}</div>
+          <div className="receipt-task-body">{sanitizeLabel(receipt.task, 2048)}</div>
         </div>
 
         {/* Summary (Restricted Markdown) */}
@@ -358,7 +494,7 @@ export default function ReceiptViewer({
               <input
                 type="file"
                 multiple
-                onChange={(e) => void handlePickCompanions(e)}
+                onChange={handlePickCompanions}
                 style={{ display: "none" }}
               />
             </label>
@@ -366,9 +502,10 @@ export default function ReceiptViewer({
 
           <ul className="receipt-files-list">
             {receipt.files.map((file, i) => {
-              const verified = verifiedFiles.find((v) => v.path === file.path);
-              const state = verified?.state ?? "missing";
-              const choices = ambiguousChoices[file.path];
+              const verified = verifiedFiles[i];
+              const state = verified?.state ?? "not checked";
+              const choices = ambiguousChoices[fileKey(i)];
+              const name = sanitizeLabel(file.relPath || file.path, 4096);
 
               return (
                 <li key={i} className="receipt-file-item">
@@ -376,10 +513,8 @@ export default function ReceiptViewer({
                     <span className={`receipt-role-badge role-${file.role}`}>
                       {file.role}
                     </span>
-                    <span className="receipt-file-name">
-                      {file.relPath || file.path}
-                    </span>
-                    <span className={`receipt-state-badge state-${state}`}>
+                    <span className="receipt-file-name">{name}</span>
+                    <span className={`receipt-state-badge state-${state.replace(/ /g, "_")}`}>
                       {state}
                     </span>
                   </div>
@@ -400,23 +535,7 @@ export default function ReceiptViewer({
                   </div>
 
                   {choices && choices.length > 0 && (
-                    <div className="receipt-ambiguous-picker">
-                      <span className="receipt-ambiguous-prompt">
-                        Multiple files named &quot;{file.relPath || file.path}&quot; found. Choose:
-                      </span>
-                      <div className="receipt-choices-row">
-                        {choices.map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            className="receipt-choice-btn"
-                            onClick={() => handleSelectChoice(file.path, c)}
-                          >
-                            Use {c.name} ({c.size} bytes)
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    <Chooser name={name} choices={choices} onChoose={(c) => handleSelectChoice(fileKey(i), c)} />
                   )}
                 </li>
               );
@@ -434,7 +553,7 @@ export default function ReceiptViewer({
               {receipt.checks.map((chk, i) => (
                 <li key={i} className={`receipt-check-item status-${chk.status}`}>
                   <div className="receipt-check-header">
-                    <span className="receipt-check-name">{chk.name}</span>
+                    <span className="receipt-check-name">{sanitizeLabel(chk.name, 200)}</span>
                     <span
                       className={`receipt-check-status-badge status-${chk.status}`}
                     >
@@ -442,7 +561,7 @@ export default function ReceiptViewer({
                     </span>
                   </div>
                   {chk.evidence && (
-                    <pre className="receipt-check-evidence">{chk.evidence}</pre>
+                    <pre className="receipt-check-evidence">{sanitizeBlock(chk.evidence, 16 * 1024)}</pre>
                   )}
                 </li>
               ))}
@@ -459,34 +578,76 @@ export default function ReceiptViewer({
             <ul className="receipt-sources-list">
               {receipt.sources.map((src, i) => (
                 <li key={i} className="receipt-source-item">
-                  <div className="receipt-source-title">{src.title}</div>
-                  <code className="receipt-source-ref">{src.ref}</code>
+                  <div className="receipt-source-title">{sanitizeLabel(src.title, 300)}</div>
+                  <code className="receipt-source-ref">{sanitizeLabel(src.ref, 2048)}</code>
                 </li>
               ))}
             </ul>
           </div>
         )}
 
-        {/* View references & placeholders */}
-        {unresolvedImages.map((img, i) => (
-          <div key={`img-${i}`} className="agent-image-placeholder" data-placeholder="true">
-            [image: {img}] - image not available on this device
+        {/* The receipt's view */}
+        {receipt.view && (
+          <div className="receipt-section receipt-view-section">
+            <h2 className="receipt-section-heading">View</h2>
+            {view.status === "found" ? (
+              <ViewReferenceContext.Provider value={referenceResolver}>
+                <ViewSpecViewer
+                  key={view.sig}
+                  source={view.source}
+                  detection={{ kind: "viewspec" as any, ext: "uview.json", by: "extension", label: "UniView view" }}
+                  onOpen={onOpen}
+                  onReady={noop}
+                />
+              </ViewReferenceContext.Provider>
+            ) : view.status === "ambiguous" ? (
+              <Chooser
+                name={sanitizeLabel(receipt.viewRelPath || receipt.view, 4096)}
+                choices={view.candidates}
+                onChoose={(c) => handleSelectChoice(VIEW_KEY, c)}
+              />
+            ) : view.status === "checking" || view.status === "none" ? (
+              <div className="receipt-view-note">Looking for the view…</div>
+            ) : (
+              <div className="receipt-view-note">
+                {view.status === "unreadable"
+                  ? "The view could not be read from the shared folder."
+                  : `The view is ${NOT_AVAILABLE}. Pick it as a companion file or open the receipt from a shared folder.`}
+              </div>
+            )}
           </div>
-        ))}
+        )}
+      </section>
+    </div>
+  );
+}
 
-        {unresolvedFileRefs.map((ref, i) => (
+function Chooser({
+  name,
+  choices,
+  onChoose,
+}: {
+  name: string;
+  choices: CompanionFile[];
+  onChoose: (c: CompanionFile) => void;
+}): React.ReactElement {
+  return (
+    <div className="receipt-ambiguous-picker">
+      <span className="receipt-ambiguous-prompt">
+        Multiple files named &quot;{name}&quot; found. Choose:
+      </span>
+      <div className="receipt-choices-row">
+        {choices.map((c) => (
           <button
-            key={`ref-${i}`}
+            key={c.id}
             type="button"
-            disabled
-            className="agent-fileref disabled"
-            aria-disabled="true"
-            title="File not available on this device"
+            className="receipt-choice-btn"
+            onClick={() => onChoose(c)}
           >
-            {ref} (unavailable)
+            Use {sanitizeLabel(c.name, 200)} ({c.size} bytes)
           </button>
         ))}
-      </section>
+      </div>
     </div>
   );
 }

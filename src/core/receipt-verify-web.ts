@@ -18,6 +18,24 @@ export interface WebVerifySource {
   readAll(): Promise<ArrayBuffer>;
   /** Optional custom digest function for testing large files without memory exhaustion */
   digestHex?(): Promise<string>;
+  /**
+   * The file was already hashed (and its bytes charged to the budget) to tell duplicates apart:
+   * the cached `digestHex` is used and the bytes are not charged a second time.
+   */
+  prehashed?: boolean;
+}
+
+/** Bytes hashed so far in one verification pass; shared with the resolver that hashes duplicates. */
+export interface ByteBudget {
+  used: number;
+}
+
+export interface WebVerifyOptions {
+  /** Stops the pass before the next file is resolved or read. */
+  signal?: AbortSignal;
+  budget?: ByteBudget;
+  /** Called as each file's state is known, in receipt order. */
+  onFile?: (file: WebVerifiedFile, index: number) => void;
 }
 
 export interface WebVerifiedFile {
@@ -62,17 +80,23 @@ export async function sha256HexWeb(bytes: Uint8Array | ArrayBuffer): Promise<str
  */
 export async function verifyReceiptWeb(
   files: WebVerifyFile[],
-  resolver: (file: WebVerifyFile) => Promise<WebVerifySource | null | undefined>
+  resolver: (file: WebVerifyFile, index: number) => Promise<WebVerifySource | null | undefined>,
+  opts: WebVerifyOptions = {}
 ): Promise<WebVerifyReceiptResult> {
-  let cumulativeBytes = 0;
+  const budget: ByteBudget = opts.budget ?? { used: 0 };
   const verifiedFiles: WebVerifiedFile[] = [];
+  const push = (f: WebVerifiedFile) => {
+    verifiedFiles.push(f);
+    opts.onFile?.(f, verifiedFiles.length - 1);
+  };
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
+    if (opts.signal?.aborted) break;
     let source: WebVerifySource | null | undefined = null;
     try {
-      source = await resolver(file);
+      source = await resolver(file, index);
     } catch {
-      verifiedFiles.push({
+      push({
         path: file.path,
         expectedSha256: file.expectedSha256,
         observedSha256: null,
@@ -83,7 +107,7 @@ export async function verifyReceiptWeb(
     }
 
     if (!source) {
-      verifiedFiles.push({
+      push({
         path: file.path,
         expectedSha256: file.expectedSha256,
         observedSha256: null,
@@ -95,7 +119,7 @@ export async function verifyReceiptWeb(
 
     const reportedSize = source.size;
     if (reportedSize > WEB_HASH_LIMITS.MAX_FILE_BYTES) {
-      verifiedFiles.push({
+      push({
         path: file.path,
         expectedSha256: file.expectedSha256,
         observedSha256: null,
@@ -105,8 +129,8 @@ export async function verifyReceiptWeb(
       continue;
     }
 
-    if (reportedSize >= 0 && cumulativeBytes + reportedSize > WEB_HASH_LIMITS.MAX_RECEIPT_BYTES) {
-      verifiedFiles.push({
+    if (!source.prehashed && reportedSize >= 0 && budget.used + reportedSize > WEB_HASH_LIMITS.MAX_RECEIPT_BYTES) {
+      push({
         path: file.path,
         expectedSha256: file.expectedSha256,
         observedSha256: null,
@@ -124,9 +148,11 @@ export async function verifyReceiptWeb(
         observedSha256 = await source.digestHex();
       } else {
         const buffer = await source.readAll();
+        // A cancelled pass drops the bytes it just read instead of hashing them.
+        if (opts.signal?.aborted) break;
         actualSize = buffer.byteLength;
         if (actualSize > WEB_HASH_LIMITS.MAX_FILE_BYTES) {
-          verifiedFiles.push({
+          push({
             path: file.path,
             expectedSha256: file.expectedSha256,
             observedSha256: null,
@@ -135,8 +161,8 @@ export async function verifyReceiptWeb(
           });
           continue;
         }
-        if (cumulativeBytes + actualSize > WEB_HASH_LIMITS.MAX_RECEIPT_BYTES) {
-          verifiedFiles.push({
+        if (budget.used + actualSize > WEB_HASH_LIMITS.MAX_RECEIPT_BYTES) {
+          push({
             path: file.path,
             expectedSha256: file.expectedSha256,
             observedSha256: null,
@@ -148,9 +174,9 @@ export async function verifyReceiptWeb(
         observedSha256 = await sha256HexWeb(buffer);
       }
 
-      cumulativeBytes += actualSize > 0 ? actualSize : 0;
+      if (!source.prehashed) budget.used += actualSize > 0 ? actualSize : 0;
       const state = fileState(file.expectedSha256, observedSha256);
-      verifiedFiles.push({
+      push({
         path: file.path,
         expectedSha256: file.expectedSha256,
         observedSha256,
@@ -158,7 +184,7 @@ export async function verifyReceiptWeb(
         role: file.role,
       });
     } catch {
-      verifiedFiles.push({
+      push({
         path: file.path,
         expectedSha256: file.expectedSha256,
         observedSha256: null,
@@ -170,6 +196,6 @@ export async function verifyReceiptWeb(
 
   return {
     files: verifiedFiles,
-    totalBytesHashed: cumulativeBytes,
+    totalBytesHashed: budget.used,
   };
 }
