@@ -2,10 +2,22 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { execFile as defaultExecFile } from "node:child_process";
+import { execFile as nodeExecFile } from "node:child_process";
 import { BridgeError } from "./bridge-proto.mjs";
 
 const defaultFs = fs;
+
+/** Absolute System32 path for the Windows tools we run, so a PATH entry can never substitute them. */
+export function systemToolPath(name, env = process.env) {
+  const root = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
+  return path.join(root, "System32", name + ".exe");
+}
+
+/** Default executor: icacls and whoami resolve to System32 on Windows; tests inject their own executor. */
+function defaultExecFile(file, args, cb) {
+  const resolved = process.platform === "win32" && (file === "icacls" || file === "whoami") ? systemToolPath(file) : file;
+  return nodeExecFile(resolved, args, { windowsHide: true, timeout: 10_000 }, cb);
+}
 const defaultRandomBytes = crypto.randomBytes;
 
 /**
@@ -119,14 +131,48 @@ export function parseIcaclsEntries(output, filePath) {
 }
 
 /**
+ * Retrieves the current Windows account name and SID via whoami /user /fo csv /nh.
+ * @param {{ execFile?: Function }} [options]
+ * @returns {Promise<{ name: string, sid: string }>}
+ */
+export async function currentWindowsAccount({ execFile = defaultExecFile } = {}) {
+  let output;
+  try {
+    const res = await runExecFile(execFile, "whoami", ["/user", "/fo", "csv", "/nh"]);
+    output = typeof res === "string" ? res : (res?.stdout || "");
+  } catch {
+    throw new BridgeError("bad_sid");
+  }
+
+  const lines = output.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const fields = [];
+    const regex = /(?:^|,)(?:"([^"]*)"|([^,]*))/g;
+    let match;
+    while ((match = regex.exec(line)) !== null) {
+      fields.push(match[1] !== undefined ? match[1] : match[2]);
+      if (regex.lastIndex === line.length) break;
+    }
+    const name = fields[0]?.trim();
+    const sid = fields[1]?.trim();
+    if (name && sid && /^S-1-[0-9-]+$/i.test(sid)) {
+      return { name, sid };
+    }
+  }
+
+  throw new BridgeError("bad_sid");
+}
+
+/**
  * Verifies that a Windows file or directory has strictly owner-only ACL permissions.
  * @param {string} targetPath
- * @param {{ isDirectory?: boolean, execFile?: Function, username?: string, userSid?: string }} options
+ * @param {{ isDirectory?: boolean, execFile?: Function, username?: string, accountName?: string, userSid?: string }} options
  */
 async function verifyWindowsAcl(targetPath, {
   isDirectory = false,
   execFile = defaultExecFile,
   username,
+  accountName,
   userSid,
 } = {}) {
   let stdout;
@@ -163,39 +209,36 @@ async function verifyWindowsAcl(targetPath, {
     }
   }
 
-  const user = (
-    username ||
-    process.env.USERNAME ||
-    (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
-    process.env.USER ||
-    ""
-  ).toLowerCase();
+  // Only the full DOMAIN\user name or the SID identify the account; a bare short name never does.
+  let expectedName = accountName;
+  let expectedSid = userSid;
 
-  let matches = false;
-  const principal = entry.principal.toLowerCase();
-
-  if (user) {
-    if (principal === user) {
-      matches = true;
-    } else if (principal.includes("\\")) {
-      const parts = principal.split("\\");
-      if (parts[parts.length - 1] === user) {
-        matches = true;
-      }
+  if (!expectedSid) {
+    try {
+      const acct = await currentWindowsAccount({ execFile });
+      expectedName = expectedName || acct.name;
+      expectedSid = acct.sid;
+    } catch {
+      throw new BridgeError(isDirectory ? "bad_dir" : "bad_key_perms");
     }
   }
 
-  if (!matches) {
-    let sid = userSid;
-    if (!sid && (principal.startsWith("*s-1-") || principal.startsWith("s-1-"))) {
-      sid = await windowsUserSid({ execFile }).catch(() => null);
-    }
-    if (sid) {
-      const cleanSid = sid.startsWith("*") ? sid.slice(1).toLowerCase() : sid.toLowerCase();
-      const cleanPrincipal = principal.startsWith("*") ? principal.slice(1) : principal;
-      if (cleanPrincipal === cleanSid) {
-        matches = true;
-      }
+  let matches = false;
+  const principal = entry.principal.trim();
+
+  if (expectedName && principal.toLowerCase() === expectedName.toLowerCase()) {
+    matches = true;
+  }
+
+  if (!matches && expectedSid) {
+    const cleanSid = expectedSid.startsWith("*")
+      ? expectedSid.slice(1).toLowerCase()
+      : expectedSid.toLowerCase();
+    const cleanPrincipal = principal.startsWith("*")
+      ? principal.slice(1).toLowerCase()
+      : principal.toLowerCase();
+    if (cleanPrincipal === cleanSid) {
+      matches = true;
     }
   }
 
@@ -207,9 +250,9 @@ async function verifyWindowsAcl(targetPath, {
 /**
  * Ensures the bridge directory exists with safe permissions.
  * On Unix, creates with 0700 and checks ownership and mode bits.
- * On Windows, configures owner-only ACL (OI)(CI)F and verifies on start.
+ * On Windows, configures owner-only ACL *<SID>:(OI)(CI)F and verifies on start.
  * @param {string} userDataDir
- * @param {{ platform?: string, fs?: typeof import("node:fs/promises"), execFile?: Function, username?: string, userSid?: string }} [options]
+ * @param {{ platform?: string, fs?: typeof import("node:fs/promises"), execFile?: Function, username?: string, accountName?: string, userSid?: string }} [options]
  * @returns {Promise<string>} Path to the bridge directory
  */
 export async function ensureBridgeDir(userDataDir, {
@@ -217,6 +260,7 @@ export async function ensureBridgeDir(userDataDir, {
   fs = defaultFs,
   execFile = defaultExecFile,
   username,
+  accountName,
   userSid,
 } = {}) {
   const bridgeDir = path.join(userDataDir, "bridge");
@@ -233,21 +277,27 @@ export async function ensureBridgeDir(userDataDir, {
       if (err && err.code !== "ENOENT") throw err;
     }
 
-    const user =
-      username ||
-      process.env.USERNAME ||
-      (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
-      process.env.USER ||
-      "USER";
+    let sid = userSid;
+    let name = accountName || username;
+    if (!sid) {
+      try {
+        const acct = await currentWindowsAccount({ execFile });
+        sid = acct.sid;
+        if (!name) name = acct.name;
+      } catch {
+        throw new BridgeError("bad_dir");
+      }
+    }
 
     if (!existed) {
       await fs.mkdir(bridgeDir, { recursive: true });
+      const grantSid = sid.startsWith("*") ? sid : `*${sid}`;
       try {
         await runExecFile(execFile, "icacls", [
           bridgeDir,
           "/inheritance:r",
           "/grant:r",
-          `${user}:(OI)(CI)F`,
+          `${grantSid}:(OI)(CI)F`,
         ]);
       } catch {
         throw new BridgeError("bad_dir");
@@ -257,8 +307,9 @@ export async function ensureBridgeDir(userDataDir, {
     await verifyWindowsAcl(bridgeDir, {
       isDirectory: true,
       execFile,
-      username: user,
-      userSid,
+      username: name,
+      accountName: name,
+      userSid: sid,
     });
 
     return bridgeDir;
@@ -279,7 +330,7 @@ export async function ensureBridgeDir(userDataDir, {
  * Reads an existing 256-bit bridge key, validating file permissions.
  * Never creates the key.
  * @param {string} bridgeDir
- * @param {{ platform?: string, fs?: typeof import("node:fs/promises"), execFile?: Function, username?: string, userSid?: string }} [options]
+ * @param {{ platform?: string, fs?: typeof import("node:fs/promises"), execFile?: Function, username?: string, accountName?: string, userSid?: string }} [options]
  * @returns {Promise<Buffer>} 32-byte key buffer
  */
 export async function readBridgeKey(bridgeDir, {
@@ -287,6 +338,7 @@ export async function readBridgeKey(bridgeDir, {
   fs = defaultFs,
   execFile = defaultExecFile,
   username,
+  accountName,
   userSid,
 } = {}) {
   const keyPath = path.join(bridgeDir, "key");
@@ -305,6 +357,7 @@ export async function readBridgeKey(bridgeDir, {
       isDirectory: false,
       execFile,
       username,
+      accountName,
       userSid,
     });
   } else {
@@ -343,6 +396,7 @@ export async function readBridgeKey(bridgeDir, {
  *   execFile?: Function,
  *   randomBytes?: Function,
  *   username?: string,
+ *   accountName?: string,
  *   userSid?: string
  * }} [options]
  * @returns {Promise<Buffer>} 32-byte key buffer
@@ -353,10 +407,18 @@ export async function ensureBridgeKey(bridgeDir, {
   execFile = defaultExecFile,
   randomBytes = defaultRandomBytes,
   username,
+  accountName,
   userSid,
 } = {}) {
   try {
-    return await readBridgeKey(bridgeDir, { platform, fs, execFile, username, userSid });
+    return await readBridgeKey(bridgeDir, {
+      platform,
+      fs,
+      execFile,
+      username,
+      accountName,
+      userSid,
+    });
   } catch (err) {
     if (!(err instanceof BridgeError && err.code === "no_key")) {
       throw err;
@@ -369,25 +431,31 @@ export async function ensureBridgeKey(bridgeDir, {
     `key.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`
   );
 
-  const user =
-    username ||
-    process.env.USERNAME ||
-    (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
-    process.env.USER ||
-    "USER";
-
   // Step 1: create an empty temp file with flag wx
   await fs.writeFile(tmpPath, Buffer.alloc(0), { flag: "wx", mode: 0o600 });
 
   try {
     if (platform === "win32") {
+      let sid = userSid;
+      let name = accountName || username;
+      if (!sid) {
+        try {
+          const acct = await currentWindowsAccount({ execFile });
+          sid = acct.sid;
+          if (!name) name = acct.name;
+        } catch {
+          throw new BridgeError("acl_failed");
+        }
+      }
+
+      const grantSid = sid.startsWith("*") ? sid : `*${sid}`;
       // Step 2: apply ACL to temp file
       try {
         await runExecFile(execFile, "icacls", [
           tmpPath,
           "/inheritance:r",
           "/grant:r",
-          `${user}:F`,
+          `${grantSid}:F`,
         ]);
       } catch {
         throw new BridgeError("acl_failed");
@@ -397,8 +465,9 @@ export async function ensureBridgeKey(bridgeDir, {
       await verifyWindowsAcl(tmpPath, {
         isDirectory: false,
         execFile,
-        username: user,
-        userSid,
+        username: name,
+        accountName: name,
+        userSid: sid,
       });
     } else {
       await fs.chmod(tmpPath, 0o600).catch(() => {});
@@ -463,30 +532,8 @@ export async function ensureInstallId(bridgeDir, {
  * @returns {Promise<string>} User SID string
  */
 export async function windowsUserSid({ execFile = defaultExecFile } = {}) {
-  let output;
-  try {
-    const res = await runExecFile(execFile, "whoami", ["/user", "/fo", "csv", "/nh"]);
-    output = typeof res === "string" ? res : (res?.stdout || "");
-  } catch {
-    throw new BridgeError("bad_sid");
-  }
-
-  const lines = output.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  for (const line of lines) {
-    const fields = [];
-    const regex = /(?:^|,)(?:"([^"]*)"|([^,]*))/g;
-    let match;
-    while ((match = regex.exec(line)) !== null) {
-      fields.push(match[1] !== undefined ? match[1] : match[2]);
-      if (regex.lastIndex === line.length) break;
-    }
-    const candidate = fields[1]?.trim();
-    if (candidate && /^S-1-[0-9-]+$/.test(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new BridgeError("bad_sid");
+  const account = await currentWindowsAccount({ execFile });
+  return account.sid;
 }
 
 /**

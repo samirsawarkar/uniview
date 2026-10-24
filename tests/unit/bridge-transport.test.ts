@@ -10,7 +10,7 @@ import { Duplex } from "node:stream";
 // @ts-expect-error plain ESM module without types
 import { BridgeError, encodeFrame, FrameDecoder, clientProof, serverProof } from "../../electron/lib/bridge-proto.mjs";
 // @ts-expect-error plain ESM module without types
-import { ensureBridgeDir, ensureBridgeKey, readBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint, parseIcaclsEntries } from "../../electron/lib/bridge-key.mjs";
+import { ensureBridgeDir, ensureBridgeKey, readBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint, parseIcaclsEntries, currentWindowsAccount } from "../../electron/lib/bridge-key.mjs";
 // @ts-expect-error plain ESM module without types
 import { startBridgeServer, attachSocketGuards, createAuthFailureLogger, defaultAuthFailureLogger } from "../../electron/lib/bridge-server.mjs";
 // @ts-expect-error plain ESM module without types
@@ -375,7 +375,7 @@ describe("bridge transport", () => {
     await fs.mkdir(winBridgeDir, { recursive: true });
     const mockExec = vi.fn().mockImplementation((_cmd: string, args: string[], cb?: any) => {
       // `icacls <path>` (verification) lists one owner-only entry; the grant call prints nothing.
-      const out = args.length === 1 ? `${args[0]} alice:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\r\n` : "";
+      const out = args.length === 1 ? `${args[0]} *S-1-5-21-1-2-3-1001:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\r\n` : "";
       if (cb) cb(null, out, "");
       return Promise.resolve(out);
     });
@@ -384,12 +384,14 @@ describe("bridge transport", () => {
       platform: "win32",
       execFile: mockExec,
       username: "alice",
+      accountName: "DESKTOP\\alice",
+      userSid: "S-1-5-21-1-2-3-1001",
     });
     expect(winKey.length).toBe(32);
     // The ACL is applied to the empty temp file before the secret is written, then verified.
     const grantCalls = mockExec.mock.calls.filter((c: any[]) => c[0] === "icacls" && c[1].includes("/grant:r"));
     expect(grantCalls.length).toBeGreaterThan(0);
-    expect(grantCalls.some((c: any[]) => c[1].slice(1).join(" ") === "/inheritance:r /grant:r alice:F")).toBe(true);
+    expect(grantCalls.some((c: any[]) => c[1].slice(1).join(" ") === "/inheritance:r /grant:r *S-1-5-21-1-2-3-1001:F")).toBe(true);
 
     const winBridgeDirFail = path.join(testDir, "win-bridge-fail");
     await fs.mkdir(winBridgeDirFail, { recursive: true });
@@ -404,6 +406,8 @@ describe("bridge transport", () => {
         platform: "win32",
         execFile: mockFailExec,
         username: "alice",
+      accountName: "DESKTOP\\alice",
+      userSid: "S-1-5-21-1-2-3-1001",
       })
     ).rejects.toThrow(expect.objectContaining({ code: "acl_failed" }));
 
@@ -628,7 +632,7 @@ describe("bridge transport", () => {
           cb(null, "processed 1 files", "");
         } else {
           const target = args[0];
-          cb(null, `${target} USER:(F)\nSuccessfully processed 1 files;`, "");
+          cb(null, `${target} *S-1-5-21-1-2-3-1001:(F)\nSuccessfully processed 1 files;`, "");
         }
         return;
       }
@@ -640,6 +644,8 @@ describe("bridge transport", () => {
       fs: mockFs,
       execFile: mockExecFile,
       username: "USER",
+      accountName: "DESKTOP\\USER",
+      userSid: "S-1-5-21-1-2-3-1001",
     });
 
     const emptyWriteIdx = operations.findIndex((op) => op.includes("writeFile") && op.includes("len=0"));
@@ -1173,5 +1179,179 @@ describe("bridge transport", () => {
     await first.close();
     await server.close();
     await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("Windows host: ensureBridgeDir creates bridge dir with real icacls listing exactly one owner entry (OI)(CI)(F) and no (I)", async () => {
+    // Mutation: if ensureBridgeDir granted bare username or inherited ACLs on Windows, real icacls output would have (I) or multiple entries.
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    const { execFile: cpExecFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(cpExecFile);
+
+    const tmpUserData = await makeTestDir();
+    const bridgeDir = await ensureBridgeDir(tmpUserData, { platform: "win32" });
+
+    expect(bridgeDir).toBe(path.join(tmpUserData, "bridge"));
+
+    const { stdout } = await execFileAsync("icacls", [bridgeDir]);
+    const entries = parseIcaclsEntries(stdout, bridgeDir);
+
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    expect(entry.inherited).toBe(false);
+    expect(entry.rights).toBe("(OI)(CI)(F)");
+
+    const acct = await currentWindowsAccount();
+    const expectedSid = acct.sid.toLowerCase();
+    const expectedName = acct.name.toLowerCase();
+    const principal = entry.principal.toLowerCase();
+
+    const cleanSid = expectedSid.startsWith("*") ? expectedSid.slice(1) : expectedSid;
+    const cleanPrincipal = principal.startsWith("*") ? principal.slice(1) : principal;
+
+    const matches =
+      principal === expectedName ||
+      cleanPrincipal === cleanSid;
+    expect(matches).toBe(true);
+  });
+
+  it("ensureBridgeDir rejects with bad_dir when icacls listing has an extra inherited entry", async () => {
+    // Mutation: if verifyWindowsAcl did not check entries.length === 1 or entry.inherited, an extra inherited entry would not throw bad_dir.
+    const tmpUserData = await makeTestDir();
+    const bridgeDir = path.join(tmpUserData, "bridge");
+    await fs.mkdir(bridgeDir, { recursive: true });
+
+    const mockExecFile = vi.fn((file, args, cb) => {
+      const stdout = [
+        `${bridgeDir} DESKTOP\\alice:(OI)(CI)(F)`,
+        `${bridgeDir} NT AUTHORITY\\SYSTEM:(I)(OI)(CI)(F)`,
+      ].join("\r\n");
+      cb(null, stdout, "");
+    });
+
+    await expect(
+      ensureBridgeDir(tmpUserData, {
+        platform: "win32",
+        execFile: mockExecFile,
+        accountName: "DESKTOP\\alice",
+        userSid: "S-1-5-21-1-2-3-1001",
+      })
+    ).rejects.toMatchObject({ code: "bad_dir" });
+  });
+
+  it("ensureBridgeDir rejects with bad_dir when icacls listing has OTHERDOMAIN\\<same short name>:(OI)(CI)(F)", async () => {
+    // Mutation: if verifyWindowsAcl compared only short username suffix, OTHERDOMAIN\\alice would be accepted instead of throwing bad_dir.
+    const tmpUserData = await makeTestDir();
+    const bridgeDir = path.join(tmpUserData, "bridge");
+    await fs.mkdir(bridgeDir, { recursive: true });
+
+    const mockExecFile = vi.fn((file, args, cb) => {
+      const stdout = `${bridgeDir} OTHERDOMAIN\\alice:(OI)(CI)(F)\r\n`;
+      cb(null, stdout, "");
+    });
+
+    await expect(
+      ensureBridgeDir(tmpUserData, {
+        platform: "win32",
+        execFile: mockExecFile,
+        accountName: "DESKTOP\\alice",
+        userSid: "S-1-5-21-1-2-3-1001",
+      })
+    ).rejects.toMatchObject({ code: "bad_dir" });
+  });
+
+  it("readBridgeKey rejects OTHERDOMAIN\\alice:(F) with bad_key_perms and accepts *<SID>:(F)", async () => {
+    // Mutation: if verifyWindowsAcl accepted different domain with same short name, OTHERDOMAIN\\alice would succeed instead of bad_key_perms.
+    const tmpDir = await makeTestDir();
+    const keyPath = path.join(tmpDir, "key");
+    const secret = crypto.randomBytes(32);
+    await fs.writeFile(keyPath, secret);
+
+    const mockExecOtherDomain = vi.fn((file, args, cb) => {
+      cb(null, `${keyPath} OTHERDOMAIN\\alice:(F)\r\n`, "");
+    });
+
+    await expect(
+      readBridgeKey(tmpDir, {
+        platform: "win32",
+        execFile: mockExecOtherDomain,
+        accountName: "DESKTOP\\alice",
+        userSid: "S-1-5-21-1-2-3-1001",
+      })
+    ).rejects.toMatchObject({ code: "bad_key_perms" });
+
+    const mockExecSid = vi.fn((file, args, cb) => {
+      cb(null, `${keyPath} *S-1-5-21-1-2-3-1001:(F)\r\n`, "");
+    });
+
+    const key = await readBridgeKey(tmpDir, {
+      platform: "win32",
+      execFile: mockExecSid,
+      accountName: "DESKTOP\\alice",
+      userSid: "S-1-5-21-1-2-3-1001",
+    });
+
+    expect(key).toEqual(secret);
+  });
+
+  it("startBridgeServer rejects endpoint_not_ours when socket inode changes before unlink", async () => {
+    // Mutation: if the second lstat check was omitted or didn't check st2.ino !== st.ino, unlink would be called and no endpoint_not_ours would be thrown.
+    const { EventEmitter } = await import("node:events");
+    const testDir = await makeTestDir();
+    const endpoint = path.join(testDir, "test.sock");
+
+    const currentUid = typeof process.getuid === "function" ? process.getuid() : 1000;
+    const getuidSpy =
+      typeof process.getuid === "function"
+        ? vi.spyOn(process, "getuid").mockReturnValue(currentUid)
+        : null;
+
+    let lstatCount = 0;
+    const mockLstat = vi.fn(async () => {
+      lstatCount++;
+      return {
+        isSocket: () => true,
+        uid: currentUid,
+        dev: 1n,
+        ino: lstatCount === 1 ? 1n : 2n,
+        mode: 0o140755,
+      };
+    });
+
+    const mockUnlink = vi.fn(async () => {});
+
+    const mockConnect = vi.fn(() => {
+      const s: any = new EventEmitter();
+      s.destroy = vi.fn();
+      queueMicrotask(() => {
+        const err: any = new Error("connect ECONNREFUSED");
+        err.code = "ECONNREFUSED";
+        s.emit("error", err);
+      });
+      return s;
+    });
+
+    try {
+      await expect(
+        startBridgeServer({
+          endpoint,
+          platform: "linux",
+          fs: {
+            lstat: mockLstat,
+            unlink: mockUnlink,
+          },
+          connect: mockConnect,
+          bridgeKey: crypto.randomBytes(32),
+        })
+      ).rejects.toMatchObject({ code: "endpoint_not_ours" });
+
+      expect(mockLstat).toHaveBeenCalledTimes(2);
+      expect(mockUnlink).not.toHaveBeenCalled();
+    } finally {
+      getuidSpy?.mockRestore();
+    }
   });
 });
