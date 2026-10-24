@@ -16,6 +16,9 @@ const DEADLINE_TICK_MS = 250;
 // How long a file's handle close may take before the pass stops waiting for it. The handle's slot is
 // still only freed when the close really settles (see liveHandles below).
 const CLOSE_DEADLINE_MS = 2000;
+// Attempts and backoff for retrying a handle close that rejected or threw.
+const CLOSE_RETRY_ATTEMPTS = 3;
+const CLOSE_RETRY_BACKOFF_MS = 10;
 
 export class ReviewError extends Error {
   constructor(code, details = undefined) {
@@ -108,6 +111,8 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
   const chunkBytes = limits?.chunkBytes ?? REVIEW_LIMITS.chunkBytes;
   const deadlineTickMs = limits?.deadlineTickMs ?? DEADLINE_TICK_MS;
   const closeDeadlineMs = limits?.closeDeadlineMs ?? CLOSE_DEADLINE_MS;
+  const closeRetryAttempts = limits?.closeRetryAttempts ?? CLOSE_RETRY_ATTEMPTS;
+  const closeRetryBackoffMs = limits?.closeRetryBackoffMs ?? CLOSE_RETRY_BACKOFF_MS;
 
   let isRunning = false;
   const queue = [];
@@ -156,27 +161,42 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
 
   /**
    * Closes a handle and waits for it, but never longer than closeDeadlineMs. The slot is released when the
-   * close settles, however late; a close that never settles keeps its slot (and so bounds the live handles).
+   * close settles, however late; on a rejected or synchronously throwing close, the slot stays held until
+   * a retry succeeds (bounded backoff, e.g. 3 attempts). If retries fail, the slot remains permanently reserved.
    */
   function closeBounded(handle) {
-    let closePromise;
-    try {
-      closePromise = Promise.resolve(handle?.close?.());
-    } catch (err) {
-      closePromise = Promise.reject(err);
-    }
-    const settled = closePromise.then(
-      () => {},
-      () => {},
-    ).then(() => {
-      releaseSlot();
-    });
+    const doClose = async () => {
+      for (let attempt = 1; attempt <= closeRetryAttempts; attempt++) {
+        let ok = false;
+        try {
+          await handle?.close?.();
+          ok = true;
+        } catch {
+          ok = false;
+        }
+        if (ok) {
+          releaseSlot();
+          return true;
+        }
+        if (attempt < closeRetryAttempts) {
+          const wait = closeRetryBackoffMs * attempt;
+          await new Promise((resolve) => {
+            const t = setTimeout(resolve, wait);
+            if (typeof t?.unref === "function") t.unref();
+          });
+        }
+      }
+      // Retries exhausted without a successful close: keep the slot permanently reserved.
+      return false;
+    };
+
+    const closePromise = doClose();
     let timer;
     const bound = new Promise((resolve) => {
-      timer = setTimeout(resolve, closeDeadlineMs);
+      timer = setTimeout(() => resolve(false), closeDeadlineMs);
       if (typeof timer?.unref === "function") timer.unref();
     });
-    return Promise.race([settled, bound]).finally(() => clearTimeout(timer));
+    return Promise.race([closePromise, bound]).finally(() => clearTimeout(timer));
   }
 
   async function runPass(files, { baseline, signal } = {}) {
@@ -402,6 +422,7 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
       };
 
       let result;
+      let closeOk = true;
       try {
         result = await readAndHash();
       } catch {
@@ -409,7 +430,7 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
       } finally {
         // Closed right away (also while a read is still pending) and waited for, but only up to the close
         // deadline, so a hanging close cannot hold the pass or the queue.
-        await closeBounded(handle);
+        closeOk = await closeBounded(handle);
       }
 
       // A pass cancelled, or out of time, while the file was closing does not report a clean result.
@@ -419,6 +440,9 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
           limitReached = true;
           return make("too_large", info);
         }
+      }
+      if (!closeOk) {
+        return make("unreadable", info);
       }
       return result;
     }
@@ -465,7 +489,17 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
     verify,
     queueSize,
     liveHandles: () => liveHandles,
-    limits: { maxBytesPerPass, passDeadlineMs, concurrentFiles, queuedVerifications, chunkBytes, deadlineTickMs, closeDeadlineMs },
+    limits: {
+      maxBytesPerPass,
+      passDeadlineMs,
+      concurrentFiles,
+      queuedVerifications,
+      chunkBytes,
+      deadlineTickMs,
+      closeDeadlineMs,
+      closeRetryAttempts,
+      closeRetryBackoffMs,
+    },
   };
 }
 
@@ -585,9 +619,14 @@ async function decideClaimed({
 
   // 2. The sidecar, only after a successful store write. Its content is the returned decision.
   let nextOk = true;
+  let sidecarNote = null;
   const wantsSidecar = review.receiptPath !== null && review.receiptPath !== undefined && writeNextToReceipt;
   if (wantsSidecar && (storeOk || !store)) {
-    nextOk = await writeDecisionNextToReceipt(review.receiptPath, decisionObj, { fs: store?.fs });
+    const sidecarOutcome = {};
+    nextOk = await writeDecisionNextToReceipt(review.receiptPath, decisionObj, { fs: store?.fs, outcome: sidecarOutcome });
+    if (sidecarOutcome.note) {
+      sidecarNote = sidecarOutcome.note;
+    }
   }
   // A record exists when the store holds it, or (without a store) the sidecar was written.
   outcome.recorded = storeOk || (!store && wantsSidecar && nextOk);
@@ -618,6 +657,10 @@ async function decideClaimed({
         }
       } catch {}
     }
+  }
+
+  if (!note && sidecarNote) {
+    note = sidecarNote;
   }
 
   decisionObj.persisted = Boolean(storeOk && nextOk);
