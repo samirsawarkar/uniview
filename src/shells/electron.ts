@@ -3,9 +3,20 @@ import type { Receipt, Decision, FileState } from "../../shared/receipt.d.mts";
 import { AccessDeniedError } from "../core/errors";
 import { nextId } from "./sources";
 
+/**
+ * A receipt is named by the opaque grant token of a file the person opened (see grantTokenOf); main resolves
+ * it to a path itself. The renderer never sends a path. `receiptBytes` is for receipts that have no file.
+ */
 export interface ReviewOpenParams {
+  receiptToken?: string;
   receiptBytes?: Uint8Array;
-  receiptPath?: string | null;
+}
+
+/** A validation problem in a receipt, as main reports it: fixed wording, never file content. */
+export interface ReviewValidationError {
+  code: string;
+  path: string;
+  message: string;
 }
 
 export interface ReviewOpenResult {
@@ -13,11 +24,11 @@ export interface ReviewOpenResult {
   reviewId?: string;
   receiptDigest?: string;
   receipt?: Receipt;
-  receiptPath?: string | null;
   files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>;
   verifiedAt?: string;
   error?: string;
   code?: string;
+  errors?: ReviewValidationError[];
 }
 
 export interface ReviewDecideParams {
@@ -73,6 +84,11 @@ function api(): ElectronApi {
 }
 
 const tokens = new WeakMap<FileSource, string>();
+
+/** The grant token of a file the person opened on this computer; undefined for any other source. */
+export function grantTokenOf(source: FileSource): string | undefined {
+  return tokens.get(source);
+}
 
 function toSource(f: GrantedFile): FileSource {
   const read = async (start: number, end: number, signal?: AbortSignal) => {

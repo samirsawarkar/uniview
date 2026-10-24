@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { FileSource, FormatKind } from "../core/types";
 import type { Receipt, FileState, Decision } from "../../shared/receipt.d.mts";
-import type { ReviewApi } from "../shells/electron";
-import { hasElectronApi } from "../shells/electron";
+import type { ReviewApi, ReviewValidationError } from "../shells/electron";
+import { hasElectronApi, grantTokenOf } from "../shells/electron";
 import { sanitizeLabel, AgentMarkdown } from "./agent-markdown";
-import ViewSpecViewer from "./ViewSpecViewer";
 
 const MAX_COMMENT_BYTES = 8192; // 8 KiB UTF-8 byte limit
 const ARMING_DELAY_MS = 500;
@@ -33,40 +32,86 @@ export interface ReviewTabFile {
 }
 
 export interface ReviewTabProps {
+  /** A receipt the person opened from a file on this computer (it carries a grant token). */
   source: FileSource;
   reviewApi?: ReviewApi;
+  /** This viewer's tab is the visible one; default true. Showing the tab again re-arms the buttons. */
+  active?: boolean;
   onReady?: () => void;
   onOpen?: (files: FileSource[]) => void;
   onFallback?: (format: FormatKind) => void;
 }
 
+interface LoadFailure {
+  message: string;
+  errors: ReviewValidationError[];
+}
+
+type ReviewApiFile = { path: string; expectedSha256: string; observedSha256: string | null; state: FileState };
+
+/**
+ * Only a deliberate pointer click decides. Untrusted events (script-dispatched, element.click()) and
+ * keyboard activation (Space/Enter on a focused button arrives as a click with detail 0 and no pointerType)
+ * are ignored.
+ */
+export function isDeliberateClick(event: { nativeEvent?: unknown }): boolean {
+  const n = event?.nativeEvent as { isTrusted?: boolean; detail?: number; pointerType?: string } | undefined;
+  if (!n || n.isTrusted !== true) return false;
+  return (typeof n.detail === "number" && n.detail > 0) || (typeof n.pointerType === "string" && n.pointerType !== "");
+}
+
+function swallowKeyboardActivation(e: React.KeyboardEvent) {
+  if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
+function filesFromResults(receipt: Receipt, results: ReviewApiFile[] | undefined): ReviewTabFile[] {
+  return (receipt.files || []).map((rf, idx) => {
+    const r = results?.[idx];
+    return {
+      path: rf.path,
+      relPath: rf.relPath,
+      expectedSha256: rf.sha256,
+      observedSha256: r?.observedSha256 ?? null,
+      state: r?.state ?? "not checked",
+      role: rf.role,
+    };
+  });
+}
+
 export default function ReviewTab({
   source,
   reviewApi: reviewApiProp,
+  active = true,
   onReady,
-  onOpen,
   onFallback,
 }: ReviewTabProps): React.ReactElement {
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [files, setFiles] = useState<ReviewTabFile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<LoadFailure | null>(null);
 
   const [comment, setComment] = useState("");
-  const [armed, setArmed] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [armEpoch, setArmEpoch] = useState(0);
+  const [armedKey, setArmedKey] = useState<number | null>(null);
+  const [prevActive, setPrevActive] = useState(active);
 
   const [decisionOutcome, setDecisionOutcome] = useState<Decision | null>(null);
   const [persistedError, setPersistedError] = useState<boolean>(false);
   const [changeWarning, setChangeWarning] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const decidedRef = useRef(false);
+  const inFlightRef = useRef(false);
   const reviewIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
 
-  // Resolved API (passed prop or window.uniview.review)
+  // Resolved API (passed prop or window.uniview.review). Kept in a ref so a new object identity for the
+  // same API neither reloads the review nor counts as closing the tab.
   const api = useMemo<ReviewApi | null>(() => {
     if (reviewApiProp) return reviewApiProp;
     if (hasElectronApi() && (window as any).uniview?.review) {
@@ -74,72 +119,96 @@ export default function ReviewTab({
     }
     return null;
   }, [reviewApiProp]);
+  const apiRef = useRef<ReviewApi | null>(api);
+  apiRef.current = api;
+  const grantToken = grantTokenOf(source);
 
-  // Keep refs in sync for unmount dismissal
-  useEffect(() => {
-    reviewIdRef.current = reviewId;
-  }, [reviewId]);
+  /** Closing the review without deciding records "dismissed". Never while a decision is in flight. */
+  const dismissIfOpen = useCallback(() => {
+    const id = reviewIdRef.current;
+    const a = apiRef.current;
+    if (!id || !a || decidedRef.current || inFlightRef.current) return;
+    reviewIdRef.current = null;
+    void Promise.resolve(a.dismiss(id)).catch(() => {});
+  }, []);
 
-  useEffect(() => {
-    decidedRef.current = decisionOutcome !== null;
-  }, [decisionOutcome]);
-
-  // Arming delay: 500 ms after shown or refreshed
-  useEffect(() => {
-    setArmed(false);
-    const timer = setTimeout(() => {
-      if (mountedRef.current) {
-        setArmed(true);
-      }
-    }, ARMING_DELAY_MS);
-
-    return () => clearTimeout(timer);
-  }, [refreshKey]);
-
-  // Load review on mount
+  // Tab closed means dismissed. This cleanup runs on a real unmount only, not when props change.
   useEffect(() => {
     mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      dismissIfOpen();
+    };
+  }, [dismissIfOpen]);
+
+  // Showing the tab again re-arms the buttons (adjusted during render so there is no enabled frame).
+  if (prevActive !== active) {
+    setPrevActive(active);
+    if (active) setArmEpoch((e) => e + 1);
+  }
+
+  // The window going to the background and coming back also re-arms.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisibility = () => setArmEpoch((e) => e + 1);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  // Load the review. Main reads the receipt through the grant token; the renderer never sends a path.
+  useEffect(() => {
     let cancelled = false;
+    // A review from an earlier source in this same component is replaced, so it is closed.
+    dismissIfOpen();
+    reviewIdRef.current = null;
+    decidedRef.current = false;
+    setReviewId(null);
+    setReceipt(null);
+    setFiles([]);
+    setDecisionOutcome(null);
+    setPersistedError(false);
+    setChangeWarning(null);
     setLoading(true);
     setLoadError(null);
 
     void (async () => {
+      const a = apiRef.current;
       try {
-        if (!api) {
-          throw new Error("Desktop review API is not available");
+        if (!a) throw new Error("Desktop review API is not available");
+        if (!grantToken) {
+          if (!cancelled) {
+            setLoadError({
+              message: "This receipt was not opened from a file on this computer, so it cannot be decided here.",
+              errors: [],
+            });
+            setLoading(false);
+          }
+          return;
         }
-        const bytes = await source.readAll();
-        const res = await api.open({
-          receiptBytes: new Uint8Array(bytes),
-          receiptPath: source.path ?? null,
-        });
+        const res = await a.open({ receiptToken: grantToken });
 
-        if (cancelled) return;
+        if (cancelled) {
+          // Superseded or unmounted while main was opening it: do not leave that review hanging.
+          if (res?.ok && res.reviewId) void Promise.resolve(a.dismiss(res.reviewId)).catch(() => {});
+          return;
+        }
         if (!res.ok || !res.reviewId || !res.receipt) {
-          setLoadError(res.error || "Failed to open review");
+          setLoadError({
+            message: res.error || "Failed to open review",
+            errors: Array.isArray(res.errors) ? res.errors.slice(0, 20) : [],
+          });
           setLoading(false);
           return;
         }
 
+        reviewIdRef.current = res.reviewId;
         setReviewId(res.reviewId);
         setReceipt(res.receipt);
-
-        const initialFiles: ReviewTabFile[] = (res.receipt.files || []).map((rf, idx) => {
-          const verified = res.files?.[idx];
-          return {
-            path: rf.path,
-            relPath: rf.relPath,
-            expectedSha256: rf.sha256,
-            observedSha256: verified?.observedSha256 ?? null,
-            state: verified?.state ?? "not checked",
-            role: rf.role,
-          };
-        });
-        setFiles(initialFiles);
+        setFiles(filesFromResults(res.receipt, res.files));
         setLoading(false);
       } catch (err: any) {
         if (!cancelled) {
-          setLoadError(err?.message || "Failed to load review receipt");
+          setLoadError({ message: err?.message || "Failed to load review receipt", errors: [] });
           setLoading(false);
         }
       }
@@ -147,13 +216,8 @@ export default function ReviewTab({
 
     return () => {
       cancelled = true;
-      mountedRef.current = false;
-      // Requirement (7): closing the tab without deciding records "dismissed"
-      if (!decidedRef.current && reviewIdRef.current && api) {
-        void api.dismiss(reviewIdRef.current);
-      }
     };
-  }, [source, api]);
+  }, [source, grantToken, dismissIfOpen]);
 
   // Signal ready
   useEffect(() => {
@@ -162,60 +226,56 @@ export default function ReviewTab({
     }
   }, [loading, onReady]);
 
+  // Arming: the 500 ms delay runs from the moment the bar is on screen showing the current review state,
+  // and starts over whenever that state changes (refresh, changed result) or the tab is shown again.
+  const barShown = !loading && !loadError && receipt !== null;
+  const armKey = barShown && active ? armEpoch : null;
+  const armed = armKey !== null && armedKey === armKey;
+  useEffect(() => {
+    if (armKey === null) return;
+    const timer = setTimeout(() => setArmedKey(armKey), ARMING_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [armKey]);
+
   // Comment limits
   const commentBytes = useMemo(() => utf8ByteCount(comment), [comment]);
   const isCommentOverLimit = commentBytes > MAX_COMMENT_BYTES;
 
-  // Decide action (only deliberate pointer click activation decides)
+  // Decide action (only a deliberate, trusted pointer click decides)
   const handleDecide = useCallback(
-    async (decisionType: "approved" | "changes_requested") => {
-      if (!armed || isSubmitting || decisionOutcome !== null || isCommentOverLimit || !reviewId || !api) {
+    async (event: React.MouseEvent, decisionType: "approved" | "changes_requested") => {
+      const a = apiRef.current;
+      if (!isDeliberateClick(event)) return;
+      if (!armed || isSubmitting || isRefreshing || decidedRef.current || isCommentOverLimit || !reviewId || !a || !receipt) {
         return;
       }
 
       setIsSubmitting(true);
+      inFlightRef.current = true;
       setChangeWarning(null);
 
       try {
-        const res = await api.decide({
-          reviewId,
-          decision: decisionType,
-          comment,
-        });
+        const res = await a.decide({ reviewId, decision: decisionType, comment });
 
+        if (res.ok) {
+          decidedRef.current = true; // recorded, whether or not this tab is still on screen
+        }
         if (!mountedRef.current) return;
 
         if (!res.ok) {
-          if (res.code === "changed") {
-            // Requirement (5): click-time re-verification result "changed/replaced" blocks decision
-            // and refreshes view with "A file changed since you looked — review again"
-            setChangeWarning("A file changed since you looked — review again");
-            if (Array.isArray(res.current) && receipt) {
-              const updatedFiles: ReviewTabFile[] = receipt.files.map((rf, idx) => {
-                const cur = res.current?.[idx];
-                return {
-                  path: rf.path,
-                  relPath: rf.relPath,
-                  expectedSha256: rf.sha256,
-                  observedSha256: cur?.observedSha256 ?? null,
-                  state: cur?.state ?? "not checked",
-                  role: rf.role,
-                };
-              });
-              setFiles(updatedFiles);
-            }
-            // Re-arm timer (disabled for 500 ms after refresh)
-            setRefreshKey((k) => k + 1);
+          if (res.code === "changed" || res.code === "identity_unavailable") {
+            // Click-time re-verification blocks the decision and refreshes the view.
+            setChangeWarning(res.message || "A file changed since you looked — review again");
+            if (Array.isArray(res.current)) setFiles(filesFromResults(receipt, res.current));
+            setArmEpoch((k) => k + 1); // re-armed: disabled for 500 ms again
           } else {
             setChangeWarning(res.message || res.error || "Decision was not recorded");
           }
-          setIsSubmitting(false);
           return;
         }
 
         if (res.decision) {
           setDecisionOutcome(res.decision);
-          decidedRef.current = true;
           if (res.decision.persisted === false) {
             setPersistedError(true);
           }
@@ -225,48 +285,47 @@ export default function ReviewTab({
           setChangeWarning(err?.message || "Failed to submit decision");
         }
       } finally {
+        inFlightRef.current = false;
         if (mountedRef.current) {
           setIsSubmitting(false);
+        } else {
+          // The tab was closed while the decision was in flight and nothing was recorded: dismiss now.
+          dismissIfOpen();
         }
       }
     },
-    [armed, isSubmitting, decisionOutcome, isCommentOverLimit, reviewId, api, comment, receipt]
+    [armed, isSubmitting, isRefreshing, isCommentOverLimit, reviewId, receipt, comment, dismissIfOpen]
   );
 
-  const handleApprove = () => handleDecide("approved");
-  const handleRequestChanges = () => handleDecide("changes_requested");
+  const handleApprove = (e: React.MouseEvent) => void handleDecide(e, "approved");
+  const handleRequestChanges = (e: React.MouseEvent) => void handleDecide(e, "changes_requested");
 
   // Reload action
   const handleReload = async () => {
-    if (!api || !reviewId) return;
+    const a = apiRef.current;
+    if (!a || !reviewId || !receipt || isRefreshing || isSubmitting) return;
     setChangeWarning(null);
+    setIsRefreshing(true);
     try {
-      const res = await api.refresh(reviewId);
+      const res = await a.refresh(reviewId);
       if (!mountedRef.current) return;
-      if (res.ok && Array.isArray(res.files) && receipt) {
-        const updatedFiles: ReviewTabFile[] = receipt.files.map((rf, idx) => {
-          const fresh = res.files?.[idx];
-          return {
-            path: rf.path,
-            relPath: rf.relPath,
-            expectedSha256: rf.sha256,
-            observedSha256: fresh?.observedSha256 ?? null,
-            state: fresh?.state ?? "not checked",
-            role: rf.role,
-          };
-        });
-        setFiles(updatedFiles);
+      if (res.ok && Array.isArray(res.files)) {
+        setFiles(filesFromResults(receipt, res.files));
       }
-      setRefreshKey((k) => k + 1);
-    } catch {}
+      setArmEpoch((k) => k + 1);
+    } catch {
+      /* the old state stays on screen */
+    } finally {
+      if (mountedRef.current) setIsRefreshing(false);
+    }
   };
 
-  // Requirement (3): keyboard Enter on the tab does nothing (only deliberate click/pointer activation decides)
+  // Keyboard Enter does nothing, except where it types a new line (the comment box).
   const blockEnter = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    if (e.key !== "Enter") return;
+    if ((e.target as HTMLElement | null)?.tagName === "TEXTAREA") return;
+    e.preventDefault();
+    e.stopPropagation();
   };
 
   if (loading) {
@@ -277,7 +336,20 @@ export default function ReviewTab({
     return (
       <div className="receipt-error-view" role="alert">
         <h2 className="receipt-error-heading">This receipt could not be shown</h2>
-        <div className="receipt-error-item">{loadError}</div>
+        {loadError.errors.length === 0 && (
+          <div className="receipt-error-item">{sanitizeLabel(loadError.message, 300)}</div>
+        )}
+        {loadError.errors.length > 0 && (
+          <ul className="receipt-error-list">
+            {loadError.errors.slice(0, 20).map((err, i) => (
+              <li key={i} className="receipt-error-item">
+                <span className="receipt-err-code">{sanitizeLabel(String(err.code), 40)}</span>
+                {err.path && <span className="receipt-err-path"> ({sanitizeLabel(String(err.path), 120)})</span>}
+                <span className="receipt-err-message">: {sanitizeLabel(String(err.message), 120)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="receipt-error-actions">
           {onFallback && (
             <button type="button" className="receipt-open-json-btn" onClick={() => onFallback("json")}>
@@ -294,19 +366,19 @@ export default function ReviewTab({
   const agentName = receipt.agent?.name ? sanitizeLabel(receipt.agent.name, 80) : null;
   const agentModel = receipt.agent?.model ? sanitizeLabel(receipt.agent.model, 80) : null;
   const isDecided = decisionOutcome !== null;
-  const controlsDisabled = !armed || isSubmitting || isDecided || isCommentOverLimit;
+  const controlsDisabled = !armed || isSubmitting || isRefreshing || isDecided || isCommentOverLimit;
 
   return (
     <div className="receipt-viewer-container review-tab-container" onKeyDown={blockEnter}>
-      {/* (2) UniView's own bar OUTSIDE agent-content region */}
+      {/* UniView's own bar, sticky and OUTSIDE the agent-content region */}
       <header className="uniview-bar review-bar" role="banner" data-testid="review-bar">
-        <div className="uniview-bar-left">
+        <div className="uniview-bar-left review-bar-left">
           <span className="uniview-brand">UniView</span>
           <span className="uniview-receipt-tag">Review Receipt</span>
         </div>
 
         <div className="uniview-bar-center review-bar-controls">
-          {isDecided ? (
+          {isDecided && (
             <div className="review-outcome" data-testid="review-outcome">
               <span className="review-outcome-label">Decision: </span>
               <strong className={`review-outcome-badge decision-${decisionOutcome.decision}`}>
@@ -317,54 +389,55 @@ export default function ReviewTab({
                     : "Dismissed"}
               </strong>
             </div>
-          ) : (
-            <div className="review-action-row">
-              <div className="review-comment-wrap">
-                <textarea
-                  className={`review-comment-box ${isCommentOverLimit ? "over-limit" : ""}`}
-                  data-testid="review-comment"
-                  placeholder="Comment (optional, max 8 KiB)..."
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  disabled={isDecided || isSubmitting}
-                  onKeyDown={blockEnter}
-                  rows={1}
-                />
-                {isCommentOverLimit && (
-                  <span className="review-comment-limit-err" role="alert">
-                    Comment exceeds 8 KiB limit ({commentBytes} / {MAX_COMMENT_BYTES} bytes)
-                  </span>
-                )}
-              </div>
-
-              <div className="review-buttons-wrap">
-                <button
-                  type="button"
-                  className="btn btn-approve primary"
-                  data-testid="approve-btn"
-                  onClick={handleApprove}
-                  disabled={controlsDisabled}
-                  onKeyDown={blockEnter}
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-request-changes danger"
-                  data-testid="request-changes-btn"
-                  onClick={handleRequestChanges}
-                  disabled={controlsDisabled}
-                  onKeyDown={blockEnter}
-                >
-                  Request changes
-                </button>
-              </div>
-            </div>
           )}
+          <div className="review-action-row">
+            <div className="review-comment-wrap">
+              <textarea
+                className={`review-comment-box ${isCommentOverLimit ? "over-limit" : ""}`}
+                data-testid="review-comment"
+                placeholder="Comment (optional, max 8 KiB)..."
+                aria-label="Comment (optional)"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                disabled={isSubmitting || isDecided}
+                rows={2}
+              />
+              {isCommentOverLimit && !isDecided && (
+                <span className="review-comment-limit-err" role="alert">
+                  Comment exceeds 8 KiB limit ({commentBytes} / {MAX_COMMENT_BYTES} bytes)
+                </span>
+              )}
+            </div>
+
+            <div className="review-buttons-wrap">
+              <button
+                type="button"
+                className="btn btn-approve primary"
+                data-testid="approve-btn"
+                onClick={handleApprove}
+                disabled={controlsDisabled}
+                onKeyDown={swallowKeyboardActivation}
+                onKeyUp={swallowKeyboardActivation}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="btn btn-request-changes danger"
+                data-testid="request-changes-btn"
+                onClick={handleRequestChanges}
+                disabled={controlsDisabled}
+                onKeyDown={swallowKeyboardActivation}
+                onKeyUp={swallowKeyboardActivation}
+              >
+                Request changes
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="uniview-bar-right">
-          <button type="button" className="receipt-reload-btn" onClick={() => void handleReload()}>
+        <div className="uniview-bar-right review-bar-right">
+          <button type="button" className="receipt-reload-btn" onClick={() => void handleReload()} disabled={isRefreshing || isSubmitting}>
             Reload
           </button>
         </div>
@@ -373,7 +446,7 @@ export default function ReviewTab({
       {/* Warnings & Errors */}
       {changeWarning && (
         <div className="banner warn review-change-warning" role="alert" data-testid="review-change-warning">
-          <span>{changeWarning}</span>
+          <span>{sanitizeLabel(changeWarning, 300)}</span>
           <button type="button" className="link small" onClick={() => setChangeWarning(null)}>
             Dismiss
           </button>
@@ -386,7 +459,7 @@ export default function ReviewTab({
         </div>
       )}
 
-      {/* (1) Receipt renders ONLY inside clearly marked "Content from the agent" region */}
+      {/* Receipt renders ONLY inside the clearly marked "Content from the agent" region */}
       <section
         className="agent-content receipt-agent-content"
         aria-label="Content from the agent"

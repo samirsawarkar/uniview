@@ -1017,6 +1017,163 @@ h5.vs-heading { font-size: 0.9rem; }
 .receipt-state-badge.state-not_checked { background: #e0e7ff; color: #3730a3; }
 .receipt-view-note { color: #4b5563; font-size: 0.9rem; }
 
+/* Review tab (desktop): UniView's own bar. It stays at the top while the agent's content scrolls under it,
+   and it is never inside the "Content from the agent" region. Colours come from the theme variables, so
+   light, dark and system themes all apply. */
+.uniview-bar.review-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--bg-2, #f1f3f4);
+  color: var(--fg, #1f1f1f);
+  border-bottom: 1px solid var(--line, #dadce0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.review-bar-left,
+.review-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+  min-height: 2.4rem;
+}
+
+.review-bar-controls {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.review-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 0.75rem;
+  width: 100%;
+}
+
+.review-comment-wrap {
+  flex: 1 1 16rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.review-comment-box {
+  width: 100%;
+  min-height: 2.4rem;
+  max-height: 8rem;
+  resize: vertical;
+  font: inherit;
+  color: inherit;
+  background: var(--bg, #ffffff);
+  border: 1px solid var(--line, #dadce0);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.review-comment-box:focus-visible {
+  outline: 2px solid var(--accent, #1a73e8);
+  outline-offset: 1px;
+}
+
+.review-comment-box.over-limit {
+  border-color: var(--danger, #d93025);
+}
+
+.review-comment-limit-err {
+  color: var(--danger, #d93025);
+  font-size: 12px;
+}
+
+.review-buttons-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.review-buttons-wrap button {
+  min-height: 2.4rem;
+  padding: 6px 16px;
+  white-space: nowrap;
+}
+
+.review-buttons-wrap button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.review-buttons-wrap .btn-request-changes {
+  color: var(--danger, #d93025);
+  border-color: var(--danger, #d93025);
+}
+
+.review-outcome {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.4rem;
+}
+
+.review-outcome-badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--bg-3, #e8eaed);
+}
+
+.review-outcome-badge.decision-approved { background: #dcfce7; color: #166534; }
+.review-outcome-badge.decision-changes_requested { background: #fee2e2; color: #991b1b; }
+
+.banner.danger { background: #fce8e6; color: #a50e0e; }
+
+:root[data-theme="dark"] .review-outcome-badge.decision-approved { background: #14391f; color: #86efac; }
+:root[data-theme="dark"] .review-outcome-badge.decision-changes_requested { background: #4a1d1d; color: #fca5a5; }
+:root[data-theme="dark"] .banner.danger { background: #4a1d1d; color: #fca5a5; }
+:root[data-theme="dark"] .review-comment-limit-err,
+:root[data-theme="dark"] .review-buttons-wrap .btn-request-changes { color: #f28b82; }
+:root[data-theme="dark"] .review-comment-box.over-limit,
+:root[data-theme="dark"] .review-buttons-wrap .btn-request-changes { border-color: #f28b82; }
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .review-outcome-badge.decision-approved { background: #14391f; color: #86efac; }
+  :root[data-theme="system"] .review-outcome-badge.decision-changes_requested { background: #4a1d1d; color: #fca5a5; }
+  :root[data-theme="system"] .banner.danger { background: #4a1d1d; color: #fca5a5; }
+  :root[data-theme="system"] .review-comment-limit-err,
+  :root[data-theme="system"] .review-buttons-wrap .btn-request-changes { color: #f28b82; }
+  :root[data-theme="system"] .review-comment-box.over-limit,
+  :root[data-theme="system"] .review-buttons-wrap .btn-request-changes { border-color: #f28b82; }
+}
+
+/* Narrow windows and phones: brand and Reload on one line, the comment and buttons below at full width. */
+@media (max-width: 640px) {
+  .uniview-bar.review-bar {
+    padding: 0.5rem 0.75rem;
+  }
+  .review-bar-right {
+    margin-left: auto;
+  }
+  .review-bar-controls {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .review-comment-wrap {
+    flex-basis: 100%;
+  }
+  .review-buttons-wrap {
+    width: 100%;
+  }
+  .review-buttons-wrap button {
+    flex: 1 1 0;
+  }
+}
+
 .agent-image-placeholder {
   padding: 1rem;
   border: 1px dashed var(--line, #dadce0);

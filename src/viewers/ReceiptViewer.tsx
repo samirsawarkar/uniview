@@ -22,7 +22,7 @@ import {
 } from "../core/receipt-verify-web";
 import { createLanReader } from "../remote/receipt-lan";
 import { getBridge } from "../shells";
-import { hasElectronApi, type ReviewApi } from "../shells/electron";
+import { grantTokenOf, hasElectronApi, type ReviewApi } from "../shells/electron";
 import ReviewTab from "./ReviewTab";
 
 const MAX_RECEIPT_BYTES = 2 * 1024 * 1024; // 2 MiB limit for receipt file itself
@@ -118,15 +118,18 @@ const VIEW_KEY = "view";
 const noop = () => {};
 const fileKey = (i: number) => `file:${i}`;
 
-export default function ReceiptViewer({
-  source,
-  onReady,
-  onFallback,
-  onOpen,
-  lanReader: lanReaderProp,
-  reviewApi: reviewApiProp,
-}: ReceiptViewerProps): React.ReactElement {
-  const desktopReviewApi = useMemo(() => {
+/**
+ * Desktop: a receipt the person opened from a file on this computer (it carries a grant token) gets the
+ * Review tab, which can record a decision. Anything else (a receipt from a paired computer, or from no
+ * file at all) is shown read-only: its files[].path entries name files on ANOTHER device, so checking them
+ * against this computer's disk would prove nothing about what the agent produced.
+ *
+ * This is a wrapper so that the two bodies are separate components: switching between them never changes
+ * the hooks one component runs.
+ */
+export default function ReceiptViewer(props: ReceiptViewerProps): React.ReactElement {
+  const { source, reviewApi: reviewApiProp } = props;
+  const desktopReviewApi = useMemo<ReviewApi | null>(() => {
     if (reviewApiProp) return reviewApiProp;
     if (hasElectronApi() && (window as any).uniview?.review) {
       return (window as any).uniview.review as ReviewApi;
@@ -134,18 +137,34 @@ export default function ReceiptViewer({
     return null;
   }, [reviewApiProp]);
 
-  if (desktopReviewApi) {
+  const fromOtherDevice = Boolean(source.remote);
+  if (desktopReviewApi && !fromOtherDevice && grantTokenOf(source)) {
     return (
       <ReviewTab
         source={source}
         reviewApi={desktopReviewApi}
-        onReady={onReady}
-        onFallback={onFallback}
-        onOpen={onOpen}
+        active={props.active}
+        onReady={props.onReady}
+        onFallback={props.onFallback}
+        onOpen={props.onOpen}
       />
     );
   }
+  return <ReadOnlyReceiptViewer {...props} decideNote={desktopReviewApi && fromOtherDevice ? "other-device" : "default"} />;
+}
 
+interface ReadOnlyReceiptViewerProps extends ReceiptViewerProps {
+  decideNote: "default" | "other-device";
+}
+
+function ReadOnlyReceiptViewer({
+  source,
+  onReady,
+  onFallback,
+  onOpen,
+  lanReader: lanReaderProp,
+  decideNote,
+}: ReadOnlyReceiptViewerProps): React.ReactElement {
   const [loaded, setLoaded] = useState<LoadedReceipt | null>(null);
   const [verifiedFiles, setVerifiedFiles] = useState<Record<number, WebVerifiedFile>>({});
   const [companions, setCompanions] = useState<CompanionFile[]>([]);
@@ -458,7 +477,13 @@ export default function ReceiptViewer({
           <span className="uniview-receipt-tag">Review Receipt</span>
         </div>
         <div className="uniview-bar-center">
-          <span className="uniview-decide-banner">Decide on your computer</span>
+          {decideNote === "other-device" ? (
+            <span className="uniview-decide-banner" data-testid="decide-elsewhere">
+              This receipt came from another device. Decide on the computer it came from.
+            </span>
+          ) : (
+            <span className="uniview-decide-banner">Decide on your computer</span>
+          )}
         </div>
         <div className="uniview-bar-right">
           {source.reopen && (
