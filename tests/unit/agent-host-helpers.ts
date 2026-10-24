@@ -27,6 +27,12 @@ export function makeFakeFs() {
     set(p: string, data: Buffer | string) {
       files.set(p, { data: Buffer.from(data), ino: nextIno++ });
     },
+    /** New bytes, same file identity (an in-place edit). */
+    modify(p: string, data: Buffer | string) {
+      const f = files.get(p);
+      if (!f) throw new Error("no such fake file");
+      f.data = Buffer.from(data);
+    },
     /** Same name, new file identity (a rename-replace). */
     replace(p: string, data: Buffer | string) {
       files.set(p, { data: Buffer.from(data), ino: nextIno++ });
@@ -72,15 +78,31 @@ export function makeUi() {
   const ui = {
     calls,
     failWith: null as null | { code?: string },
+    /** While set, every UI call waits for it (a renderer that is slow to answer). */
+    gate: null as null | Promise<void>,
+    /** How many UI calls are currently held by the gate. */
+    waiting: 0,
     async openFile(p: any) {
+      if (ui.gate) {
+        ui.waiting++;
+        await ui.gate;
+      }
       if (ui.failWith) throw Object.assign(new Error("ui"), ui.failWith);
       calls.openFile.push(p);
     },
     async showView(p: any) {
+      if (ui.gate) {
+        ui.waiting++;
+        await ui.gate;
+      }
       if (ui.failWith) throw Object.assign(new Error("ui"), ui.failWith);
       calls.showView.push(p);
     },
     async showReview(p: any) {
+      if (ui.gate) {
+        ui.waiting++;
+        await ui.gate;
+      }
       if (ui.failWith) throw Object.assign(new Error("ui"), ui.failWith);
       calls.showReview.push(p);
     },

@@ -612,10 +612,27 @@ export function createAgentHost(deps) {
     return result;
   }
 
+  /**
+   * What a dismissal records for the files when nobody has verified them yet (decision/1 needs a files list but has no
+   * "not checked" state): every file as unreadable with no observed hash. Approve and changes_requested never use this.
+   */
+  function unverified(record) {
+    return {
+      verifiedAt: new Date(clock.now()).toISOString(),
+      results: record.review.receipt.files.map((f) => ({
+        path: f.path,
+        expectedSha256: f.sha256,
+        observedSha256: null,
+        state: "unreadable",
+      })),
+    };
+  }
+
   async function decideReview({ reviewId, decision, comment = "" }) {
     const record = recordOf(reviewId);
     if (record.decision) throw new ReviewError("already_decided", `Review ${reviewId} is already decided`);
-    const result = await decide({ review: record.review, shown: record.shown, decision, comment, verifier, store });
+    const shown = decision === "dismissed" && !record.shown ? unverified(record) : record.shown;
+    const result = await decide({ review: record.review, shown, decision, comment, verifier, store });
     if (!result.ok) {
       // The view refreshes to what was just found; the next click needs a new look (and the arming delay).
       if (result.current) record.shown = result.current;
@@ -633,7 +650,7 @@ export function createAgentHost(deps) {
     const record = tab.reviewId ? reviews.get(tab.reviewId) : undefined;
     if (!record || record.decision) return;
     try {
-      const result = await decide({ review: record.review, shown: record.shown, decision: "dismissed", verifier, store });
+      const result = await decide({ review: record.review, shown: record.shown ?? unverified(record), decision: "dismissed", verifier, store });
       if (result.ok) {
         finalizeReview(record, result.decision);
         return;
