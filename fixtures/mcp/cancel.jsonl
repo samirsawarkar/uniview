@@ -1,0 +1,9 @@
+{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"transcript-agent","version":"1.0"}}}
+{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"UniView","version":"1.0.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":"wait-1","method":"tools/call","params":{"name":"request_review","arguments":{"receiptPath":"C:\\work\\r.receipt.json","waitSeconds":600}}}
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"wait-1","reason":"user stopped"}}
+{"jsonrpc":"2.0","id":"get-1","method":"tools/call","params":{"name":"get_review","arguments":{"reviewId":"00000000000000000000000000000001"}}}
+{"jsonrpc":"2.0","id":"get-1","result":{"content":[{"type":"text","text":"{\"status\":\"pending\"}"}],"structuredContent":{"status":"pending"}}}
+{"jsonrpc":"2.0","id":"ping-1","method":"ping"}
+{"jsonrpc":"2.0","id":"ping-1","result":{}}

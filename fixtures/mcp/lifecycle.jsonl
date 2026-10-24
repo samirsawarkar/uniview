@@ -1,0 +1,32 @@
+{"jsonrpc":"2.0","id":1,"method":"tools/list"}
+{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Server not initialized"}}
+{"jsonrpc":"2.0","id":2,"method":"ping"}
+{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"Server not initialized"}}
+{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"transcript-agent","version":"1.0"}}}
+{"jsonrpc":"2.0","id":3,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"UniView","version":"1.0.0"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/list"}
+{"jsonrpc":"2.0","id":4,"error":{"code":-32002,"message":"Server not initialized"}}
+{"jsonrpc":"2.0","id":"4p","method":"ping"}
+{"jsonrpc":"2.0","id":"4p","error":{"code":-32002,"message":"Server not initialized"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}
+{"jsonrpc":"2.0","id":5,"error":{"code":-32600,"message":"Invalid Request: already initialized"}}
+{"jsonrpc":"2.0","id":6,"method":"resources/list"}
+{"jsonrpc":"2.0","id":6,"error":{"code":-32601,"message":"Method not found: resources/list"}}
+{not json
+{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}
+[]
+{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}
+[{"jsonrpc":"2.0","id":11,"method":"ping"},{"jsonrpc":"2.0","id":12,"method":"ping"}]
+{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}
+{"jsonrpc":"1.0","id":7,"method":"ping"}
+{"jsonrpc":"2.0","id":7,"error":{"code":-32600,"message":"Invalid Request"}}
+{"jsonrpc":"2.0","id":null,"method":"ping"}
+{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}
+{"jsonrpc":"2.0","id":"eight","method":"ping","params":[]}
+{"jsonrpc":"2.0","id":"eight","error":{"code":-32602,"message":"Invalid params: params must be an object"}}
+{"jsonrpc":"2.0","method":"notifications/unknown"}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"open_files"}}
+{"jsonrpc":"2.0","id":9,"error":{"code":-32602,"message":"Invalid params: paths must be an array of 1 to 20 strings"}}
+{"jsonrpc":"2.0","id":10,"method":"ping"}
+{"jsonrpc":"2.0","id":10,"result":{}}
