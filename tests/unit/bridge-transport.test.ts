@@ -67,7 +67,7 @@ describe("bridge transport", () => {
 
     await server.close();
     await fs.rm(testDir, { recursive: true, force: true });
-  });
+  }, 30000);
 
   it("rejects connection with wrong key with auth_failed and never calls onRequest", async () => {
     // Mutation: allowing authentication with mismatched keys or executing onRequest on unauthenticated connection

@@ -6,8 +6,8 @@ import { runCli, EXIT, COLD_START_MS } from "../../electron/lib/cli.mjs";
 const cwd = path.resolve(process.platform === "win32" ? "I:\\AES\\work" : "/srv/work");
 const abs = (p: string) => path.resolve(cwd, p);
 
-type Req = { method: string; params: any };
-type Handler = (params: any) => Promise<{ result: any }>;
+type Req = { method: string; params: any; paths?: string[] };
+type Handler = (params: any, paths?: string[]) => Promise<{ result: any }>;
 
 function codeError(code: string): Error {
   return Object.assign(new Error(code), { code });
@@ -19,10 +19,11 @@ function makeBridge(handlers: Record<string, Handler>) {
   let closed = 0;
   const client = {
     sessionId: "0".repeat(32),
-    request(method: string, params: any) {
-      requests.push({ method, params });
+    request(method: string, params: any, body?: Buffer) {
+      const paths: string[] | undefined = body ? JSON.parse(body.toString("utf8")) : undefined;
+      requests.push({ method, params, ...(paths ? { paths } : {}) });
       const h = handlers[method];
-      return h ? h(params) : Promise.reject(codeError("unknown_method"));
+      return h ? h(params, paths) : Promise.reject(codeError("unknown_method"));
     },
     async close() {
       closed++;
@@ -96,8 +97,11 @@ function setup(opts: { argv: string[]; handlers?: Record<string, Handler>; conne
   return { bridge, clock, stdout, stderr, connect, startApp, run };
 }
 
-const openOk: Handler = async (p) => ({
-  result: { opened: [...p.files, ...(p.receipt ? [p.receipt] : []), ...(p.view ? [p.view] : [])], failed: [], ...(p.wait ? { reviewId: "r1" } : {}) },
+/** An app that accepts everything. */
+const ok = (): Record<string, Handler> => ({
+  open: async () => ({ result: { opened: 1 } }),
+  "view.show": async () => ({ result: { scopeId: "s1" } }),
+  "review.open": async () => ({ result: { reviewId: "r1" } }),
 });
 
 function decision(kind: string) {
@@ -118,7 +122,7 @@ describe("cli runCli", () => {
     expect(await unreachable.run()).toBe(6);
     const timeout = setup({
       argv: ["open", "--wait", "--timeout", "1", "--receipt", "r.json"],
-      handlers: { open: openOk, wait_review: () => new Promise<never>(() => {}) },
+      handlers: { ...ok(), "review.wait": () => new Promise<never>(() => {}) },
       holdAbove: 500,
     });
     const done = timeout.run();
@@ -140,12 +144,15 @@ describe("cli runCli", () => {
     expect(calls).toBe(2);
   });
 
-  it("warm start: one open request with absolute paths, one-line acknowledgement, exit 0", async () => {
-    // Mutation: starting the app when the bridge answers, sending more than one request, or relative paths
-    const s = setup({ argv: ["open", "a.txt", "--view", "v.uview.json"], handlers: { open: openOk } });
+  it("warm start: absolute paths, one-line acknowledgement, exit 0", async () => {
+    // Mutation: starting the app when the bridge answers, or relative paths
+    const s = setup({ argv: ["open", "a.txt", "--view", "v.uview.json"], handlers: ok() });
     expect(await s.run()).toBe(EXIT.OK);
     expect(s.startApp).not.toHaveBeenCalled();
-    expect(s.bridge.requests).toEqual([{ method: "open", params: { files: [abs("a.txt")], view: abs("v.uview.json"), wait: false } }]);
+    expect(s.bridge.requests).toEqual([
+      { method: "open", params: {}, paths: [abs("a.txt")] },
+      { method: "view.show", params: { path: abs("v.uview.json") } },
+    ]);
     expect(s.stdout.text()).toBe(`Opened in UniView: ${abs("a.txt")}, ${abs("v.uview.json")}\n`);
     expect(s.stderr.text()).toBe("");
     expect(s.bridge.closedCount()).toBe(1);
@@ -153,7 +160,7 @@ describe("cli runCli", () => {
 
   it("usage errors exit 2 without connecting and print the usage line", async () => {
     // Mutation: connecting (or starting the app) before the arguments are validated
-    const s = setup({ argv: ["open", "--bogus"], handlers: { open: openOk } });
+    const s = setup({ argv: ["open", "--bogus"], handlers: ok() });
     expect(await s.run()).toBe(EXIT.USAGE);
     expect(s.connect).not.toHaveBeenCalled();
     expect(s.startApp).not.toHaveBeenCalled();
@@ -165,7 +172,7 @@ describe("cli runCli", () => {
   it("cold start: starts the app once, retries with backoff, then hands off", async () => {
     // Mutation: starting the app on every retry, or not retrying after starting it
     let calls = 0;
-    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    const s = setup({ argv: ["open", "a.txt"], handlers: ok() });
     s.connect.mockImplementation(async () => {
       if (++calls <= 3) throw codeError("ENOENT");
       return s.bridge.client;
@@ -190,7 +197,7 @@ describe("cli runCli", () => {
 
   it("cold-start budget limit: a bridge that answers at exactly 15 s is used", async () => {
     // Mutation: giving up before the final attempt at the deadline (< instead of <=)
-    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    const s = setup({ argv: ["open", "a.txt"], handlers: ok() });
     s.connect.mockImplementation(async () => {
       if (s.clock.now() < 15000) throw codeError("ENOENT");
       return s.bridge.client;
@@ -201,7 +208,7 @@ describe("cli runCli", () => {
 
   it("cold-start budget limit + 1: a bridge that answers only at 15.001 s is not reached (exit 6)", async () => {
     // Mutation: retrying past the 15 s budget
-    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    const s = setup({ argv: ["open", "a.txt"], handlers: ok() });
     s.connect.mockImplementation(async () => {
       if (s.clock.now() < 15001) throw codeError("ECONNREFUSED");
       return s.bridge.client;
@@ -226,7 +233,7 @@ describe("cli runCli", () => {
 
   it("a connector that succeeds only after advancing the clock past 15 s is not used (exit 6) and its connection is closed", async () => {
     // Mutation: awaiting connect() with no deadline (a 16 s success became exit 0)
-    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    const s = setup({ argv: ["open", "a.txt"], handlers: ok() });
     s.connect.mockImplementation(async () => {
       s.clock.advance(16000);
       return s.bridge.client;
@@ -241,7 +248,7 @@ describe("cli runCli", () => {
   it("a connector that answers at exactly the 15 s deadline is still used (limit), 1 ms later is not (limit + 1)", async () => {
     // Mutation: a post-connect deadline check using >= instead of >
     const at = async (ms: number) => {
-      const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+      const s = setup({ argv: ["open", "a.txt"], handlers: ok() });
       s.connect.mockImplementation(async () => {
         s.clock.advance(ms);
         return s.bridge.client;
@@ -255,7 +262,7 @@ describe("cli runCli", () => {
   it("a never-settling connect is abandoned at the 15 s deadline with exit 6; a late connection is closed", async () => {
     // Mutation: no per-attempt deadline (the process would hang), or leaking a connection that arrives after giving up
     let late!: (c: unknown) => void;
-    const s = setup({ argv: ["open", "a.txt"], handlers: { open: openOk } });
+    const s = setup({ argv: ["open", "a.txt"], handlers: ok() });
     s.connect.mockImplementation(() => new Promise((resolve) => { late = resolve; }));
     const done = s.run();
     await flush();
@@ -335,12 +342,44 @@ describe("cli runCli", () => {
     expect(b.stderr.text()).toMatch(/[(]unknown[)]/);
   });
 
+
+  it("one open request per file (a body holding that single absolute path), then --view, then --receipt", async () => {
+    // Mutation: batching files into one request (a refused file could not be named), or a different order
+    const s = setup({
+      argv: ["open", "--view", "v.uview.json", "--receipt", "r.receipt.json", "a.txt", "b.txt"],
+      handlers: ok(),
+    });
+    expect(await s.run()).toBe(EXIT.OK);
+    expect(s.bridge.requests).toEqual([
+      { method: "open", params: {}, paths: [abs("a.txt")] },
+      { method: "open", params: {}, paths: [abs("b.txt")] },
+      { method: "view.show", params: { path: abs("v.uview.json") } },
+      { method: "review.open", params: { path: abs("r.receipt.json") } },
+    ]);
+    expect(s.stdout.text()).toBe(`Opened in UniView: ${abs("a.txt")}, ${abs("b.txt")}, ${abs("v.uview.json")}, ${abs("r.receipt.json")}\n`);
+  });
+
+  it("the CLI never says mcp.hello and sends only canonical ops", async () => {
+    // Mutation: a retired op name (open with files/receipt/view params, wait_review) or a hello (which would subject the CLI to approval)
+    const s = setup({
+      argv: ["open", "--wait", "--receipt", "r.json", "--view", "v.json", "a.txt"],
+      handlers: { ...ok(), "review.wait": async () => ({ result: { status: "decided", decision: decision("approved") } }) },
+    });
+    await s.run();
+    const canonical = new Set(["open", "view.show", "review.open", "review.wait"]);
+    expect(s.bridge.requests.every((r) => canonical.has(r.method))).toBe(true);
+  });
+
   it("partial failure: opened files listed on stdout, each failure on stderr, exit 2", async () => {
-    // Mutation: exiting 0 when some files failed, or hiding the failures
+    // Mutation: exiting 0 when some files failed, hiding the failures, or stopping at the first refused file
     const s = setup({
       argv: ["open", "a.txt", "b.txt", "c.txt"],
       handlers: {
-        open: async (p) => ({ result: { opened: [p.files[0], p.files[2]], failed: [{ path: p.files[1], code: "bad_path" }] } }),
+        ...ok(),
+        open: async (_p, paths) => {
+          if (paths?.[0] === abs("b.txt")) throw codeError("bad_path");
+          return { result: { opened: 1 } };
+        },
       },
     });
     expect(await s.run()).toBe(EXIT.USAGE);
@@ -350,40 +389,76 @@ describe("cli runCli", () => {
 
   it("all files failing prints no acknowledgement and exits 2", async () => {
     // Mutation: printing an empty "Opened" line
-    const s = setup({
-      argv: ["open", "a.txt"],
-      handlers: { open: async (p) => ({ result: { opened: [], failed: [{ path: p.files[0], code: "bad_path" }] } }) },
-    });
+    const s = setup({ argv: ["open", "a.txt"], handlers: { ...ok(), open: async () => { throw codeError("bad_path"); } } });
     expect(await s.run()).toBe(EXIT.USAGE);
     expect(s.stdout.text()).toBe("");
     expect(s.stderr.text()).toBe(`UniView: cannot open ${abs("a.txt")}: bad_path\n`);
   });
 
-  it("request-level path/validation errors exit 2; busy, internal and lost connections exit 6", async () => {
+  it("a refused view or receipt is named with its code and exits 2, the other items still open", async () => {
+    // Mutation: dropping per-item attribution for --view/--receipt, or abandoning the remaining items
+    const s = setup({
+      argv: ["open", "--view", "v.json", "--receipt", "r.json", "a.txt"],
+      handlers: { ...ok(), "view.show": async () => { throw codeError("invalid_spec"); }, "review.open": async () => { throw codeError("invalid_receipt"); } },
+    });
+    expect(await s.run()).toBe(EXIT.USAGE);
+    expect(s.stdout.text()).toBe(`Opened in UniView: ${abs("a.txt")}\n`);
+    expect(s.stderr.text()).toBe(`UniView: cannot open ${abs("v.json")}: invalid_spec\nUniView: cannot open ${abs("r.json")}: invalid_receipt\n`);
+  });
+
+  it("request errors about the request exit 2 (item named); busy, internal, not_allowed and lost connections stop at once with exit 6", async () => {
     // Mutation: mapping every bridge error to one exit code
     const cases: [string, number][] = [
       ["bad_path", EXIT.USAGE],
       ["invalid_receipt", EXIT.USAGE],
       ["invalid_spec", EXIT.USAGE],
       ["too_large", EXIT.USAGE],
+      ["bad_request", EXIT.USAGE],
       ["busy", EXIT.UNREACHABLE],
       ["internal", EXIT.UNREACHABLE],
+      ["not_allowed", EXIT.UNREACHABLE],
       ["closed", EXIT.UNREACHABLE],
     ];
     for (const [code, exit] of cases) {
-      const s = setup({ argv: ["open", "a.txt"], handlers: { open: async () => { throw codeError(code); } } });
+      const s = setup({ argv: ["open", "a.txt"], handlers: { ...ok(), open: async () => { throw codeError(code); } } });
       expect(await s.run()).toBe(exit);
       expect(s.stderr.text()).toMatch(new RegExp(`\\b${code}\\b`));
       expect(s.bridge.closedCount()).toBe(1);
     }
   });
 
-  it("a malformed open result exits 6", async () => {
+  it("a fatal error mid-way lists what was already opened and does not try the remaining items", async () => {
+    // Mutation: continuing after busy (flooding a busy app) or losing the acknowledgement of earlier items
+    const s = setup({
+      argv: ["open", "a.txt", "b.txt", "c.txt"],
+      handlers: {
+        ...ok(),
+        open: async (_p, paths) => {
+          if (paths?.[0] === abs("b.txt")) throw codeError("busy");
+          return { result: { opened: 1 } };
+        },
+      },
+    });
+    expect(await s.run()).toBe(EXIT.UNREACHABLE);
+    expect(s.bridge.requests.map((r) => r.paths?.[0])).toEqual([abs("a.txt"), abs("b.txt")]);
+    expect(s.stdout.text()).toBe(`Opened in UniView: ${abs("a.txt")}\n`);
+    expect(s.stderr.text()).toMatch(/not reachable \(busy\)/);
+  });
+
+  it("a malformed result exits 6 for every op", async () => {
     // Mutation: trusting the response shape (crash or false success)
-    for (const result of [undefined, null, {}, { opened: "a", failed: [] }, { opened: [1], failed: [] }, { opened: [], failed: [{ path: 1 }] }]) {
-      const s = setup({ argv: ["open", "a.txt"], handlers: { open: async () => ({ result }) } });
-      expect(await s.run()).toBe(EXIT.UNREACHABLE);
-      expect(s.stderr.text()).toMatch(/unexpected response/);
+    const bad: Array<[string, unknown[]]> = [
+      ["open", [undefined, null, {}, { opened: 0 }, { opened: "1" }, { opened: 2 }, { opened: ["a"] }]],
+      ["view.show", [undefined, {}, { scopeId: "" }, { scopeId: 5 }]],
+      ["review.open", [undefined, {}, { reviewId: "" }, { reviewId: 5 }]],
+    ];
+    for (const [method, results] of bad) {
+      for (const result of results) {
+        const argv = method === "open" ? ["open", "a.txt"] : method === "view.show" ? ["open", "--view", "v.json"] : ["open", "--receipt", "r.json"];
+        const s = setup({ argv, handlers: { ...ok(), [method]: async () => ({ result }) } });
+        expect(await s.run()).toBe(EXIT.UNREACHABLE);
+        expect(s.stderr.text()).toMatch(/unexpected response/);
+      }
     }
   });
 
@@ -393,18 +468,21 @@ describe("cli runCli", () => {
       ["changes_requested", 3],
       ["dismissed", 4],
     ];
+    const waits = (result: unknown) => ({ ...ok(), "review.wait": async () => ({ result }) });
+
     for (const [kind, exit] of decisions) {
       it(`${kind} prints the decision JSON on stdout and exits ${exit}`, async () => {
         // Mutation: wrong exit code per decision, or decision JSON mixed with the acknowledgement on stdout
         const d = decision(kind);
         const s = setup({
           argv: ["open", "--wait", "--receipt", "r.receipt.json", "a.txt"],
-          handlers: { open: openOk, wait_review: async () => ({ result: { decision: d } }) },
+          handlers: waits({ status: "decided", decision: d }),
         });
         expect(await s.run()).toBe(exit);
         expect(s.bridge.requests).toEqual([
-          { method: "open", params: { files: [abs("a.txt")], receipt: abs("r.receipt.json"), wait: true } },
-          { method: "wait_review", params: { reviewId: "r1" } },
+          { method: "open", params: {}, paths: [abs("a.txt")] },
+          { method: "review.open", params: { path: abs("r.receipt.json") } },
+          { method: "review.wait", params: { reviewId: "r1", timeoutMs: 3600 * 1000 } },
         ]);
         expect(s.stdout.text()).toBe(JSON.stringify(d) + "\n");
         expect(s.stderr.text()).toBe(`Opened in UniView: ${abs("a.txt")}, ${abs("r.receipt.json")}; waiting for the review decision\n`);
@@ -415,7 +493,7 @@ describe("cli runCli", () => {
       // Mutation: leaving the timeout timer running after the decision (process would not exit)
       const s = setup({
         argv: ["open", "--wait", "--receipt", "r.json"],
-        handlers: { open: openOk, wait_review: async () => ({ result: { decision: decision("approved") } }) },
+        handlers: waits({ status: "decided", decision: decision("approved") }),
         holdAbove: 1000,
       });
       expect(await s.run()).toBe(EXIT.OK);
@@ -428,7 +506,7 @@ describe("cli runCli", () => {
       // Mutation: wrong default, ignoring the timeout, or not closing (which is what cancels the server-side wait)
       const s = setup({
         argv: ["open", "--wait", "--receipt", "r.json"],
-        handlers: { open: openOk, wait_review: () => new Promise<never>(() => {}) },
+        handlers: { ...ok(), "review.wait": () => new Promise<never>(() => {}) },
         holdAbove: 1000,
       });
       const done = s.run();
@@ -441,25 +519,35 @@ describe("cli runCli", () => {
       expect(s.bridge.closedCount()).toBe(1);
     });
 
-    it("--timeout sets the wait in seconds", async () => {
-      // Mutation: treating --timeout as milliseconds
+    it("--timeout sets the wait in seconds, locally and as timeoutMs for the app", async () => {
+      // Mutation: treating --timeout as milliseconds, or not telling the app how long to wait
       const s = setup({
         argv: ["open", "--wait", "--timeout", "5", "--receipt", "r.json"],
-        handlers: { open: openOk, wait_review: () => new Promise<never>(() => {}) },
+        handlers: { ...ok(), "review.wait": () => new Promise<never>(() => {}) },
         holdAbove: 1000,
       });
       const done = s.run();
       await flush();
       expect(s.clock.held.map((h) => h.ms)).toEqual([5000]);
+      expect(s.bridge.requests.at(-1)).toEqual({ method: "review.wait", params: { reviewId: "r1", timeoutMs: 5000 } });
       s.clock.fire();
       expect(await done).toBe(EXIT.TIMEOUT);
+    });
+
+    it("the app answering pending (its wait ran out first) is a timeout: exit 5, no decision on stdout, timer cancelled", async () => {
+      // Mutation: treating pending as a decision or as an app failure
+      const s = setup({ argv: ["open", "--wait", "--timeout", "7", "--receipt", "r.json"], handlers: waits({ status: "pending" }), holdAbove: 1000 });
+      expect(await s.run()).toBe(EXIT.TIMEOUT);
+      expect(s.stdout.text()).toBe("");
+      expect(s.stderr.text()).toMatch(/no decision within 7 s\n$/);
+      expect(s.clock.held).toEqual([]);
     });
 
     it("the app exiting while waiting exits 6", async () => {
       // Mutation: reporting a lost connection as a timeout or a decision
       const s = setup({
         argv: ["open", "--wait", "--receipt", "r.json"],
-        handlers: { open: openOk, wait_review: async () => { throw codeError("closed"); } },
+        handlers: { ...ok(), "review.wait": async () => { throw codeError("closed"); } },
         holdAbove: 1000,
       });
       expect(await s.run()).toBe(EXIT.UNREACHABLE);
@@ -467,19 +555,25 @@ describe("cli runCli", () => {
       expect(s.stdout.text()).toBe("");
     });
 
-    it("an unknown decision value or missing reviewId exits 6", async () => {
+    it("an unknown decision value, a wrong status or a missing reviewId exits 6", async () => {
       // Mutation: mapping an unrecognised decision to approved (exit 0)
-      const bad = setup({
-        argv: ["open", "--wait", "--receipt", "r.json"],
-        handlers: { open: openOk, wait_review: async () => ({ result: { decision: decision("maybe") } }) },
-      });
-      expect(await bad.run()).toBe(EXIT.UNREACHABLE);
+      for (const result of [
+        { status: "decided", decision: decision("maybe") },
+        { status: "decided" },
+        { status: "something" },
+        { decision: decision("approved") },
+        undefined,
+      ]) {
+        const bad = setup({ argv: ["open", "--wait", "--receipt", "r.json"], handlers: waits(result) });
+        expect(await bad.run()).toBe(EXIT.UNREACHABLE);
+        expect(bad.stdout.text()).toBe("");
+      }
       const noId = setup({
         argv: ["open", "--wait", "--receipt", "r.json"],
-        handlers: { open: async (p) => ({ result: { opened: [p.receipt], failed: [] } }) },
+        handlers: { ...ok(), "review.open": async () => ({ result: {} }) },
       });
       expect(await noId.run()).toBe(EXIT.UNREACHABLE);
-      expect(noId.bridge.requests.map((r) => r.method)).toEqual(["open"]);
+      expect(noId.bridge.requests.map((r) => r.method)).toEqual(["review.open"]);
     });
 
     it("a partial failure does not wait and exits 2", async () => {
@@ -487,12 +581,26 @@ describe("cli runCli", () => {
       const s = setup({
         argv: ["open", "--wait", "--receipt", "r.json", "a.txt"],
         handlers: {
-          open: async (p) => ({ result: { opened: [p.receipt], failed: [{ path: p.files[0], code: "bad_path" }], reviewId: "r1" } }),
-          wait_review: async () => ({ result: { decision: decision("approved") } }),
+          ...ok(),
+          open: async () => { throw codeError("bad_path"); },
+          "review.wait": async () => ({ result: { status: "decided", decision: decision("approved") } }),
         },
       });
       expect(await s.run()).toBe(EXIT.USAGE);
-      expect(s.bridge.requests.map((r) => r.method)).toEqual(["open"]);
+      expect(s.bridge.requests.map((r) => r.method)).toEqual(["open", "review.open"]);
+      // It must not claim to be waiting.
+      expect(s.stderr.text()).toBe(`Opened in UniView: ${abs("r.json")}\nUniView: cannot open ${abs("a.txt")}: bad_path\n`);
+    });
+
+    it("a refused receipt with --wait does not wait and exits 2", async () => {
+      // Mutation: waiting on a review that never opened
+      const s = setup({
+        argv: ["open", "--wait", "--receipt", "r.json"],
+        handlers: { ...ok(), "review.open": async () => { throw codeError("invalid_receipt"); } },
+      });
+      expect(await s.run()).toBe(EXIT.USAGE);
+      expect(s.bridge.requests.map((r) => r.method)).toEqual(["review.open"]);
+      expect(s.stderr.text()).toBe(`UniView: cannot open ${abs("r.json")}: invalid_receipt\n`);
     });
 
     it("two simultaneous --wait clients each get their own decision", async () => {
@@ -501,8 +609,8 @@ describe("cli runCli", () => {
       const waiters = new Map<string, (d: any) => void>();
       const makeClient = () => ({
         async request(method: string, params: any) {
-          if (method === "open") return { result: { opened: [params.receipt], failed: [], reviewId: `r${++next}` } };
-          return new Promise((resolve) => waiters.set(params.reviewId, (d) => resolve({ result: { decision: d } })));
+          if (method === "review.open") return { result: { reviewId: `r${++next}` } };
+          return new Promise((resolve) => waiters.set(params.reviewId, (d) => resolve({ result: { status: "decided", decision: d } })));
         },
         async close() {},
       });

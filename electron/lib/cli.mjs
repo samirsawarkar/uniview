@@ -1,15 +1,19 @@
 // `UniView open` command-line client (P16). Plain Node ESM without Electron imports:
 // main.mjs injects the bridge connection and the app launcher.
 //
-// Bridge ops used (exactly what this client sends; the wiring packet reconciles them with the server):
-//   open        params { files: string[] (absolute), receipt?: string (absolute), view?: string (absolute), wait: boolean }
-//               no body; result { opened: string[], failed: { path: string, code: string }[], reviewId?: string }
-//               (reviewId is required when wait is true)
-//   wait_review params { reviewId: string }; no body; result { decision: decision/1 object }
-//               sent only after a fully successful `open` with wait; the CLI enforces --timeout itself and closes
-//               the connection (which cancels the server-side wait) when it gives up.
-// Nothing else is sent. Error codes read from failed requests: bad_path, invalid_receipt, invalid_spec, too_large
-// (exit 2); anything else (busy, internal, closed, ...) exits 6.
+// Bridge ops used: the canonical set shared with the MCP server (electron/lib/agent-host.mjs answers them).
+//   open          params {}; body = UTF-8 JSON array holding ONE absolute path (one request per file, so a refused
+//                 file is named and the others still open); result { opened: 1 }
+//   view.show     params { path } (--view); result { scopeId }
+//   review.open   params { path } (the --receipt file); result { reviewId }
+//   review.wait   params { reviewId, timeoutMs } (--wait only, after everything opened without a failure);
+//                 result { status: "decided", decision: decision/1 } | { status: "pending" } (the wait ran out)
+// The CLI enforces --timeout itself too and closes the connection (which cancels the server-side wait) when it
+// gives up. It never says mcp.hello, so the app treats it as the command line (not subject to agent approval).
+// Order: files, then --view, then --receipt (so the review is the last tab). Every item is tried; failures are
+// listed and the exit code is 2. Error codes read from failed requests: bad_path, invalid_receipt, invalid_spec,
+// too_large, bad_request are request/path problems (exit 2, item named); anything else (busy, internal, closed,
+// not_allowed, ...) stops at once with exit 6.
 
 import path from "node:path";
 
@@ -40,7 +44,7 @@ const DECISION_EXIT = {
 };
 
 /** Bridge errors that mean the request itself was wrong, not that the app is unavailable. */
-const USAGE_ERROR_CODES = new Set(["bad_path", "invalid_receipt", "invalid_spec", "too_large"]);
+const USAGE_ERROR_CODES = new Set(["bad_path", "invalid_receipt", "invalid_spec", "too_large", "bad_request"]);
 
 /**
  * Resolves one CLI path against the CLI's cwd (path policy rule 1, CLI side).
@@ -159,14 +163,23 @@ function errorKind(err) {
   return SAFE_IDENT.test(name) ? name : "error";
 }
 
-function isStringArray(v) {
-  return Array.isArray(v) && v.every((s) => typeof s === "string");
-}
+const nonEmptyString = (v) => typeof v === "string" && v !== "";
 
-function isOpenResult(r) {
-  return !!r && typeof r === "object" && isStringArray(r.opened) && Array.isArray(r.failed) &&
-    r.failed.every((f) => f && typeof f.path === "string" && typeof f.code === "string");
-}
+/** Per item: the request to send and whether its result has the expected shape. */
+const STEPS = {
+  file: {
+    send: (client, p) => client.request("open", {}, Buffer.from(JSON.stringify([p]), "utf8")),
+    valid: (r) => Number.isInteger(r?.opened) && r.opened === 1,
+  },
+  view: {
+    send: (client, p) => client.request("view.show", { path: p }),
+    valid: (r) => nonEmptyString(r?.scopeId),
+  },
+  receipt: {
+    send: (client, p) => client.request("review.open", { path: p }),
+    valid: (r) => nonEmptyString(r?.reviewId),
+  },
+};
 
 const TIMED_OUT = Symbol("deadline");
 
@@ -239,7 +252,7 @@ async function connectWithColdStart({ connect, startApp, now, sleep }) {
  *   cwd: string,
  *   stdout: { write(s: string): unknown },
  *   stderr: { write(s: string): unknown },
- *   connect: () => Promise<{ request(method: string, params?: any): Promise<{ result: any }>, close(): Promise<void> }>,
+ *   connect: () => Promise<{ request(method: string, params?: any, body?: Buffer): Promise<{ result: any }>, close(): Promise<void> }>,
  *   startApp: () => Promise<void>,
  *   now?: () => number,
  *   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
@@ -275,37 +288,54 @@ export async function runCli({ argv, cwd, stdout, stderr, connect, startApp, now
   };
 
   try {
-    const params = { files: args.files };
-    if (args.receipt !== undefined) params.receipt = args.receipt;
-    if (args.view !== undefined) params.view = args.view;
-    params.wait = args.wait;
-
-    let result;
-    try {
-      ({ result } = await client.request("open", params));
-    } catch (err) {
-      return fail(err);
-    }
-    if (!isOpenResult(result)) return unexpected();
-
+    const items = [
+      ...args.files.map((p) => ({ kind: "file", path: p })),
+      ...(args.view !== undefined ? [{ kind: "view", path: args.view }] : []),
+      ...(args.receipt !== undefined ? [{ kind: "receipt", path: args.receipt }] : []),
+    ];
     const ackOut = args.wait ? stderr : stdout;
-    const failed = result.failed.length > 0;
-    if (result.opened.length > 0) {
-      const tail = args.wait && !failed ? "; waiting for the review decision" : "";
-      ackOut.write(`Opened in UniView: ${result.opened.join(", ")}${tail}\n`);
+    const opened = [];
+    const failed = [];
+    let reviewId;
+
+    const acknowledge = (waiting) => {
+      if (opened.length === 0) return;
+      ackOut.write(`Opened in UniView: ${opened.join(", ")}${waiting ? "; waiting for the review decision" : ""}\n`);
+    };
+
+    for (const item of items) {
+      const step = STEPS[item.kind];
+      let result;
+      try {
+        ({ result } = await step.send(client, item.path));
+      } catch (err) {
+        const code = errorCode(err);
+        if (USAGE_ERROR_CODES.has(code)) {
+          failed.push({ path: item.path, code });
+          continue;
+        }
+        acknowledge(false);
+        for (const f of failed) stderr.write(`UniView: cannot open ${f.path}: ${f.code}\n`);
+        return fail(err);
+      }
+      if (!step.valid(result)) return unexpected();
+      opened.push(item.path);
+      if (item.kind === "receipt") reviewId = result.reviewId;
     }
-    for (const f of result.failed) stderr.write(`UniView: cannot open ${f.path}: ${f.code}\n`);
-    if (failed) return EXIT.USAGE;
+
+    acknowledge(args.wait && failed.length === 0);
+    for (const f of failed) stderr.write(`UniView: cannot open ${f.path}: ${f.code}\n`);
+    if (failed.length > 0) return EXIT.USAGE;
     if (!args.wait) return EXIT.OK;
 
-    if (typeof result.reviewId !== "string" || result.reviewId === "") return unexpected();
+    if (!nonEmptyString(reviewId)) return unexpected();
 
     const timer = new AbortController();
     const TIMED_OUT = Symbol("timeout");
     let outcome;
     try {
       outcome = await Promise.race([
-        client.request("wait_review", { reviewId: result.reviewId }),
+        client.request("review.wait", { reviewId, timeoutMs: args.timeoutS * 1000 }),
         sleep(args.timeoutS * 1000, timer.signal).then(() => TIMED_OUT),
       ]);
     } catch (err) {
@@ -313,11 +343,12 @@ export async function runCli({ argv, cwd, stdout, stderr, connect, startApp, now
     } finally {
       timer.abort();
     }
-    if (outcome === TIMED_OUT) {
+    // "pending" is the app saying the wait ran out first; same outcome as our own timer.
+    if (outcome === TIMED_OUT || outcome?.result?.status === "pending") {
       stderr.write(`UniView: no decision within ${args.timeoutS} s\n`);
       return EXIT.TIMEOUT;
     }
-    const decision = outcome?.result?.decision;
+    const decision = outcome?.result?.status === "decided" ? outcome.result.decision : undefined;
     const exit = decision && Object.hasOwn(DECISION_EXIT, decision.decision) ? DECISION_EXIT[decision.decision] : undefined;
     if (exit === undefined) return unexpected();
     stdout.write(JSON.stringify(decision) + "\n");
