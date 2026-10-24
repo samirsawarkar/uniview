@@ -169,17 +169,18 @@ export function createAgentHost(deps) {
     const mine = Array.from({ length: n }, () => ({ at: t }));
     state.tabTimes.push(...mine);
     reservedTabs += n;
-    let done = false;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      reservedTabs -= n;
+    };
     return {
-      commit() {
-        if (done) return;
-        done = true;
-        reservedTabs -= n;
-      },
+      /** The tabs are in the registry now, so they count there; the reservation must not count them twice. */
+      placed: release,
+      commit: release,
       rollback() {
-        if (done) return;
-        done = true;
-        reservedTabs -= n;
+        release();
         state.tabTimes = state.tabTimes.filter((e) => !mine.includes(e));
       },
     };
@@ -374,6 +375,7 @@ export function createAgentHost(deps) {
         throw e;
       }
       for (const item of items) tabs.set(item.scopeId, { kind: "file", sessionId: state.sessionId });
+      slots.placed();
       for (const item of items) {
         await callUi("openFile", {
           scopeId: item.scopeId,
@@ -410,6 +412,7 @@ export function createAgentHost(deps) {
     const slots = reserveTabs(state, 1);
     const scopeId = grants.openScope();
     tabs.set(scopeId, { kind: "view", sessionId: state.sessionId, declared: declaredPaths(spec), granted: new Map() });
+    slots.placed();
     try {
       await callUi("showView", { scopeId, specBytes: bytes, spec, sessionId: state.sessionId, agent: agentLabel(state) });
     } catch (e) {
@@ -455,6 +458,7 @@ export function createAgentHost(deps) {
     let view = null;
     const tab = { kind: "review", sessionId: state.sessionId, reviewId: review.reviewId, declared: new Set(), granted: new Map() };
     tabs.set(scopeId, tab);
+    slots.placed();
     try {
       if (typeof review.receipt.view === "string") {
         view = await loadReceiptView(review.receipt.view);

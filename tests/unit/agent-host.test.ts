@@ -298,6 +298,21 @@ describe("agent host: open", () => {
     expect(t.fakeFs.state.live).toBe(64);
   });
 
+  it("files being opened are not counted twice against the 64 tabs while the renderer is still answering", async () => {
+    // Mutation: a tab counted both as reserved and as registered (false busy for a legitimate request)
+    const t = await makeHost();
+    t.fakeFs.set("/w/a.txt", "x");
+    let release!: () => void;
+    t.ui.gate = new Promise<void>((r) => (release = r));
+    const many = (n: number) => Buffer.from(JSON.stringify(Array.from({ length: n }, () => "/w/a.txt")));
+    const first = Array.from({ length: 4 }, () => t.fail(newSession(), "open", {}, many(15)));
+    for (let i = 0; i < 500 && t.ui.waiting < 4; i++) await new Promise((r) => setTimeout(r, 2));
+    const third = t.fail(newSession(), "open", {}, many(4));
+    for (let i = 0; i < 500 && t.ui.waiting < 5; i++) await new Promise((r) => setTimeout(r, 2));
+    release();
+    expect(await Promise.all([...first, third])).toEqual(Array(5).fill("no error"));
+  });
+
   it("a request is counted by its size against the minute: 20 used, 11 more is busy and opens nothing; 10 more is fine", async () => {
     // Mutation: counting a multi-file request as one tab
     const t = await makeHost();

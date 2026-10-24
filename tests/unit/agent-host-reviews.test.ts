@@ -396,6 +396,23 @@ describe("agent host: pending review limits", () => {
     expect(t.ui.calls.showReview).toHaveLength(32);
   });
 
+  it("reviews being opened are not counted twice against the 64 tabs: 32 in flight leave room for 32 more tabs", async () => {
+    // Mutation: a tab counted both as reserved and as registered while the renderer is still answering (false busy)
+    const t = await makeHost();
+    t.fakeFs.set("/w/g.txt", "x");
+    const body = Buffer.from(receiptJson([{ path: "/w/g.txt", sha256: sha256("x") }]));
+    let release!: () => void;
+    t.ui.gate = new Promise<void>((r) => (release = r));
+    const sessions = Array.from({ length: 4 }, () => newSession());
+    const reviews = sessions.flatMap((s) => Array.from({ length: 8 }, () => t.fail(s, "review.open", { inline: true }, body)));
+    for (let i = 0; i < 500 && t.ui.waiting < 32; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(t.ui.waiting).toBe(32);
+    const opens = [newSession(), newSession()].map((s, k) => t.fail(s, "open", {}, Buffer.from(JSON.stringify(Array.from({ length: k === 0 ? 20 : 12 }, () => "/w/g.txt")))));
+    for (let i = 0; i < 500 && t.ui.waiting < 34; i++) await new Promise((r) => setTimeout(r, 2));
+    release();
+    expect(await Promise.all([...reviews, ...opens])).toEqual(Array(34).fill("no error"));
+  });
+
   it("a pending review of a closed connection still counts until it is decided", async () => {
     // Mutation: forgetting the open tab of a vanished agent (the cap would then be bypassable by reconnecting)
     const t = await makeHost();
