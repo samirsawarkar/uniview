@@ -2,11 +2,11 @@
 // computer is the client. Kept out of main.mjs so main stays a thin composition root.
 import { app, dialog, ipcMain, nativeImage, safeStorage } from "electron";
 import { request } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { hostname, homedir } from "node:os";
 import { join } from "node:path";
 import { ShareHost } from "./share-host.mjs";
-import { isLanHost } from "./core.mjs";
+import { isLanHost, canDecodeThumbnailFallback } from "./core.mjs";
 
 const TRANSPORT_PATHS = new Set(["/v1/pair", "/v1/session", "/v1/rpc", "/v1/hello"]);
 const MAX_REQUEST = 64 * 1024;
@@ -48,6 +48,12 @@ export async function thumbnailPng(path, size) {
     if (!img.isEmpty()) return new Uint8Array(img.toPNG());
   } catch {
     /* no thumbnailer for this type, or unsupported platform */
+  }
+  try {
+    const st = await stat(path);
+    if (!canDecodeThumbnailFallback(path, st.size)) return null;
+  } catch {
+    return null;
   }
   const img = nativeImage.createFromPath(path);
   if (img.isEmpty()) return null;

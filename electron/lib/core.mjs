@@ -131,3 +131,32 @@ export function isLanHost(host) {
     return false;
   }
 }
+
+/**
+ * Returns true if the file at path is a supported image type and within safe size limits
+ * (0 < sizeBytes <= 20 MiB) for the main-process thumbnail fallback decoder.
+ * @param {string} path - File path
+ * @param {number} sizeBytes - File size in bytes
+ * @returns {boolean}
+ */
+export function canDecodeThumbnailFallback(path, sizeBytes) {
+  if (typeof path !== "string" || typeof sizeBytes !== "number" || !Number.isFinite(sizeBytes)) {
+    return false;
+  }
+  if (sizeBytes <= 0 || sizeBytes > 20 * 1024 * 1024) {
+    return false;
+  }
+  const filename = path.split(/[/\\]/).pop() ?? "";
+  const dot = filename.lastIndexOf(".");
+  if (dot === -1) return false;
+  const ext = filename.slice(dot + 1).toLowerCase();
+  return (
+    ext === "png" ||
+    ext === "jpg" ||
+    ext === "jpeg" ||
+    ext === "gif" ||
+    ext === "webp" ||
+    ext === "bmp" ||
+    ext === "ico"
+  );
+}

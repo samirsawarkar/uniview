@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolve, sep } from "node:path";
 // @ts-expect-error plain ESM module without types
-import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame, isLanHost } from "../../electron/lib/core.mjs";
+import { parseRange, GrantStore, safeJoin, filesFromArgv, contentType, isAllowedUrl, checkReadArgs, isAppFrame, isLanHost, canDecodeThumbnailFallback } from "../../electron/lib/core.mjs";
 
 describe("parseRange", () => {
   it("handles open, closed, suffix and clamped ranges", () => {
@@ -103,5 +103,35 @@ describe("isLanHost (remote client transport)", () => {
     for (const h of ["8.8.8.8", "172.32.0.1", "192.169.1.1", "example.com", "evil.local.example.com", "2001:4860::8888", "256.1.1.1", "", "localhost", "169.254.3.3", "100.64.1.1", "studio-pc.local", "010.0.0.1", "192.168.01.1", "fe80::1%eth0", "user@192.168.1.5", " 192.168.1.5", "192.168.1.5 ", "[fe80::1", "fc00:evil.com", "fd00:not-an-ip", "::ffff:8.8.8.8", "fe80::zz"]) {
       expect(isLanHost(h)).toBe(false);
     }
+  });
+});
+
+
+describe("canDecodeThumbnailFallback", () => {
+  // Mutation: fails to accept valid lowercase image under 20 MiB
+  it("returns true for a.png 1 KB", () => {
+    expect(canDecodeThumbnailFallback("a.png", 1024)).toBe(true);
+  });
+
+  // Mutation: case-sensitive extension check rejects uppercase a.PNG or fails at exact 20 MiB bound
+  it("returns true for a.PNG 20 MiB", () => {
+    expect(canDecodeThumbnailFallback("a.PNG", 20 * 1024 * 1024)).toBe(true);
+  });
+
+  // Mutation: size bound allows files larger than 20 MiB
+  it("returns false for a.png 20 MiB + 1", () => {
+    expect(canDecodeThumbnailFallback("a.png", 20 * 1024 * 1024 + 1)).toBe(false);
+  });
+
+  // Mutation: size bound allows 0-byte files
+  it("returns false for a.png 0", () => {
+    expect(canDecodeThumbnailFallback("a.png", 0)).toBe(false);
+  });
+
+  // Mutation: unsupported extensions (tiff, pdf, mp4) are mistakenly allowed
+  it("returns false for a.tiff, a.pdf, a.mp4 1 KB", () => {
+    expect(canDecodeThumbnailFallback("a.tiff", 1024)).toBe(false);
+    expect(canDecodeThumbnailFallback("a.pdf", 1024)).toBe(false);
+    expect(canDecodeThumbnailFallback("a.mp4", 1024)).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { FileSource } from "../../src/core/types";
-import { recentThumbKey, captureRecentThumb } from "../../src/ui/recent-thumbs";
+import { recentThumbKey, captureRecentThumb, onThumbStored } from "../../src/ui/recent-thumbs";
 import { storeThumb } from "../../src/remote/store";
 
 vi.mock("../../src/remote/store", () => ({
@@ -71,6 +71,134 @@ describe("captureRecentThumb", () => {
 
     expect(bridge.thumbnail).toHaveBeenCalledWith(source, 192);
     expect(storeThumb).toHaveBeenCalledWith("local|/docs/photo.jpg|5000", mockBlob);
+  });
+
+  // Mutation: captureRecentThumb does not notify listeners via onThumbStored when thumbnail is stored
+  it("notifies listeners registered with onThumbStored after storing a thumbnail", async () => {
+    const mockBlob = new Blob(["thumb-data"], { type: "image/png" });
+    const bridge = {
+      thumbnail: vi.fn().mockResolvedValue(mockBlob),
+    };
+    const listener = vi.fn();
+    const unsub = onThumbStored(listener);
+
+    const source: FileSource = {
+      id: "f-notify",
+      name: "photo.jpg",
+      path: "/docs/photo.jpg",
+      size: 5000,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(),
+      release: vi.fn(),
+    };
+
+    try {
+      await captureRecentThumb(bridge, source, "image");
+      expect(listener).toHaveBeenCalledWith("local|/docs/photo.jpg|5000");
+    } finally {
+      unsub();
+    }
+  });
+
+  // Mutation: onThumbStored unsubscribe fails to unregister listener
+  it("stops notifying listeners after unsubscribe is called", async () => {
+    const listener = vi.fn();
+    const unsub = onThumbStored(listener);
+    unsub();
+
+    const mockBlob = new Blob(["thumb-data"], { type: "image/png" });
+    const bridge = {
+      thumbnail: vi.fn().mockResolvedValue(mockBlob),
+    };
+    const source: FileSource = {
+      id: "f-unsub",
+      name: "photo.jpg",
+      path: "/docs/photo.jpg",
+      size: 5000,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(),
+      release: vi.fn(),
+    };
+
+    await captureRecentThumb(bridge, source, "image");
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  // Mutation: removing remote early return causes captureRecentThumb to call bridge.thumbnail, readAll, or storeThumb for remote files
+  it("does not call bridge thumbnailer, readAll, or storeThumb for remote files", async () => {
+    const bridge = {
+      thumbnail: vi.fn().mockResolvedValue(new Blob(["remote-thumb"])),
+    };
+    const readAll = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
+    const source: FileSource = {
+      id: "f-remote",
+      name: "remote-photo.jpg",
+      path: "/media/photo.jpg",
+      size: 1024,
+      remote: {
+        hostId: "host-1",
+        rootId: "root-1",
+        rootName: "Media",
+        path: "/media/photo.jpg",
+        mtime: 1700000000,
+      },
+      readAll,
+      readRange: vi.fn(),
+      url: vi.fn(),
+      release: vi.fn(),
+    };
+
+    await captureRecentThumb(bridge, source, "image");
+
+    expect(bridge.thumbnail).not.toHaveBeenCalled();
+    expect(readAll).not.toHaveBeenCalled();
+    expect(storeThumb).not.toHaveBeenCalled();
+  });
+
+  // Mutation: files over 4 GiB call bridge.thumbnail instead of skipping it
+  it("does not call bridge thumbnailer for files over 4 GiB", async () => {
+    const bridge = {
+      thumbnail: vi.fn().mockResolvedValue(new Blob(["thumb"])),
+    };
+    const source: FileSource = {
+      id: "f-large",
+      name: "huge-video.mkv",
+      path: "/videos/huge.mkv",
+      size: 5 * 1024 * 1024 * 1024,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(),
+      release: vi.fn(),
+    };
+
+    await captureRecentThumb(bridge, source, "video");
+
+    expect(bridge.thumbnail).not.toHaveBeenCalled();
+    expect(storeThumb).not.toHaveBeenCalled();
+  });
+
+  // Mutation: files with unknown size (size < 0) call bridge.thumbnail instead of skipping it
+  it("does not call bridge thumbnailer for files with unknown size (size < 0)", async () => {
+    const bridge = {
+      thumbnail: vi.fn().mockResolvedValue(new Blob(["thumb"])),
+    };
+    const source: FileSource = {
+      id: "f-unknown",
+      name: "stream.bin",
+      path: "/streams/stream.bin",
+      size: -1,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(),
+      release: vi.fn(),
+    };
+
+    await captureRecentThumb(bridge, source, undefined);
+
+    expect(bridge.thumbnail).not.toHaveBeenCalled();
+    expect(storeThumb).not.toHaveBeenCalled();
   });
 
   // Mutation: captureRecentThumb does not decode in-page with createImageBitmap and canvas when bridge is absent

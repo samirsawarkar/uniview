@@ -7,6 +7,25 @@ import { cachedThumb, storeThumb } from "../remote/store";
 import { KindBadge } from "./badges";
 import type { Recent } from "./recents";
 
+const listeners = new Set<(key: string) => void>();
+
+export function onThumbStored(listener: (key: string) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyStored(key: string): void {
+  for (const listener of listeners) {
+    try {
+      listener(key);
+    } catch {
+      /* swallow listener errors */
+    }
+  }
+}
+
 export function recentThumbKey(
   r: Pick<Recent, "name" | "path" | "size" | "remote">,
 ): string | null {
@@ -32,16 +51,21 @@ export async function captureRecentThumb(
     const key = recentThumbKey(source);
     if (!key) return;
 
-    if (typeof bridge?.thumbnail === "function") {
+    if (
+      typeof bridge?.thumbnail === "function" &&
+      source.size >= 0 &&
+      source.size <= 4 * 1024 * 1024 * 1024
+    ) {
       const blob = await bridge.thumbnail(source, 192);
       if (blob) {
         await storeThumb(key, blob);
+        notifyStored(key);
       }
       return;
     }
 
     if (detectionKind !== "image") return;
-    if (source.size > 20 * 1024 * 1024) return;
+    if (source.size > 20 * 1024 * 1024 || source.size < 0) return;
     if (typeof createImageBitmap !== "function") return;
     if (typeof document === "undefined" || typeof document.createElement !== "function") return;
 
@@ -68,6 +92,7 @@ export async function captureRecentThumb(
 
       if (thumbBlob) {
         await storeThumb(key, thumbBlob);
+        notifyStored(key);
       }
     } finally {
       bmp.close?.();
@@ -87,33 +112,63 @@ export async function loadRecentThumb(
 
 export function RecentThumb({ recent }: { recent: Pick<Recent, "name" | "path" | "size" | "remote"> }) {
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const key = recentThumbKey(recent);
 
   useEffect(() => {
     let active = true;
-    let url: string | null = null;
+    let currentUrl: string | null = null;
+    let version = 0;
     setThumbUrl(null);
 
-    void loadRecentThumb(recent)
-      .then((blob) => {
-        if (!active) return;
-        if (blob) {
-          url = URL.createObjectURL(blob);
-          setThumbUrl(url);
-        } else {
-          setThumbUrl(null);
-        }
-      })
-      .catch(() => {
-        if (active) setThumbUrl(null);
-      });
+    const load = () => {
+      const v = ++version;
+      void loadRecentThumb(recent)
+        .then((blob) => {
+          if (!active || v !== version) return;
+          if (blob) {
+            const nextUrl = URL.createObjectURL(blob);
+            if (currentUrl) {
+              URL.revokeObjectURL(currentUrl);
+            }
+            currentUrl = nextUrl;
+            setThumbUrl(nextUrl);
+          } else {
+            if (currentUrl) {
+              URL.revokeObjectURL(currentUrl);
+              currentUrl = null;
+            }
+            setThumbUrl(null);
+          }
+        })
+        .catch(() => {
+          if (active && v === version) {
+            if (currentUrl) {
+              URL.revokeObjectURL(currentUrl);
+              currentUrl = null;
+            }
+            setThumbUrl(null);
+          }
+        });
+    };
+
+    load();
+
+    const unsubscribe = onThumbStored((storedKey) => {
+      if (!active) return;
+      if (key && storedKey === key) {
+        load();
+      }
+    });
 
     return () => {
       active = false;
-      if (url) {
-        URL.revokeObjectURL(url);
+      unsubscribe();
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl);
+        currentUrl = null;
       }
     };
-  }, [recentThumbKey(recent)]);
+  }, [key]);
 
   if (thumbUrl) {
     return <img className="recent-thumb" src={thumbUrl} alt="" />;

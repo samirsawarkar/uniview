@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { RecentThumb } from "../../src/ui/recent-thumbs";
+import type { FileSource } from "../../src/core/types";
+import { RecentThumb, captureRecentThumb } from "../../src/ui/recent-thumbs";
 import * as store from "../../src/remote/store";
 
 vi.mock("../../src/remote/store", () => ({
@@ -108,5 +109,94 @@ describe("RecentThumb component", () => {
     root = null;
 
     expect(revokeMock).toHaveBeenCalledWith("blob:uniview-thumb-456");
+  });
+
+  // Mutation: RecentThumb does not use remote key format hostId|rootId|path|mtime for cache lookup
+  it("shows thumbnail cached under the remote key for a remote recent", async () => {
+    const mockBlob = new Blob(["remote-thumb"], { type: "image/png" });
+    const remoteKey = "host-42|root-99|/photos/vacation.jpg|1710000000";
+    vi.mocked(store.cachedThumb).mockImplementation(async (key: string) => {
+      if (key === remoteKey) return mockBlob;
+      return undefined;
+    });
+    URL.createObjectURL = vi.fn().mockReturnValue("blob:remote-thumb-url");
+
+    const recent = {
+      name: "vacation.jpg",
+      size: 2048,
+      remote: {
+        hostId: "host-42",
+        rootId: "root-99",
+        rootName: "Photos",
+        path: "/photos/vacation.jpg",
+        mtime: 1710000000,
+      },
+    };
+
+    await act(async () => {
+      root!.render(<RecentThumb recent={recent} />);
+    });
+
+    expect(store.cachedThumb).toHaveBeenCalledWith(remoteKey);
+    const img = container!.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("blob:remote-thumb-url");
+  });
+
+  // Mutation: RecentThumb fails to subscribe to onThumbStored and re-read the cache when its key is stored, or reads cache more than twice
+  it("first misses, then after captureRecentThumb stores its key shows the img with exactly two cache reads", async () => {
+    const key = "local|/docs/capture.png|1024";
+    let storedBlob: Blob | undefined = undefined;
+
+    vi.mocked(store.cachedThumb).mockImplementation(async (k: string) => {
+      if (k === key) return storedBlob;
+      return undefined;
+    });
+
+    vi.mocked(store.storeThumb).mockImplementation(async (k: string, b: Blob) => {
+      if (k === key) {
+        storedBlob = b;
+      }
+    });
+
+    URL.createObjectURL = vi.fn().mockReturnValue("blob:captured-thumb-789");
+
+    const recent = {
+      name: "capture.png",
+      path: "/docs/capture.png",
+      size: 1024,
+    };
+
+    await act(async () => {
+      root!.render(<RecentThumb recent={recent} />);
+    });
+
+    expect(container!.querySelector("img")).toBeNull();
+    expect(store.cachedThumb).toHaveBeenCalledTimes(1);
+    expect(store.cachedThumb).toHaveBeenCalledWith(key);
+
+    const thumbData = new Blob(["png-data"], { type: "image/png" });
+    const bridge = {
+      thumbnail: vi.fn().mockResolvedValue(thumbData),
+    };
+    const source: FileSource = {
+      id: "f-cap",
+      name: "capture.png",
+      path: "/docs/capture.png",
+      size: 1024,
+      readAll: vi.fn(),
+      readRange: vi.fn(),
+      url: vi.fn(),
+      release: vi.fn(),
+    };
+
+    await act(async () => {
+      await captureRecentThumb(bridge, source, "image");
+    });
+
+    expect(store.cachedThumb).toHaveBeenCalledTimes(2);
+    const img = container!.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("blob:captured-thumb-789");
   });
 });
