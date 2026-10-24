@@ -917,3 +917,110 @@ h5.vs-heading { font-size: 0.9rem; }
   object-fit: cover;
   flex-shrink: 0;
 }
+
+/* Review Receipt viewer */
+.receipt-viewer-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--stage, #f8f9fa);
+}
+
+.receipt-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  background: var(--bg-2, #f1f3f4);
+  border-bottom: 1px solid var(--line, #dadce0);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.uniview-brand {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--accent, #1a73e8);
+  margin-right: 0.5rem;
+}
+
+.uniview-receipt-tag {
+  font-size: 0.8rem;
+  color: var(--fg-2, #5f6368);
+}
+
+.uniview-decide-banner {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--fg, #1f1f1f);
+  padding: 0.25rem 0.75rem;
+  background: var(--bg, #ffffff);
+  border: 1px solid var(--line, #dadce0);
+  border-radius: var(--radius, 6px);
+}
+
+.receipt-agent-content {
+  margin: 1rem;
+  padding: 1.5rem;
+  background: var(--bg, #ffffff);
+  border: 1px solid var(--line, #dadce0);
+  border-radius: var(--radius, 8px);
+}
+
+.receipt-section {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line, #dadce0);
+}
+
+.receipt-section-heading {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.receipt-files-list,
+.receipt-checks-list,
+.receipt-sources-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.receipt-file-item,
+.receipt-check-item,
+.receipt-source-item {
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--stage, #f8f9fa);
+  border: 1px solid var(--line, #dadce0);
+  border-radius: var(--radius, 6px);
+}
+
+.receipt-role-badge,
+.receipt-state-badge,
+.receipt-check-status-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.receipt-state-badge.state-unchanged { background: #dcfce7; color: #166534; }
+.receipt-state-badge.state-changed { background: #fee2e2; color: #991b1b; }
+.receipt-state-badge.state-missing { background: #f3f4f6; color: #4b5563; }
+.receipt-state-badge.state-unreadable { background: #fef3c7; color: #92400e; }
+.receipt-state-badge.state-too_large { background: #fee2e2; color: #991b1b; }
+
+.agent-image-placeholder {
+  padding: 1rem;
+  border: 1px dashed var(--line, #dadce0);
+  border-radius: var(--radius, 6px);
+  color: var(--fg-2, #5f6368);
+  font-style: italic;
+  margin: 0.5rem 0;
+}
+
