@@ -32,7 +32,9 @@
 //   view.show       {path} | {inline: true} + body = spec bytes            -> {scopeId}
 //   review.open     {path} | {inline: true} + body = receipt bytes         -> {reviewId}
 //   review.wait     {reviewId, timeoutMs}  -> {status:"decided", decision} | {status:"pending"} (timed out or cancelled)
-//   review.cancelWait {reviewId}           -> {}   ends this session's waits on the review; the review stays open
+//   review.cancelWait {reviewId}           -> {}   ends this session's waits on the review; the review stays open.
+//                   Never busy: the host counts no quota against it and the bridge server exempts it from the
+//                   16-requests-in-flight limit (the MCP server also keeps one slot free for it).
 //   review.get      {reviewId}             -> {status:"decided", decision} | {status:"pending"}
 // Errors are BridgeError codes: bad_request, bad_path, invalid_spec, invalid_receipt, busy, not_allowed, not_found,
 // unknown_method, internal. Reviews are visible only to the session that opened them (else not_found).

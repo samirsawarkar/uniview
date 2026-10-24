@@ -98,6 +98,17 @@ describe("agent host: mcp.hello and approval", () => {
     expect(t.dialog.calls).toHaveLength(0);
   });
 
+  it("review.cancelWait never answers busy, even with every quota used up", async () => {
+    // Mutation: counting cancelWait against the tab/rate quota (a cancelled wait could then not be ended)
+    const t = await makeHost();
+    t.fakeFs.set("/w/a.txt", "x");
+    const s = newSession();
+    await t.open(s, Array.from({ length: 20 }, () => "/w/a.txt"));
+    await t.open(s, Array.from({ length: 10 }, () => "/w/a.txt"));
+    expect(await t.fail(s, "open", {}, Buffer.from(JSON.stringify(["/w/a.txt"])))).toBe("busy");
+    for (let i = 0; i < 5; i++) expect(await t.call(s, "review.cancelWait", { reviewId: "x" })).toEqual({});
+  });
+
   it("closing the connection while a dialog is open dismisses it", async () => {
     // Mutation: leaving a dialog on screen for a dead connection
     const t = await makeHost();

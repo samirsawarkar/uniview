@@ -369,7 +369,9 @@ export async function startBridgeServer({
         return;
       }
 
-      if (inFlightIds.size >= maxInFlight) {
+      // review.cancelWait ends something the client already holds and answers at once, so it is never refused for
+      // being over the limit (the MCP server keeps one slot free for it, but the bridge does not depend on that).
+      if (inFlightIds.size >= maxInFlight && header.method !== "review.cancelWait") {
         if (socket.writable) {
           try {
             socket.write(
