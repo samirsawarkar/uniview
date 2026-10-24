@@ -9,7 +9,7 @@ import path from "node:path";
 import os from "node:os";
 
 // @ts-expect-error plain ESM module without types
-import { MAX_AGENT_PATH, MAX_AGENT_FILE_BYTES, checkPathString, createDriveClassifier, defaultDriveLookup, openAgentPath, AgentGrantStore, createMountClassifier, parseLinuxMounts, parseMacMounts } from "../../electron/lib/agent-paths.mjs";
+import { MAX_AGENT_PATH, MAX_AGENT_FILE_BYTES, checkPathString, createDriveClassifier, defaultDriveLookup, openAgentPath, AgentGrantStore, createMountClassifier, parseLinuxMounts, parseMacMounts, linuxMakedev, parseLinuxMountinfo, createLocalVolumeClassifier } from "../../electron/lib/agent-paths.mjs";
 
 describe("checkPathString", () => {
   it("accepts valid Windows and POSIX paths", () => {
@@ -288,6 +288,7 @@ describe("openAgentPath with injected fakes", () => {
 
     const res = await openAgentPath("C:\\safe\\link.txt", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive: async () => "allowed",
     });
@@ -312,6 +313,7 @@ describe("openAgentPath with injected fakes", () => {
 
     const res = await openAgentPath("C:\\safe\\big.bin", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive: async () => "allowed",
     });
@@ -336,6 +338,7 @@ describe("openAgentPath with injected fakes", () => {
 
     const res = await openAgentPath("C:\\safe\\exact.bin", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive: async () => "allowed",
     });
@@ -359,6 +362,7 @@ describe("openAgentPath with injected fakes", () => {
     };
     const res = await openAgentPath("Z:\\shared\\doc.txt", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive: async () => "rejected",
     });
@@ -388,6 +392,7 @@ describe("openAgentPath with injected fakes", () => {
 
     const res = await openAgentPath("C:\\local\\symlink.txt", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive,
     });
@@ -419,6 +424,7 @@ describe("openAgentPath with injected fakes", () => {
 
     const openPromise = openAgentPath("C:\\safe\\file.txt", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive: async () => "allowed",
       timeoutMs: 50,
@@ -452,6 +458,7 @@ describe("openAgentPath with injected fakes", () => {
 
     const res = await openAgentPath("C:\\safe\\file.txt", {
       platform: "win32",
+      isLocalDev: async () => true,
       fs: mockFs,
       classifyDrive: async () => "allowed",
     });
@@ -658,7 +665,8 @@ describe("P15a-2 hardening", () => {
     expect(linuxFs.open).toHaveBeenCalledWith("/safe/file.txt", flags.O_RDONLY | flags.O_NONBLOCK | flags.O_NOCTTY);
 
     const winFs = fakeFs("C:\\safe\\file.txt");
-    await openAgentPath("C:\\safe\\file.txt", { platform: "win32", fs: winFs, classifyDrive: async () => "allowed" });
+    await openAgentPath("C:\\safe\\file.txt", { platform: "win32",
+      isLocalDev: async () => true, fs: winFs, classifyDrive: async () => "allowed" });
     expect(winFs.open).toHaveBeenCalledWith("C:\\safe\\file.txt", "r");
   });
 
@@ -1056,5 +1064,234 @@ describe("P15a-3 security fixes", () => {
     } finally {
       await fsPromises.rm(testDir, { recursive: true, force: true }).catch(() => {});
     }
+  });
+});
+
+describe("P15a-4: network locality bound to opened handle", () => {
+  it("parses Linux mountinfo with NFS line and encodes dev matching glibc makedev", () => {
+    // Mutation: if linuxMakedev formula is incorrect or parseLinuxMountinfo fails to unescape \040, this test fails
+    expect(linuxMakedev(8, 1)).toBe(2049n);
+
+    const maj = 259;
+    const min = 300;
+    const glibcExpected =
+      BigInt(((maj & 0xfff) << 8) | (min & 0xff)) |
+      (BigInt(min & ~0xff) << 12n) |
+      (BigInt(maj & ~0xfff) << 32n);
+    expect(linuxMakedev(maj, min)).toBe(glibcExpected);
+
+    const sample = "36 35 0:52 / /mnt/my\\040share rw,relatime shared:1 - nfs4 srv:/x rw\n";
+    const parsed = parseLinuxMountinfo(sample);
+    expect(parsed).toEqual([
+      {
+        mountPoint: "/mnt/my share",
+        fsType: "nfs4",
+        dev: linuxMakedev(0, 52),
+      },
+    ]);
+  });
+
+  it("rejects handle on Linux NFS mountinfo device without calling statDev", async () => {
+    // Mutation: if Linux mountinfo classifier called statDev on network mounts or failed to match dev directly, this test fails
+    const sample = "36 35 0:52 / /mnt/my\\040share rw,relatime shared:1 - nfs4 srv:/x rw\n";
+    const nfsDev = linuxMakedev(0, 52);
+    let statDevCalls = 0;
+    const statDev = async () => {
+      statDevCalls++;
+      throw new Error("statDev should not be called on Linux mountinfo entries");
+    };
+
+    const mounts = parseLinuxMountinfo(sample);
+    const isNetworkDev = createMountClassifier({
+      readMounts: async () => mounts,
+      statDev,
+    });
+
+    const fakeHandle = {
+      close: async () => {},
+      stat: async () => ({ isFile: () => true, size: 50n, dev: nfsDev, ino: 1n }),
+    };
+    const fs = {
+      open: async () => fakeHandle,
+      realpath: async () => "/mnt/my share/test.txt",
+    };
+
+    const result = await openAgentPath("/mnt/my share/test.txt", {
+      platform: "linux",
+      fs,
+      isNetworkDev,
+      forbiddenDevs: new Set(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("network_drive");
+    expect(statDevCalls).toBe(0);
+  });
+
+  it("fails closed on macOS when statDev throws for any network mount", async () => {
+    // Mutation: if createMountClassifier caught statDev errors and ignored the mount (fail-open), localDev would be accepted
+    const macMounts = [
+      { mountPoint: "/Volumes/smb_share", fsType: "smbfs" },
+    ];
+    const statDev = async (mp: string) => {
+      if (mp === "/Volumes/smb_share") {
+        throw new Error("Device lookup error (EHOSTDOWN / EIO)");
+      }
+      return 100n;
+    };
+
+    const isNetworkDev = createMountClassifier({
+      readMounts: async () => macMounts,
+      statDev,
+    });
+
+    // Every device should now be classified as network (fail-closed)
+    const localDev = 12345n;
+    expect(await isNetworkDev(localDev)).toBe(true);
+
+    let handleClosed = false;
+    const fakeHandle = {
+      close: async () => { handleClosed = true; },
+      stat: async () => ({ isFile: () => true, size: 200n, dev: localDev, ino: 2n }),
+    };
+    const fs = {
+      open: async () => fakeHandle,
+      realpath: async () => "/Users/test/file.txt",
+    };
+
+    const result = await openAgentPath("/Users/test/file.txt", {
+      platform: "darwin",
+      fs,
+      isNetworkDev,
+      forbiddenDevs: new Set(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("network_drive");
+    expect(handleClosed).toBe(true);
+  });
+
+  it("Windows local volume classifier classifies local drives, caches, and fails closed on error/timeout", async () => {
+    // Mutation: if createLocalVolumeClassifier did not cache, listDrivesCalls would exceed 1
+    // Mutation: if createLocalVolumeClassifier failed open on error/timeout, isLocalDev would return true
+    let listDrivesCalls = 0;
+    let listDrivesResult: any = ["C:,3", "Z:,4"];
+    let statDevCalls = 0;
+    let statDevThrows = false;
+
+    const listDrives = async () => {
+      listDrivesCalls++;
+      if (listDrivesResult instanceof Error) throw listDrivesResult;
+      return listDrivesResult;
+    };
+
+    const statDev = async (drivePath: string) => {
+      statDevCalls++;
+      if (statDevThrows) throw new Error("statDev failed on " + drivePath);
+      if (drivePath === "C:\\") return 10n;
+      return 99n;
+    };
+
+    let fakeNow = 1000;
+    const now = () => fakeNow;
+
+    const classifier = createLocalVolumeClassifier({
+      listDrives,
+      statDev,
+      now,
+      ttlMs: 60_000,
+      timeoutMs: 3000,
+    });
+
+    // 1. Success case: C: (type 3) -> 10n is local; 99n is not local
+    expect(await classifier(10n)).toBe(true);
+    expect(await classifier(99n)).toBe(false);
+    expect(listDrivesCalls).toBe(1);
+    expect(statDevCalls).toBe(1); // Z: is type 4 so statDev was not called for Z:
+
+    // 2. Cache test within TTL: listDrives not called again
+    fakeNow += 10_000;
+    expect(await classifier(10n)).toBe(true);
+    expect(listDrivesCalls).toBe(1);
+
+    // 3. listDrives throwing -> false for everything
+    fakeNow += 60_001;
+    listDrivesResult = new Error("PowerShell failed");
+    expect(await classifier(10n)).toBe(false);
+    expect(await classifier(99n)).toBe(false);
+
+    // 4. statDev failing for C: -> false for everything
+    fakeNow += 60_001;
+    listDrivesResult = ["C:,3"];
+    statDevThrows = true;
+    expect(await classifier(10n)).toBe(false);
+
+    // 5. listDrives never resolving (fake timers) -> timeout -> false for everything
+    const timerApi = vi;
+    if (timerApi) {
+      timerApi.useFakeTimers();
+      try {
+        fakeNow += 60_001;
+        const neverResolvingClassifier = createLocalVolumeClassifier({
+          listDrives: () => new Promise(() => {}),
+          statDev,
+          now,
+          ttlMs: 60_000,
+          timeoutMs: 3000,
+        });
+
+        const promise = neverResolvingClassifier(10n);
+        if (typeof (timerApi as any).advanceTimersByTimeAsync === "function") {
+          await (timerApi as any).advanceTimersByTimeAsync(3500);
+        } else {
+          timerApi.advanceTimersByTime(3500);
+        }
+        const res = await promise;
+        expect(res).toBe(false);
+      } finally {
+        timerApi.useRealTimers();
+      }
+    }
+  });
+
+  it("rejects alias swap on win32 when opened handle device is not local and closes handle once", async () => {
+    // Mutation: if openAgentPath did not verify handleStat.dev via isLocalDev on win32, alias swap would succeed
+    let closeCount = 0;
+    const fakeHandle = {
+      close: async () => {
+        closeCount++;
+      },
+      stat: async () => ({
+        isFile: () => true,
+        size: 1024n,
+        dev: 99n, // Not local (e.g. remote SMB alias)
+        ino: 555n,
+      }),
+    };
+
+    const fs = {
+      open: async () => fakeHandle,
+      realpath: {
+        native: async () => "C:\\safe\\file.txt",
+      },
+    };
+
+    const classifyDrive = async (letter: string) => {
+      return letter === "C" ? ("allowed" as const) : ("rejected" as const);
+    };
+
+    // isLocalDev knows local volume C has dev 10n; 99n is remote
+    const isLocalDev = async (dev: bigint) => dev === 10n;
+
+    const result = await openAgentPath("C:\\safe\\file.txt", {
+      platform: "win32",
+      fs,
+      classifyDrive,
+      isLocalDev,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("network_drive");
+    expect(closeCount).toBe(1);
   });
 });

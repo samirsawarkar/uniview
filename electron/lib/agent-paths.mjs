@@ -201,6 +201,62 @@ export function createDriveClassifier({
 const defaultDriveClassifierInstance = createDriveClassifier();
 
 /**
+ * Encode Linux major and minor device numbers into a dev_t BigInt matching glibc makedev.
+ *
+ * @param {number|string|bigint} major
+ * @param {number|string|bigint} minor
+ * @returns {bigint}
+ */
+export function linuxMakedev(major, minor) {
+  const maj = typeof major === "bigint" ? Number(major) : parseInt(major, 10);
+  const min = typeof minor === "bigint" ? Number(minor) : parseInt(minor, 10);
+  return (
+    BigInt(((maj & 0xfff) << 8) | (min & 0xff)) |
+    (BigInt(min & ~0xff) << 12n) |
+    (BigInt(maj & ~0xfff) << 32n)
+  );
+}
+
+/**
+ * Parse Linux /proc/self/mountinfo content into an array of { mountPoint, fsType, dev }.
+ * Unescapes octal escapes such as \040 for spaces in the mount point.
+ * Encodes major:minor directly into dev via linuxMakedev without stat.
+ *
+ * @param {string} content
+ * @returns {Array<{ mountPoint: string, fsType: string, dev: bigint }>}
+ */
+export function parseLinuxMountinfo(content) {
+  if (typeof content !== "string") return [];
+  const lines = content.split("\n");
+  const mounts = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const sepIndex = trimmed.indexOf(" - ");
+    if (sepIndex === -1) continue;
+    const leftParts = trimmed.slice(0, sepIndex).trim().split(/\s+/);
+    const rightParts = trimmed.slice(sepIndex + 3).trim().split(/\s+/);
+    if (leftParts.length >= 5 && rightParts.length >= 1) {
+      const majMin = leftParts[2].split(":");
+      if (majMin.length === 2) {
+        const major = parseInt(majMin[0], 10);
+        const minor = parseInt(majMin[1], 10);
+        if (!Number.isNaN(major) && !Number.isNaN(minor)) {
+          const rawMountPoint = leftParts[4];
+          const mountPoint = rawMountPoint.replace(/\\([0-7]{3})/g, (_, oct) =>
+            String.fromCharCode(parseInt(oct, 8))
+          );
+          const fsType = rightParts[0];
+          const dev = linuxMakedev(major, minor);
+          mounts.push({ mountPoint, fsType, dev });
+        }
+      }
+    }
+  }
+  return mounts;
+}
+
+/**
  * Parse Linux /proc/self/mounts content into an array of { mountPoint, fsType }.
  * Unescapes octal escapes such as \040 for spaces.
  *
@@ -251,14 +307,15 @@ export function parseMacMounts(content) {
 
 /**
  * Default reader for POSIX mounts.
+ * On Linux, reads /proc/self/mountinfo and parses mount point, fsType, and dev directly.
  *
  * @param {string} [platform=process.platform]
- * @returns {Promise<Array<{ mountPoint: string, fsType: string }>>}
+ * @returns {Promise<Array<{ mountPoint: string, fsType: string, dev?: bigint }>>}
  */
 export async function defaultReadMounts(platform = process.platform) {
   if (platform === "linux") {
-    const data = await fsPromises.readFile("/proc/self/mounts", "utf8");
-    return parseLinuxMounts(data);
+    const data = await fsPromises.readFile("/proc/self/mountinfo", "utf8");
+    return parseLinuxMountinfo(data);
   }
   return new Promise((resolve, reject) => {
     execFile("mount", [], { timeout: 3000 }, (error, stdout) => {
@@ -284,6 +341,9 @@ export async function defaultStatDev(mountPoint) {
 
 /**
  * Create a POSIX mount classifier caching network filesystem device IDs.
+ * On Linux, devices are extracted directly from mountinfo without calling statDev.
+ * On macOS / other POSIX, statDev is called; if statDev fails for ANY network mount,
+ * the classifier fails closed and classifies every device as network until the next refresh.
  *
  * @param {object} [options]
  * @param {function} [options.readMounts=defaultReadMounts]
@@ -298,14 +358,14 @@ export function createMountClassifier({
   now = Date.now,
   ttlMs = 60_000,
 } = {}) {
-  let cachedNetworkDevs = null;
+  let cachedResult = null;
   let expiresAt = 0;
   let inFlight = null;
 
   async function getNetworkDevs() {
     const currentTime = now();
-    if (cachedNetworkDevs && expiresAt > currentTime) {
-      return cachedNetworkDevs;
+    if (cachedResult && expiresAt > currentTime) {
+      return cachedResult;
     }
     if (inFlight) {
       return inFlight;
@@ -315,22 +375,35 @@ export function createMountClassifier({
       try {
         const mounts = await readMounts();
         const devs = new Set();
+        let failAll = false;
         for (const m of mounts) {
           if (m && m.fsType && NETWORK_FS_TYPES.has(m.fsType.toLowerCase())) {
-            try {
-              const res = await statDev(m.mountPoint);
-              const dev = typeof res === "object" && res !== null && "dev" in res ? res.dev : res;
-              if (typeof dev === "bigint") {
-                devs.add(dev);
+            if (typeof m.dev === "bigint") {
+              devs.add(m.dev);
+            } else if (m.mountPoint) {
+              try {
+                const res = await statDev(m.mountPoint);
+                const dev = typeof res === "object" && res !== null && "dev" in res ? res.dev : res;
+                if (typeof dev === "bigint") {
+                  devs.add(dev);
+                } else {
+                  failAll = true;
+                  break;
+                }
+              } catch {
+                failAll = true;
+                break;
               }
-            } catch {
-              // Ignore stat errors for unreachable/unmounted mounts
             }
           }
         }
-        cachedNetworkDevs = devs;
+        cachedResult = { devs, failAll };
         expiresAt = now() + ttlMs;
-        return devs;
+        return cachedResult;
+      } catch {
+        cachedResult = { devs: new Set(), failAll: true };
+        expiresAt = now() + ttlMs;
+        return cachedResult;
       } finally {
         inFlight = null;
       }
@@ -341,8 +414,11 @@ export function createMountClassifier({
 
   async function isNetworkDev(dev) {
     try {
-      const devs = await getNetworkDevs();
-      return devs.has(dev);
+      const state = await getNetworkDevs();
+      if (state.failAll) {
+        return true;
+      }
+      return state.devs.has(dev);
     } catch {
       // Fail closed: if readMounts fails or times out, treat as network filesystem
       return true;
@@ -354,6 +430,159 @@ export function createMountClassifier({
 }
 
 const defaultMountClassifierInstance = createMountClassifier();
+
+/**
+ * Default drive lister for Windows logical disks via PowerShell.
+ *
+ * @returns {Promise<Array<{ letter: string, driveType: number }>>}
+ */
+export async function defaultListDrives() {
+  const cmd = "Get-CimInstance Win32_LogicalDisk | ForEach-Object { $_.DeviceID + ',' + $_.DriveType }";
+  return new Promise((resolve, reject) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", cmd],
+      { timeout: 3000 },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        const lines = (stdout || "").split(/\r?\n/);
+        const drives = [];
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const commaIdx = trimmed.indexOf(",");
+          if (commaIdx !== -1) {
+            const devId = trimmed.slice(0, commaIdx).trim();
+            const typeStr = trimmed.slice(commaIdx + 1).trim();
+            const letter = devId.replace(/:$/, "").trim();
+            const driveType = parseInt(typeStr, 10);
+            if (letter && Number.isInteger(driveType)) {
+              drives.push({ letter, driveType });
+            }
+          }
+        }
+        resolve(drives);
+      }
+    );
+  });
+}
+
+/**
+ * Create a Windows local volume classifier binding locality to opened handle device IDs.
+ * Only DriveType 2 (removable) and 3 (fixed) are local.
+ * Any failure of listDrives, timeout, or failed statDev for a type-2/3 drive fails closed
+ * (isLocalDev returns false for everything until the next refresh).
+ *
+ * @param {object} [options]
+ * @param {function} [options.listDrives=defaultListDrives]
+ * @param {function} [options.statDev=defaultStatDev]
+ * @param {function} [options.now=Date.now]
+ * @param {number} [options.ttlMs=60000]
+ * @param {number} [options.timeoutMs=3000]
+ * @returns {function(bigint): Promise<boolean>}
+ */
+export function createLocalVolumeClassifier({
+  listDrives = defaultListDrives,
+  statDev = defaultStatDev,
+  now = Date.now,
+  ttlMs = 60_000,
+  timeoutMs = 3000,
+} = {}) {
+  let cachedResult = null;
+  let expiresAt = 0;
+  let inFlight = null;
+
+  async function refresh() {
+    const currentTime = now();
+    if (cachedResult && expiresAt > currentTime) {
+      return cachedResult;
+    }
+    if (inFlight) {
+      return inFlight;
+    }
+
+    inFlight = (async () => {
+      let timer;
+      try {
+        const timeoutPromise = new Promise((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), timeoutMs);
+        });
+
+        const workPromise = (async () => {
+          const rawDrives = await listDrives();
+          const localDevs = new Set();
+          if (!Array.isArray(rawDrives)) {
+            return { ok: false, devs: new Set() };
+          }
+          for (const item of rawDrives) {
+            let letter = "";
+            let driveType = 0;
+            if (typeof item === "string") {
+              const commaIdx = item.indexOf(",");
+              if (commaIdx !== -1) {
+                letter = item.slice(0, commaIdx).trim().replace(/:$/, "");
+                driveType = parseInt(item.slice(commaIdx + 1).trim(), 10);
+              }
+            } else if (item && typeof item === "object") {
+              letter = String(item.letter || "").trim().replace(/:$/, "");
+              driveType = Number(item.driveType);
+            }
+            if (driveType === 2 || driveType === 3) {
+              if (!letter) {
+                return { ok: false, devs: new Set() };
+              }
+              const res = await statDev(letter + ":\\");
+              const dev = typeof res === "object" && res !== null && "dev" in res ? res.dev : res;
+              if (typeof dev !== "bigint") {
+                return { ok: false, devs: new Set() };
+              }
+              localDevs.add(dev);
+            }
+          }
+          return { ok: true, devs: localDevs };
+        })();
+
+        const outcome = await Promise.race([workPromise, timeoutPromise]);
+        clearTimeout(timer);
+        if (outcome === "timeout") {
+          cachedResult = { ok: false, devs: new Set() };
+        } else {
+          cachedResult = outcome;
+        }
+      } catch {
+        cachedResult = { ok: false, devs: new Set() };
+      } finally {
+        clearTimeout(timer);
+        expiresAt = now() + ttlMs;
+        inFlight = null;
+      }
+      return cachedResult;
+    })();
+
+    return inFlight;
+  }
+
+  async function isLocalDev(dev) {
+    if (typeof dev !== "bigint") return false;
+    try {
+      const res = await refresh();
+      if (!res || !res.ok) {
+        return false;
+      }
+      return res.devs.has(dev);
+    } catch {
+      return false;
+    }
+  }
+
+  isLocalDev.isLocalDev = isLocalDev;
+  return isLocalDev;
+}
+
+const defaultLocalVolumeClassifierInstance = createLocalVolumeClassifier();
 
 let cachedForbiddenDevsPromise = null;
 
@@ -391,6 +620,8 @@ export async function getForbiddenDevs(fs = fsPromises) {
  * @param {string} [deps.platform=process.platform]
  * @param {object} [deps.fs=fsPromises]
  * @param {function} [deps.classifyDrive]
+ * @param {function} [deps.isLocalDev]
+ * @param {function} [deps.listDrives]
  * @param {function|Set<bigint>|Promise<Set<bigint>>} [deps.forbiddenDevs]
  * @param {function} [deps.isNetworkDev]
  * @param {function} [deps.readMounts]
@@ -515,6 +746,26 @@ export async function openAgentPath(path, deps = {}) {
         return;
       }
 
+      // Windows: bind locality to the opened handle's device ID
+      if (platform === "win32") {
+        const isLocalDev = deps.isLocalDev ?? (
+          (deps.listDrives || deps.statDev)
+            ? createLocalVolumeClassifier({ listDrives: deps.listDrives, statDev: deps.statDev })
+            : defaultLocalVolumeClassifierInstance
+        );
+        let local = false;
+        try {
+          local = await isLocalDev(handleStat.dev);
+        } catch {
+          local = false;
+        }
+        if (timedOut) return;
+        if (!local) {
+          closeHandleFireAndForget();
+          return { ok: false, code: "network_drive", reason: "Handle device is not an allowed local volume" };
+        }
+      }
+
       // Check forbidden POSIX filesystems (/proc, /sys, /dev) by device ID
       if (platform !== "win32" || deps.forbiddenDevs !== undefined) {
         let forbiddenDevs;
@@ -533,7 +784,11 @@ export async function openAgentPath(path, deps = {}) {
 
       // Check network filesystems by device ID
       if (platform !== "win32" || deps.isNetworkDev !== undefined || deps.readMounts !== undefined) {
-        const isNetDev = deps.isNetworkDev ?? (deps.readMounts ? createMountClassifier({ readMounts: deps.readMounts, statDev: deps.statDev }) : defaultMountClassifierInstance);
+        const isNetDev = deps.isNetworkDev ?? (
+          (deps.readMounts || deps.statDev)
+            ? createMountClassifier({ readMounts: deps.readMounts, statDev: deps.statDev })
+            : defaultMountClassifierInstance
+        );
         let isNet = false;
         try {
           isNet = await isNetDev(handleStat.dev);
