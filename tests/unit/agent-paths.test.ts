@@ -3,9 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import fsPromises from "node:fs/promises";
+import fsSync from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 // @ts-expect-error plain ESM module without types
-import { MAX_AGENT_PATH, MAX_AGENT_FILE_BYTES, checkPathString, createDriveClassifier, defaultDriveLookup, openAgentPath, AgentGrantStore } from "../../electron/lib/agent-paths.mjs";
+import { MAX_AGENT_PATH, MAX_AGENT_FILE_BYTES, checkPathString, createDriveClassifier, defaultDriveLookup, openAgentPath, AgentGrantStore, createMountClassifier, parseLinuxMounts, parseMacMounts } from "../../electron/lib/agent-paths.mjs";
 
 describe("checkPathString", () => {
   it("accepts valid Windows and POSIX paths", () => {
@@ -293,30 +297,6 @@ describe("openAgentPath with injected fakes", () => {
     expect(closeCalls).toBe(1);
   });
 
-  it("closes handle and returns changed when canonical stat and handle stat mismatch dev or ino", async () => {
-    // Catches mutation: TOCTOU race where file was replaced between open and canonical stat
-    let closeCalls = 0;
-    const mockHandle = {
-      close: vi.fn(async () => { closeCalls++; }),
-      stat: vi.fn(async () => ({ dev: 1n, ino: 2n, isFile: () => true, size: 100n })),
-    };
-    const mockFs = {
-      open: vi.fn(async () => mockHandle),
-      realpath: { native: vi.fn(async (p) => p) },
-      stat: vi.fn(async () => ({ dev: 1n, ino: 999n, isFile: () => true, size: 100n })),
-    };
-
-    const res = await openAgentPath("C:\\safe\\file.txt", {
-      platform: "win32",
-      fs: mockFs,
-      classifyDrive: async () => "allowed",
-    });
-
-    expect(res.ok).toBe(false);
-    expect(res.code).toBe("changed");
-    expect(closeCalls).toBe(1);
-  });
-
   it("closes handle and returns too_large when file size exceeds 4 GiB", async () => {
     // Catches mutation: accepting files larger than MAX_AGENT_FILE_BYTES (4 GiB)
     let closeCalls = 0;
@@ -503,19 +483,19 @@ describe("AgentGrantStore", () => {
     const dummyHandle = {};
     const token = store.grant(scopeId, { handle: dummyHandle, canonical: "/data/img.png", size: 42 });
 
-    expect(store.get(token)).toEqual({
+    expect(store.get(token, scopeId)).toEqual({
       handle: dummyHandle,
       canonical: "/data/img.png",
       size: 42,
       scopeId,
     });
 
-    expect(store.get("")).toBeUndefined();
-    expect(store.get("invalid-token")).toBeUndefined();
-    expect(store.get("../../etc/passwd")).toBeUndefined();
+    expect(store.get("", scopeId)).toBeUndefined();
+    expect(store.get("invalid-token", scopeId)).toBeUndefined();
+    expect(store.get("../../etc/passwd", scopeId)).toBeUndefined();
     expect(store.get("a".repeat(31))).toBeUndefined();
     expect(store.get("a".repeat(33))).toBeUndefined();
-    expect(store.get(null)).toBeUndefined();
+    expect(store.get(null, scopeId)).toBeUndefined();
   });
 
   it("inScope returns true only within matching scope and false across scopes", () => {
@@ -699,6 +679,382 @@ describe("P15a-2 hardening", () => {
       expect(res).toMatchObject({ ok: false, code: "not_a_file" });
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("P15a-3 security fixes", () => {
+  it("second symlink race: handle on /proc dev rejected with bad_path, closed once, and fs.stat never called on canonical path", async () => {
+    // Catches mutation: validating canonical path name instead of handle.stat({bigint:true}).dev (symlink race)
+    // Catches mutation: calling fs.stat on canonical path (re-introducing the race window)
+    const procDev = 12345n;
+    let closeCount = 0;
+    const fakeHandle = {
+      stat: vi.fn().mockResolvedValue({
+        dev: procDev,
+        ino: 9999n,
+        size: 100n,
+        isFile: () => true,
+      }),
+      close: vi.fn().mockImplementation(async () => {
+        closeCount++;
+      }),
+    };
+    const fsStatMock = vi.fn();
+    const fakeFs = {
+      open: vi.fn().mockResolvedValue(fakeHandle),
+      realpath: vi.fn().mockResolvedValue("/home/user/legit.txt"),
+      stat: fsStatMock,
+    };
+
+    const res = await openAgentPath("/tmp/alias.txt", {
+      platform: "linux",
+      fs: fakeFs,
+      forbiddenDevs: new Set([procDev]),
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("bad_path");
+    }
+    expect(closeCount).toBe(1);
+    expect(fsStatMock).not.toHaveBeenCalled();
+  });
+
+  it("isNetworkDev: handle whose dev is in injected network set rejects with network_drive", async () => {
+    // Catches mutation: allowing access to network filesystems without checking dev against network set
+    const netDev = 7777n;
+    let closed = 0;
+    const fakeHandle = {
+      stat: vi.fn().mockResolvedValue({
+        dev: netDev,
+        ino: 100n,
+        size: 50n,
+        isFile: () => true,
+      }),
+      close: vi.fn().mockImplementation(async () => {
+        closed++;
+      }),
+    };
+    const fakeFs = {
+      open: vi.fn().mockResolvedValue(fakeHandle),
+      realpath: vi.fn().mockResolvedValue("/mnt/net/file.txt"),
+    };
+    const res = await openAgentPath("/mnt/net/file.txt", {
+      platform: "linux",
+      fs: fakeFs,
+      isNetworkDev: async (dev: bigint) => dev === netDev,
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("network_drive");
+    }
+    expect(closed).toBe(1);
+  });
+
+  it("isNetworkDev: readMounts throwing fails closed with network_drive", async () => {
+    // Catches mutation: failing open or propagating unhandled error instead of failing closed to network_drive
+    const fakeHandle = {
+      stat: vi.fn().mockResolvedValue({
+        dev: 555n,
+        ino: 100n,
+        size: 50n,
+        isFile: () => true,
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const fakeFs = {
+      open: vi.fn().mockResolvedValue(fakeHandle),
+      realpath: vi.fn().mockResolvedValue("/file.txt"),
+    };
+    const classifier = createMountClassifier({
+      readMounts: async () => {
+        throw new Error("mount read failed");
+      },
+    });
+    const res = await openAgentPath("/file.txt", {
+      platform: "linux",
+      fs: fakeFs,
+      isNetworkDev: classifier,
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("network_drive");
+    }
+  });
+
+  it("Linux /proc/self/mounts sample with escaped mount point parses correctly", () => {
+    // Catches mutation: failure to unescape octal space \040 in Linux mounts file
+    const sample = "192.168.1.10:/share /mnt/my\\040share nfs4 rw,relatime 0 0\n";
+    const mounts = parseLinuxMounts(sample);
+    expect(mounts).toEqual([{ mountPoint: "/mnt/my share", fsType: "nfs4" }]);
+  });
+
+  it("macOS mount line parses correctly", () => {
+    // Catches mutation: failure to parse macOS mount output format into mountPoint and fsType
+    const sample = "//user@srv/share on /Volumes/share (smbfs, nodev, nosuid, mounted by u)\n";
+    const mounts = parseMacMounts(sample);
+    expect(mounts).toEqual([{ mountPoint: "/Volumes/share", fsType: "smbfs" }]);
+  });
+
+  it("createMountClassifier: caches network devs and calls readMounts once within TTL", async () => {
+    // Catches mutation: not caching readMounts within TTL
+    let readMountsCount = 0;
+    const readMounts = vi.fn().mockImplementation(async () => {
+      readMountsCount++;
+      return [{ mountPoint: "/mnt/share", fsType: "cifs" }];
+    });
+    const statDev = vi.fn().mockResolvedValue(999n);
+    let currentTime = 10000;
+    const classifier = createMountClassifier({
+      readMounts,
+      statDev,
+      now: () => currentTime,
+      ttlMs: 60_000,
+    });
+
+    const check1 = await classifier(999n);
+    expect(check1).toBe(true);
+    expect(readMountsCount).toBe(1);
+
+    currentTime += 30_000; // 30s later (within 60s TTL)
+    const check2 = await classifier(999n);
+    expect(check2).toBe(true);
+    expect(readMountsCount).toBe(1);
+  });
+
+  it("dot segments rejected on both platforms and repeated separators accepted", () => {
+    // Catches mutation: allowing dot segments (. or ..) to bypass checkPathString pre-I/O check
+    // Catches mutation: rejecting repeated slashes (/a//b)
+    const rejected = [
+      { p: "/./proc/version", platform: "posix" },
+      { p: "/tmp/../dev/null", platform: "posix" },
+      { p: "C:\\a\\..\\b", platform: "win32" },
+      { p: "C:\\.\\a", platform: "win32" },
+      { p: "/a/./b", platform: "posix" },
+      { p: "/a/../b", platform: "posix" },
+      { p: "C:/a/../b", platform: "win32" },
+      { p: "C:/./a", platform: "win32" },
+    ];
+    for (const { p, platform } of rejected) {
+      const res = checkPathString(p, platform);
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.code).toBe("bad_path");
+      }
+    }
+
+    const okPosix = checkPathString("/a//b", "posix");
+    expect(okPosix.ok).toBe(true);
+  });
+
+  it("deadline: open rejects with EPERM after 10ms with never-resolving close settles in < 100ms", async () => {
+    // Catches mutation: calling unbounded fs.stat on EPERM or awaiting close() on error
+    const start = Date.now();
+    const fakeFs = {
+      open: vi.fn().mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        const err = new Error("permission denied");
+        (err as any).code = "EPERM";
+        throw err;
+      }),
+      stat: vi.fn().mockImplementation(async () => {
+        // Unbounded stat must NOT be called
+        await new Promise((r) => setTimeout(r, 2000));
+      }),
+    };
+    const res = await openAgentPath("/tmp/eperm.txt", {
+      platform: "linux",
+      fs: fakeFs,
+      timeoutMs: 20,
+    });
+    const elapsed = Date.now() - start;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("unreadable");
+    }
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it("deadline: slow realpath past deadline returns unreadable in < 100ms and closes handle once", async () => {
+    // Catches mutation: not aborting/returning unreadable on timeout or failing to close handle fire-and-forget
+    let closeCount = 0;
+    const fakeHandle = {
+      stat: vi.fn(),
+      close: vi.fn().mockImplementation(async () => {
+        closeCount++;
+      }),
+    };
+    const fakeFs = {
+      open: vi.fn().mockResolvedValue(fakeHandle),
+      realpath: vi.fn().mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 300));
+        return "/tmp/canonical.txt";
+      }),
+    };
+    const start = Date.now();
+    const res = await openAgentPath("/tmp/slow.txt", {
+      platform: "linux",
+      fs: fakeFs,
+      timeoutMs: 20,
+    });
+    const elapsed = Date.now() - start;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("unreadable");
+    }
+    expect(elapsed).toBeLessThan(100);
+    expect(closeCount).toBe(1);
+  });
+
+  it("grant store: enforces 256 handle limit, frees on closeScope, and requires scopeId for get", async () => {
+    // Catches mutation: not enforcing 256 limit across all scopes, not throwing error with code: 'busy'
+    // Catches mutation: allowing get() with other scopeId
+    const store = new AgentGrantStore();
+    const scopeA = store.openScope();
+    const scopeB = store.openScope();
+
+    // 256 grants across two scopes succeed
+    for (let i = 0; i < 128; i++) {
+      store.grant(scopeA, { handle: { close: vi.fn() }, canonical: `/a/${i}`, size: 10 });
+    }
+    for (let i = 0; i < 128; i++) {
+      store.grant(scopeB, { handle: { close: vi.fn() }, canonical: `/b/${i}`, size: 10 });
+    }
+
+    // 257th grant throws busy
+    let threwBusy = false;
+    try {
+      store.grant(scopeA, { handle: { close: vi.fn() }, canonical: "/overflow", size: 10 });
+    } catch (err: any) {
+      if (err?.code === "busy") {
+        threwBusy = true;
+      }
+    }
+    expect(threwBusy).toBe(true);
+
+    // after closeScope a new grant succeeds
+    await store.closeScope(scopeA);
+    const newToken = store.grant(scopeB, { handle: { close: vi.fn() }, canonical: "/new", size: 10 });
+    expect(typeof newToken).toBe("string");
+
+    // get(token, otherScope) -> undefined
+    expect(store.get(newToken, scopeA)).toBeUndefined();
+    expect(store.get(newToken, scopeB)).toBeDefined();
+    expect(store.inScope(newToken, scopeA)).toBe(false);
+    expect(store.inScope(newToken, scopeB)).toBe(true);
+  });
+
+  it("real filesystem: POSIX symlink swapped after openAgentPath still reads original content through handle", async () => {
+    // Catches mutation: relying on file path for reads rather than open handle
+    if (process.platform === "win32") {
+      return;
+    }
+    const baseDir = (fsSync.existsSync("I:\\AES")) ? "I:\\AES" : os.tmpdir();
+    const testDir = await fsPromises.mkdtemp(path.join(baseDir, "p15a3-posix-"));
+    try {
+      const fileA = path.join(testDir, "fileA.txt");
+      const fileB = path.join(testDir, "fileB.txt");
+      const linkPath = path.join(testDir, "link.txt");
+
+      await fsPromises.writeFile(fileA, "CONTENT_A");
+      await fsPromises.writeFile(fileB, "CONTENT_B");
+
+      try {
+        await fsPromises.symlink(fileA, linkPath);
+      } catch {
+        return; // skip on failure to create links
+      }
+
+      const res = await openAgentPath(linkPath);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      // Swap symlink target to fileB
+      await fsPromises.unlink(linkPath);
+      await fsPromises.symlink(fileB, linkPath);
+
+      // Reading through original handle must still read CONTENT_A
+      const buf = Buffer.alloc(100);
+      const { bytesRead } = await res.handle.read(buf, 0, 100, 0);
+      const content = buf.toString("utf8", 0, bytesRead);
+      expect(content).toBe("CONTENT_A");
+
+      await res.handle.close();
+    } finally {
+      await fsPromises.rm(testDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("real filesystem: Windows junction resolves to canonical path, renamed file reads original bytes, and canonical never starts with \\\\?\\", async () => {
+    // Catches mutation: returning \\?\ prefixed path from realpath.native on Windows
+    // Catches mutation: junction not resolved to canonical target path
+    // Catches mutation: file rename breaks reading from already-opened handle
+    if (process.platform !== "win32") {
+      return;
+    }
+    const baseDir = (fsSync.existsSync("I:\\AES")) ? "I:\\AES" : os.tmpdir();
+    const testDir = await fsPromises.mkdtemp(path.join(baseDir, "p15a3-win-"));
+    try {
+      const realDir = path.join(testDir, "real_dir");
+      const junctionDir = path.join(testDir, "junc_dir");
+      await fsPromises.mkdir(realDir, { recursive: true });
+
+      const targetFile = path.join(realDir, "target.txt");
+      await fsPromises.writeFile(targetFile, "ORIGINAL_BYTES");
+
+      try {
+        await fsPromises.symlink(realDir, junctionDir, "junction");
+      } catch {
+        return; // skip on failure to create links (e.g. without privilege)
+      }
+
+      const junctionFile = path.join(junctionDir, "target.txt");
+      const res = await openAgentPath(junctionFile);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      // Canonical result never starts with \\?\
+      expect(res.canonical.startsWith("\\\\?\\")).toBe(false);
+
+      // Resolves to target's canonical path
+      const expectedCanonical = path.resolve(targetFile);
+      expect(res.canonical.toLowerCase()).toBe(expectedCanonical.toLowerCase());
+
+      // Rename target file after opening
+      const renamedFile = path.join(realDir, "renamed.txt");
+      await fsPromises.rename(targetFile, renamedFile);
+
+      // Reading through handle still reads original bytes
+      const buf = Buffer.alloc(100);
+      const { bytesRead } = await res.handle.read(buf, 0, 100, 0);
+      const readStr = buf.toString("utf8", 0, bytesRead);
+      expect(readStr).toBe("ORIGINAL_BYTES");
+
+      await res.handle.close();
+    } finally {
+      await fsPromises.rm(testDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("canonical results for a normal temp file never start with \\\\?\\", async () => {
+    // Catches mutation: canonical paths starting with \\?\ on Windows
+    const baseDir = (process.platform === "win32" && fsSync.existsSync("I:\\AES")) ? "I:\\AES" : os.tmpdir();
+    const testDir = await fsPromises.mkdtemp(path.join(baseDir, "p15a3-normal-"));
+    try {
+      const filePath = path.join(testDir, "normal.txt");
+      await fsPromises.writeFile(filePath, "hello world");
+
+      const res = await openAgentPath(filePath);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      expect(res.canonical.startsWith("\\\\?\\")).toBe(false);
+      await res.handle.close();
+    } finally {
+      await fsPromises.rm(testDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 });

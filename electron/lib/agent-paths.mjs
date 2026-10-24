@@ -8,6 +8,30 @@ import fsPromises from "node:fs/promises";
 
 export const MAX_AGENT_PATH = 4096;
 export const MAX_AGENT_FILE_BYTES = 4 * 1024 ** 3; // 4 GiB = 4,294,967,296 bytes
+export const MAX_AGENT_HANDLES = 256;
+
+export const NETWORK_FS_TYPES = new Set([
+  "nfs",
+  "nfs4",
+  "cifs",
+  "smb",
+  "smb2",
+  "smb3",
+  "smbfs",
+  "afpfs",
+  "webdav",
+  "davfs",
+  "fuse.sshfs",
+  "sshfs",
+  "9p",
+  "afs",
+  "ceph",
+  "glusterfs",
+  "fuse.glusterfs",
+  "lustre",
+  "gpfs",
+  "ncpfs",
+]);
 
 const WIN_DEVICE_REGEX =
   /^(?:CONIN\$|CONOUT\$|CON|PRN|AUX|NUL|COM[0-9\u00B9\u00B2\u00B3]|LPT[0-9\u00B9\u00B2\u00B3])(?:[\. ].*)?$/i;
@@ -17,7 +41,8 @@ const WIN_DEVICE_REGEX =
  * Rules 1 and 2:
  * 1. String <= 4096 chars, no control characters (U+0000-U+001F, U+007F), absolute paths only.
  * 2. Reject before I/O: UNC paths, device prefixes (\\?\ and \\.\), Windows device names in any segment,
- *    alternate data streams (any ':' after drive letter), and POSIX /dev, /proc, /sys leading segments.
+ *    alternate data streams (any ':' after drive letter), POSIX /dev, /proc, /sys leading segments,
+ *    and any dot or dot-dot segments ('.' or '..') on both platforms.
  *
  * @param {string} path - Path to validate.
  * @param {string} [platform=process.platform] - Target platform ("win32" or posix).
@@ -42,6 +67,14 @@ export function checkPathString(path, platform = process.platform) {
     return { ok: false, code: "bad_path", reason: "UNC paths and device prefixes are not allowed" };
   }
 
+  // Reject any '.' or '..' segment on both platforms (callers must pass normalized absolute paths)
+  const segments = path.split(/[/\\]+/);
+  for (const seg of segments) {
+    if (seg === "." || seg === "..") {
+      return { ok: false, code: "bad_path", reason: "Path contains dot or dot-dot segments ('.' or '..')" };
+    }
+  }
+
   if (platform === "win32") {
     // Windows paths must be absolute drive paths (e.g. C:\... or C:/...)
     if (!/^[a-zA-Z]:[/\\]/.test(path)) {
@@ -54,7 +87,6 @@ export function checkPathString(path, platform = process.platform) {
     }
 
     // Windows device names in any path segment (case-insensitive, with extension or trailing dots/spaces)
-    const segments = path.split(/[/\\]+/);
     for (const seg of segments) {
       if (WIN_DEVICE_REGEX.test(seg)) {
         return { ok: false, code: "bad_path", reason: `Windows device name '${seg}' is not allowed` };
@@ -169,6 +201,189 @@ export function createDriveClassifier({
 const defaultDriveClassifierInstance = createDriveClassifier();
 
 /**
+ * Parse Linux /proc/self/mounts content into an array of { mountPoint, fsType }.
+ * Unescapes octal escapes such as \040 for spaces.
+ *
+ * @param {string} content
+ * @returns {Array<{ mountPoint: string, fsType: string }>}
+ */
+export function parseLinuxMounts(content) {
+  if (typeof content !== "string") return [];
+  const lines = content.split("\n");
+  const mounts = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length >= 3) {
+      const rawMountPoint = parts[1];
+      const fsType = parts[2];
+      const mountPoint = rawMountPoint.replace(/\\([0-7]{3})/g, (_, oct) =>
+        String.fromCharCode(parseInt(oct, 8))
+      );
+      mounts.push({ mountPoint, fsType });
+    }
+  }
+  return mounts;
+}
+
+/**
+ * Parse macOS / other POSIX `mount` command output lines:
+ * "... on <mountPoint> (<fsType>, ...)"
+ *
+ * @param {string} content
+ * @returns {Array<{ mountPoint: string, fsType: string }>}
+ */
+export function parseMacMounts(content) {
+  if (typeof content !== "string") return [];
+  const lines = content.split("\n");
+  const mounts = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = /^.+?\s+on\s+(.+?)\s+\(([^,\s)]+)/.exec(trimmed);
+    if (match) {
+      mounts.push({ mountPoint: match[1], fsType: match[2] });
+    }
+  }
+  return mounts;
+}
+
+/**
+ * Default reader for POSIX mounts.
+ *
+ * @param {string} [platform=process.platform]
+ * @returns {Promise<Array<{ mountPoint: string, fsType: string }>>}
+ */
+export async function defaultReadMounts(platform = process.platform) {
+  if (platform === "linux") {
+    const data = await fsPromises.readFile("/proc/self/mounts", "utf8");
+    return parseLinuxMounts(data);
+  }
+  return new Promise((resolve, reject) => {
+    execFile("mount", [], { timeout: 3000 }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(parseMacMounts(stdout));
+    });
+  });
+}
+
+/**
+ * Default stat dev function returning bigint dev.
+ *
+ * @param {string} mountPoint
+ * @returns {Promise<bigint>}
+ */
+export async function defaultStatDev(mountPoint) {
+  const s = await fsPromises.stat(mountPoint, { bigint: true });
+  return s.dev;
+}
+
+/**
+ * Create a POSIX mount classifier caching network filesystem device IDs.
+ *
+ * @param {object} [options]
+ * @param {function} [options.readMounts=defaultReadMounts]
+ * @param {function} [options.statDev=defaultStatDev]
+ * @param {function} [options.now=Date.now]
+ * @param {number} [options.ttlMs=60000]
+ * @returns {function(bigint): Promise<boolean>}
+ */
+export function createMountClassifier({
+  readMounts = defaultReadMounts,
+  statDev = defaultStatDev,
+  now = Date.now,
+  ttlMs = 60_000,
+} = {}) {
+  let cachedNetworkDevs = null;
+  let expiresAt = 0;
+  let inFlight = null;
+
+  async function getNetworkDevs() {
+    const currentTime = now();
+    if (cachedNetworkDevs && expiresAt > currentTime) {
+      return cachedNetworkDevs;
+    }
+    if (inFlight) {
+      return inFlight;
+    }
+
+    inFlight = (async () => {
+      try {
+        const mounts = await readMounts();
+        const devs = new Set();
+        for (const m of mounts) {
+          if (m && m.fsType && NETWORK_FS_TYPES.has(m.fsType.toLowerCase())) {
+            try {
+              const res = await statDev(m.mountPoint);
+              const dev = typeof res === "object" && res !== null && "dev" in res ? res.dev : res;
+              if (typeof dev === "bigint") {
+                devs.add(dev);
+              }
+            } catch {
+              // Ignore stat errors for unreachable/unmounted mounts
+            }
+          }
+        }
+        cachedNetworkDevs = devs;
+        expiresAt = now() + ttlMs;
+        return devs;
+      } finally {
+        inFlight = null;
+      }
+    })();
+
+    return inFlight;
+  }
+
+  async function isNetworkDev(dev) {
+    try {
+      const devs = await getNetworkDevs();
+      return devs.has(dev);
+    } catch {
+      // Fail closed: if readMounts fails or times out, treat as network filesystem
+      return true;
+    }
+  }
+
+  isNetworkDev.isNetworkDev = isNetworkDev;
+  return isNetworkDev;
+}
+
+const defaultMountClassifierInstance = createMountClassifier();
+
+let cachedForbiddenDevsPromise = null;
+
+/**
+ * Collect device IDs for /proc, /sys, /dev on POSIX, cached for the process.
+ *
+ * @param {object} [fs=fsPromises]
+ * @returns {Promise<Set<bigint>>}
+ */
+export async function getForbiddenDevs(fs = fsPromises) {
+  if (!cachedForbiddenDevsPromise) {
+    cachedForbiddenDevsPromise = (async () => {
+      const devs = new Set();
+      for (const p of ["/proc", "/sys", "/dev"]) {
+        try {
+          const s = await fs.stat(p, { bigint: true });
+          if (s && typeof s.dev === "bigint") {
+            devs.add(s.dev);
+          }
+        } catch {
+          // Optional: ignore ENOENT and access errors
+        }
+      }
+      return devs;
+    })();
+  }
+  return cachedForbiddenDevsPromise;
+}
+
+/**
  * Open an agent path safely following normative rules 1-4.
  *
  * @param {string} path - Path to open.
@@ -176,6 +391,10 @@ const defaultDriveClassifierInstance = createDriveClassifier();
  * @param {string} [deps.platform=process.platform]
  * @param {object} [deps.fs=fsPromises]
  * @param {function} [deps.classifyDrive]
+ * @param {function|Set<bigint>|Promise<Set<bigint>>} [deps.forbiddenDevs]
+ * @param {function} [deps.isNetworkDev]
+ * @param {function} [deps.readMounts]
+ * @param {function} [deps.statDev]
  * @param {number} [deps.timeoutMs=5000]
  * @returns {Promise<{ ok: true, handle: any, canonical: string, size: number, dev: bigint, ino: bigint } | { ok: false, code: string, reason: string }>}
  */
@@ -191,43 +410,46 @@ export async function openAgentPath(path, deps = {}) {
     return checkInitial;
   }
 
-  // 2. Classify drive letter on win32 before touching filesystem
-  let initialDrive = "";
-  if (platform === "win32") {
-    initialDrive = path[0].toUpperCase();
-    const driveStatus = await classifyDrive(initialDrive);
-    if (driveStatus !== "allowed") {
-      return { ok: false, code: "network_drive", reason: `Drive ${initialDrive}: is not an allowed local fixed/removable drive` };
-    }
-  }
-
-  // 3. Open first, then validate what was opened
   let timer;
   let timedOut = false;
   let handle = null;
   let handleClosed = false;
 
-  const closeHandle = async (h) => {
+  // Fire-and-forget handle closing on every failure path; never awaited by the result path
+  const closeHandleFireAndForget = (h) => {
     const target = h || handle;
     if (target && !handleClosed) {
       handleClosed = true;
       try {
-        await target.close();
+        const p = target.close();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {});
+        }
       } catch {}
     }
   };
 
-  try {
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        const err = new Error("Operation timed out");
-        err.code = "ETIMEDOUT";
-        reject(err);
-      }, timeoutMs);
-    });
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      closeHandleFireAndForget(handle);
+      resolve({ ok: false, code: "unreadable", reason: "Operation timed out" });
+    }, timeoutMs);
+  });
 
-    const executionPromise = (async () => {
+  const executionPromise = (async () => {
+    try {
+      // 2. Classify drive letter on win32 before touching filesystem
+      let initialDrive = "";
+      if (platform === "win32") {
+        initialDrive = path[0].toUpperCase();
+        const driveStatus = await classifyDrive(initialDrive);
+        if (timedOut) return;
+        if (driveStatus !== "allowed") {
+          return { ok: false, code: "network_drive", reason: `Drive ${initialDrive}: is not an allowed local fixed/removable drive` };
+        }
+      }
+
       const openFlags =
         platform === "win32"
           ? "r"
@@ -237,8 +459,8 @@ export async function openAgentPath(path, deps = {}) {
 
       const h = await fs.open(path, openFlags);
       if (timedOut) {
-        await closeHandle(h);
-        return null;
+        closeHandleFireAndForget(h);
+        return;
       }
       handle = h;
 
@@ -249,20 +471,27 @@ export async function openAgentPath(path, deps = {}) {
           : null;
 
       if (!realpathFn) {
-        await closeHandle();
+        closeHandleFireAndForget();
         return { ok: false, code: "unreadable", reason: "realpath function not available" };
       }
 
-      const canonical = await realpathFn(path);
+      let canonical = await realpathFn(path);
       if (timedOut) {
-        await closeHandle();
-        return null;
+        closeHandleFireAndForget();
+        return;
+      }
+
+      // Windows: strip extended-length prefix \\?\ from drive paths returned by realpath.native
+      if (platform === "win32" && typeof canonical === "string") {
+        if (canonical.startsWith("\\\\?\\") && /^[a-zA-Z]:[/\\]/.test(canonical.slice(4))) {
+          canonical = canonical.slice(4);
+        }
       }
 
       // Re-apply rule 2 to the canonical path
       const checkCanonical = checkPathString(canonical, platform);
       if (!checkCanonical.ok) {
-        await closeHandle();
+        closeHandleFireAndForget();
         return { ok: false, code: "bad_path", reason: checkCanonical.reason };
       }
 
@@ -271,37 +500,61 @@ export async function openAgentPath(path, deps = {}) {
         const canonicalDrive = canonical[0].toUpperCase();
         if (canonicalDrive !== initialDrive) {
           const canonicalClass = await classifyDrive(canonicalDrive);
+          if (timedOut) return;
           if (canonicalClass !== "allowed") {
-            await closeHandle();
+            closeHandleFireAndForget();
             return { ok: false, code: "network_drive", reason: `Canonical drive ${canonicalDrive}: is not an allowed local fixed/removable drive` };
           }
         }
       }
 
-      // Verify dev and ino agreement (bigint)
-      const [canonicalStat, handleStat] = await Promise.all([
-        fs.stat(canonical, { bigint: true }),
-        handle.stat({ bigint: true }),
-      ]);
-
+      // Inspect handle directly: decide on the handle, not on path names
+      const handleStat = await handle.stat({ bigint: true });
       if (timedOut) {
-        await closeHandle();
-        return null;
+        closeHandleFireAndForget();
+        return;
       }
 
-      if (canonicalStat.dev !== handleStat.dev || canonicalStat.ino !== handleStat.ino) {
-        await closeHandle();
-        return { ok: false, code: "changed", reason: "Device or inode mismatch between canonical path and opened handle" };
+      // Check forbidden POSIX filesystems (/proc, /sys, /dev) by device ID
+      if (platform !== "win32" || deps.forbiddenDevs !== undefined) {
+        let forbiddenDevs;
+        if (deps.forbiddenDevs !== undefined) {
+          const raw = typeof deps.forbiddenDevs === "function" ? await deps.forbiddenDevs() : await deps.forbiddenDevs;
+          forbiddenDevs = raw instanceof Set ? raw : new Set(raw);
+        } else {
+          forbiddenDevs = await getForbiddenDevs(fs);
+        }
+        if (timedOut) return;
+        if (forbiddenDevs && forbiddenDevs.has(handleStat.dev)) {
+          closeHandleFireAndForget();
+          return { ok: false, code: "bad_path", reason: "Handle device is a forbidden filesystem (/proc, /sys, /dev)" };
+        }
+      }
+
+      // Check network filesystems by device ID
+      if (platform !== "win32" || deps.isNetworkDev !== undefined || deps.readMounts !== undefined) {
+        const isNetDev = deps.isNetworkDev ?? (deps.readMounts ? createMountClassifier({ readMounts: deps.readMounts, statDev: deps.statDev }) : defaultMountClassifierInstance);
+        let isNet = false;
+        try {
+          isNet = await isNetDev(handleStat.dev);
+        } catch {
+          isNet = true; // fail closed
+        }
+        if (timedOut) return;
+        if (isNet) {
+          closeHandleFireAndForget();
+          return { ok: false, code: "network_drive", reason: "Path is on a network drive" };
+        }
       }
 
       // Rule 4: regular file and size <= 4 GiB
       if (!handleStat.isFile()) {
-        await closeHandle();
+        closeHandleFireAndForget();
         return { ok: false, code: "not_a_file", reason: "Opened path is not a regular file" };
       }
 
       if (handleStat.size > BigInt(MAX_AGENT_FILE_BYTES)) {
-        await closeHandle();
+        closeHandleFireAndForget();
         return { ok: false, code: "too_large", reason: `File size exceeds maximum allowed of ${MAX_AGENT_FILE_BYTES} bytes` };
       }
 
@@ -313,37 +566,29 @@ export async function openAgentPath(path, deps = {}) {
         dev: handleStat.dev,
         ino: handleStat.ino,
       };
-    })();
+    } catch (err) {
+      closeHandleFireAndForget();
+      if (err?.code === "ENOENT") {
+        return { ok: false, code: "not_found", reason: err.message };
+      }
+      if (err?.code === "EISDIR") {
+        return { ok: false, code: "not_a_file", reason: err.message };
+      }
+      return { ok: false, code: "unreadable", reason: err?.message || String(err) };
+    }
+  })();
 
-    executionPromise.catch(() => {});
-
+  try {
     const result = await Promise.race([executionPromise, timeoutPromise]);
-    clearTimeout(timer);
     return result;
-  } catch (err) {
+  } finally {
     clearTimeout(timer);
-    await closeHandle();
-
-    if (err?.code === "ENOENT") {
-      return { ok: false, code: "not_found", reason: err.message };
-    }
-    if (err?.code === "EISDIR") {
-      return { ok: false, code: "not_a_file", reason: err.message };
-    }
-    if (err?.code === "EPERM") {
-      try {
-        const s = await fs.stat(path);
-        if (s.isDirectory()) {
-          return { ok: false, code: "not_a_file", reason: "Path is a directory" };
-        }
-      } catch {}
-    }
-    return { ok: false, code: "unreadable", reason: err?.message || String(err) };
   }
 }
 
 /**
  * Scoped store for agent file grants.
+ * Enforces an aggregate limit of 256 agent file handles across all scopes.
  */
 export class AgentGrantStore {
   /** @type {Map<string, { closed: boolean, tokens: Set<string>, handles: Set<any> }>} */
@@ -368,6 +613,8 @@ export class AgentGrantStore {
 
   /**
    * Grant access to an opened file handle within a scope.
+   * Throws an error with code: "busy" when 256 handles are already held across all scopes.
+   *
    * @param {string} scopeId - Scope id returned by openScope.
    * @param {{ handle: any, canonical: string, size: number }} opened - Opened handle record.
    * @returns {string} 16-byte random hex grant token.
@@ -377,46 +624,65 @@ export class AgentGrantStore {
     if (!scope || scope.closed) {
       throw new Error(`Scope '${scopeId}' is invalid or closed`);
     }
+
+    if (this.#byToken.size >= MAX_AGENT_HANDLES) {
+      const err = new Error(`Aggregate agent handle limit (${MAX_AGENT_HANDLES}) reached`);
+      err.code = "busy";
+      throw err;
+    }
+
     const token = randomBytes(16).toString("hex");
     const entry = {
-      handle: opened.handle,
-      canonical: opened.canonical,
-      size: opened.size,
+      handle: opened?.handle,
+      canonical: opened?.canonical,
+      size: opened?.size,
       scopeId,
     };
     this.#byToken.set(token, entry);
     scope.tokens.add(token);
-    if (opened.handle) {
+    if (opened?.handle) {
       scope.handles.add(opened.handle);
     }
     return token;
   }
 
   /**
-   * Retrieve a grant record by token. Rejects malformed tokens.
+   * Retrieve a grant record by token. Requires scopeId and returns undefined
+   * unless the token belongs to that specific scope.
+   *
    * @param {string} token
+   * @param {string} scopeId
    * @returns {{ handle: any, canonical: string, size: number, scopeId: string } | undefined}
    */
-  get(token) {
+  get(token, scopeId) {
     if (typeof token !== "string" || !/^[0-9a-f]{32}$/.test(token)) {
       return undefined;
     }
-    return this.#byToken.get(token);
+    if (typeof scopeId !== "string" || !scopeId) {
+      return undefined;
+    }
+    const entry = this.#byToken.get(token);
+    if (!entry || entry.scopeId !== scopeId) {
+      return undefined;
+    }
+    return entry;
   }
 
   /**
    * Check whether a token belongs to a specific scope.
+   *
    * @param {string} token
    * @param {string} scopeId
    * @returns {boolean}
    */
   inScope(token, scopeId) {
-    const entry = this.get(token);
-    return Boolean(entry && entry.scopeId === scopeId);
+    const entry = this.get(token, scopeId);
+    return Boolean(entry);
   }
 
   /**
    * Close every handle belonging to a scope, remove its tokens, and mark it closed. Idempotent.
+   *
    * @param {string} scopeId
    * @returns {Promise<void>}
    */
@@ -447,6 +713,7 @@ export class AgentGrantStore {
 
   /**
    * Close all active scopes and their open handles.
+   *
    * @returns {Promise<void>}
    */
   async closeAll() {
