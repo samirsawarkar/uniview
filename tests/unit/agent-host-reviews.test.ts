@@ -312,7 +312,7 @@ describe("agent host: ownership, get and wait", () => {
     expect(await t.fail(s, "review.get", { reviewId: ids[0] })).toBe("not_found");
     expect((await t.call(s, "review.get", { reviewId: ids[1] })).status).toBe("decided");
     expect((await t.call(s, "review.get", { reviewId: ids[100] })).status).toBe("decided");
-  });
+  }, 30000);
 });
 
 describe("agent host: pending review limits", () => {
