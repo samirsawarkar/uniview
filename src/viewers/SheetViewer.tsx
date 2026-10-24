@@ -19,7 +19,7 @@ export interface Grid {
   colWidth(c: number): number;
 }
 
-function toGrid(s: ParsedSheet): Grid {
+export function toGrid(s: ParsedSheet): Grid {
   return {
     name: s.name,
     rows: s.rows,
@@ -28,6 +28,16 @@ function toGrid(s: ParsedSheet): Grid {
     cell: (r, c) => s.cells[r]?.[c] ?? "",
     colWidth: (c) => s.colWidths[c] ?? DEFAULT_COL_W,
   };
+}
+
+/** Shown when the sheet had more rows than fit the parse budget. */
+export function SheetTruncatedNotice({ sheet }: { sheet?: ParsedSheet }) {
+  if (!sheet || sheet.totalRows === undefined) return null;
+  return (
+    <p className="sheet-truncated" role="status">
+      Showing the first {sheet.rows.toLocaleString()} of {sheet.totalRows.toLocaleString()} rows.
+    </p>
+  );
 }
 
 export function parseWorkbook(
@@ -58,7 +68,8 @@ export function parseWorkbook(
     }
   }
 
-  return new Promise<ParsedSheet[]>((resolve, reject) => {
+  return new Promise<ParsedSheet[]>((
+resolve, reject) => {
     let settled = false;
 
     const cleanup = () => {
@@ -115,6 +126,7 @@ export default function SheetViewer({ source, detection, onReady }: ViewerProps)
   const grids = useMemo(() => (sheets ? sheets.map(toGrid) : []), [sheets]);
   useReady(!!sheets, onReady);
   if (!sheets) return <Loading label="Reading workbook…" />;
+  const activeSheet = sheets[Math.min(active, sheets.length - 1)];
   const grid = grids[Math.min(active, grids.length - 1)];
   return (
     <div className="viewer sheet-viewer">
@@ -123,6 +135,7 @@ export default function SheetViewer({ source, detection, onReady }: ViewerProps)
         <Spacer />
         <span className="muted small">{detection.label}</span>
       </Toolbar>
+      <SheetTruncatedNotice sheet={activeSheet} />
       {grid && grid.rows > 0 ? <VirtualGrid key={active} grid={grid} /> : <div className="center-msg">This sheet is empty.</div>}
       {grids.length > 1 && (
         <div className="sheet-tabs" role="tablist">
@@ -163,9 +176,11 @@ export function VirtualGrid({ grid }: { grid: Grid }) {
     if (!el) return;
     const update = () => setView({ top: el.scrollTop, left: el.scrollLeft, w: el.clientWidth, h: el.clientHeight });
     update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
   }, []);
 
   const r0 = Math.max(0, Math.floor(view.top / ROW_H) - 5);

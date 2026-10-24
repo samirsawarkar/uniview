@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { zipSync, unzipSync, strToU8, strFromU8 } from "fflate";
-import { parseSpreadsheet } from "../../src/viewers/sheet-parse";
+import { parseSpreadsheet, MAX_GRID_SLOTS } from "../../src/viewers/sheet-parse";
 import { CorruptFileError } from "../../src/core/errors";
 
 /** Rewrite the declared uncompressed size of every central-directory entry named `name`. */
@@ -110,7 +110,7 @@ describe("pure spreadsheet parsing", () => {
     expect(() => parseSpreadsheet(new Uint8Array(ab), { ext: "xlsx" })).toThrow(CorruptFileError);
   });
 
-  it("rejects a huge sparse XLSX rectangle exceeding grid slot budget", () => {
+  it("truncates a huge sparse XLSX rectangle to the grid slot budget", () => {
     const wb = XLSX.utils.book_new();
     const ws: XLSX.WorkSheet = {
       "!ref": "A1:Z100000", // 26 * 100,000 = 2,600,000 slots (> 500,000)
@@ -119,10 +119,14 @@ describe("pure spreadsheet parsing", () => {
     };
     XLSX.utils.book_append_sheet(wb, ws, "HugeSparse");
     const xlsxBytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
-    expect(() => parseSpreadsheet(xlsxBytes, { ext: "xlsx" })).toThrow(CorruptFileError);
+    // Never allocates past the budget: 26 columns leave room for 19 230 rows of the 100 000.
+    const [sheet] = parseSpreadsheet(xlsxBytes, { ext: "xlsx" });
+    expect(sheet!.rows * sheet!.cols).toBeLessThanOrEqual(MAX_GRID_SLOTS);
+    expect(sheet!.cells.length).toBe(Math.floor(MAX_GRID_SLOTS / 26));
+    expect(sheet!.totalRows).toBe(100_000);
   });
 
-  it("rejects aggregate grid expansion across multiple sheets exceeding budget", () => {
+  it("keeps aggregate grid expansion across multiple sheets within the budget", () => {
     const wb = XLSX.utils.book_new();
     // 6 sheets each with 100,000 slots (10 cols x 10,000 rows), total = 600,000 slots (> 500,000)
     for (let i = 1; i <= 6; i++) {
@@ -134,7 +138,12 @@ describe("pure spreadsheet parsing", () => {
       XLSX.utils.book_append_sheet(wb, ws, `Sheet${i}`);
     }
     const xlsxBytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
-    expect(() => parseSpreadsheet(xlsxBytes, { ext: "xlsx" })).toThrow(CorruptFileError);
+    // Five sheets fill the budget; the sixth gets no rows but reports its size.
+    const sheets = parseSpreadsheet(xlsxBytes, { ext: "xlsx" });
+    expect(sheets.reduce((n, s) => n + s.rows * s.cols, 0)).toBeLessThanOrEqual(MAX_GRID_SLOTS);
+    expect(sheets.slice(0, 5).every((s) => s.rows === 10_000 && s.totalRows === undefined)).toBe(true);
+    expect(sheets[5]!.rows).toBe(0);
+    expect(sheets[5]!.totalRows).toBe(10_000);
   });
 
   it("allows normal 50,001-row x 3 workbook within budget", () => {
