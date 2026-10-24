@@ -7,6 +7,11 @@ import { constants } from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 
+/** PowerShell from System32, never from PATH. */
+export function powershellPath(env = process.env) {
+  return path.join(env.SystemRoot || env.SYSTEMROOT || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
 export const MAX_AGENT_PATH = 4096;
 export const MAX_AGENT_FILE_BYTES = 4 * 1024 ** 3; // 4 GiB = 4,294,967,296 bytes
 export const MAX_AGENT_HANDLES = 256;
@@ -123,7 +128,7 @@ export async function defaultDriveLookup(letter) {
   const cmd = `(Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${upper}:'").DriveType`;
   return new Promise((resolve) => {
     execFile(
-      path.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      powershellPath(),
       ["-NoProfile", "-NonInteractive", "-Command", cmd],
       { timeout: 3000 },
       (error, stdout) => {
@@ -441,7 +446,7 @@ export async function defaultListDrives() {
   const cmd = "Get-CimInstance Win32_LogicalDisk | ForEach-Object { $_.DeviceID + ',' + $_.DriveType }";
   return new Promise((resolve, reject) => {
     execFile(
-      path.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      powershellPath(),
       ["-NoProfile", "-NonInteractive", "-Command", cmd],
       { timeout: 3000 },
       (error, stdout) => {

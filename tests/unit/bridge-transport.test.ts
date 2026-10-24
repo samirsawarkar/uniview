@@ -10,11 +10,13 @@ import { Duplex } from "node:stream";
 // @ts-expect-error plain ESM module without types
 import { BridgeError, encodeFrame, FrameDecoder, clientProof, serverProof } from "../../electron/lib/bridge-proto.mjs";
 // @ts-expect-error plain ESM module without types
-import { ensureBridgeDir, ensureBridgeKey, readBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint, parseIcaclsEntries, currentWindowsAccount } from "../../electron/lib/bridge-key.mjs";
+import { ensureBridgeDir, ensureBridgeKey, readBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint, parseIcaclsEntries, currentWindowsAccount, resolveTool } from "../../electron/lib/bridge-key.mjs";
 // @ts-expect-error plain ESM module without types
 import { startBridgeServer, attachSocketGuards, createAuthFailureLogger, defaultAuthFailureLogger } from "../../electron/lib/bridge-server.mjs";
 // @ts-expect-error plain ESM module without types
 import { connectBridge } from "../../electron/lib/bridge-client.mjs";
+// @ts-expect-error plain ESM module without types
+import { powershellPath } from "../../electron/lib/agent-paths.mjs";
 
 async function makeTestDir(): Promise<string> {
   const base = process.platform === "win32" ? "I:\\AES\\tmp" : path.join(os.tmpdir(), "aes-test");
@@ -1248,7 +1250,8 @@ describe("bridge transport", () => {
     const bridgeDir = path.join(tmpUserData, "bridge");
     await fs.mkdir(bridgeDir, { recursive: true });
 
-    const mockExecFile = vi.fn((file, args, cb) => {
+    const mockExecFile = vi.fn((file: any, args: any, cb: any) => {
+      if (file === "whoami") return cb(null, '"desktop\\alice","S-1-5-21-1-2-3-1001"\r\n', "");
       const stdout = `${bridgeDir} OTHERDOMAIN\\alice:(OI)(CI)(F)\r\n`;
       cb(null, stdout, "");
     });
@@ -1257,8 +1260,8 @@ describe("bridge transport", () => {
       ensureBridgeDir(tmpUserData, {
         platform: "win32",
         execFile: mockExecFile,
-        accountName: "DESKTOP\\alice",
-        userSid: "S-1-5-21-1-2-3-1001",
+        username: "alice",
+        accountName: "alice",
       })
     ).rejects.toMatchObject({ code: "bad_dir" });
   });
@@ -1270,7 +1273,8 @@ describe("bridge transport", () => {
     const secret = crypto.randomBytes(32);
     await fs.writeFile(keyPath, secret);
 
-    const mockExecOtherDomain = vi.fn((file, args, cb) => {
+    const mockExecOtherDomain = vi.fn((file: any, args: any, cb: any) => {
+      if (file === "whoami") return cb(null, '"desktop\\alice","S-1-5-21-1-2-3-1001"\r\n', "");
       cb(null, `${keyPath} OTHERDOMAIN\\alice:(F)\r\n`, "");
     });
 
@@ -1278,8 +1282,8 @@ describe("bridge transport", () => {
       readBridgeKey(tmpDir, {
         platform: "win32",
         execFile: mockExecOtherDomain,
-        accountName: "DESKTOP\\alice",
-        userSid: "S-1-5-21-1-2-3-1001",
+        username: "alice",
+        accountName: "alice",
       })
     ).rejects.toMatchObject({ code: "bad_key_perms" });
 
@@ -1353,5 +1357,27 @@ describe("bridge transport", () => {
     } finally {
       getuidSpy?.mockRestore();
     }
+  });
+
+  it("a bare short name never identifies the account, even when passed as an option", async () => {
+    // Mutation caught: promoting `username` / a short `accountName` to the expected identity.
+    const tmpDir = await makeTestDir();
+    const keyPath = path.join(tmpDir, "key");
+    await fs.writeFile(keyPath, crypto.randomBytes(32));
+    const exec = vi.fn((file: any, args: any, cb: any) => {
+      if (file === "whoami") return cb(null, '"desktop\\alice","S-1-5-21-1-2-3-1001"\r\n', "");
+      cb(null, `${keyPath} alice:(F)\r\n`, "");
+    });
+    await expect(readBridgeKey(tmpDir, { platform: "win32", execFile: exec, username: "alice" })).rejects.toMatchObject({ code: "bad_key_perms" });
+    await expect(readBridgeKey(tmpDir, { platform: "win32", execFile: exec, accountName: "alice" })).rejects.toMatchObject({ code: "bad_key_perms" });
+  });
+
+  it("Windows security tools run from System32, not from PATH", () => {
+    // Mutation caught: resolving icacls / whoami / powershell through PATH.
+    const env = { SystemRoot: "C:\\Windows", PATH: "C:\\evil" };
+    expect(resolveTool("icacls", "win32", env)).toBe(path.join("C:\\Windows", "System32", "icacls.exe"));
+    expect(resolveTool("whoami", "win32", env)).toBe(path.join("C:\\Windows", "System32", "whoami.exe"));
+    expect(resolveTool("whoami", "linux", env)).toBe("whoami");
+    expect(powershellPath(env)).toBe(path.join("C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"));
   });
 });

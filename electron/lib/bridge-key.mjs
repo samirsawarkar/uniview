@@ -13,9 +13,19 @@ export function systemToolPath(name, env = process.env) {
   return path.join(root, "System32", name + ".exe");
 }
 
-/** Default executor: icacls and whoami resolve to System32 on Windows; tests inject their own executor. */
+/** A DOMAIN\\user name, or undefined: a bare short name never identifies an account. */
+function fullAccountName(name) {
+  return typeof name === "string" && name.includes("\\") ? name : undefined;
+}
+
+/** The program actually run for `file`: icacls and whoami come from System32 on Windows, never from PATH. */
+export function resolveTool(file, platform = process.platform, env = process.env) {
+  return platform === "win32" && (file === "icacls" || file === "whoami") ? systemToolPath(file, env) : file;
+}
+
+/** Default executor; tests inject their own executor. */
 function defaultExecFile(file, args, cb) {
-  const resolved = process.platform === "win32" && (file === "icacls" || file === "whoami") ? systemToolPath(file) : file;
+  const resolved = resolveTool(file);
   return nodeExecFile(resolved, args, { windowsHide: true, timeout: 10_000 }, cb);
 }
 const defaultRandomBytes = crypto.randomBytes;
@@ -210,7 +220,7 @@ async function verifyWindowsAcl(targetPath, {
   }
 
   // Only the full DOMAIN\user name or the SID identify the account; a bare short name never does.
-  let expectedName = accountName;
+  let expectedName = fullAccountName(accountName);
   let expectedSid = userSid;
 
   if (!expectedSid) {
@@ -278,7 +288,7 @@ export async function ensureBridgeDir(userDataDir, {
     }
 
     let sid = userSid;
-    let name = accountName || username;
+    let name = fullAccountName(accountName);
     if (!sid) {
       try {
         const acct = await currentWindowsAccount({ execFile });
@@ -437,7 +447,7 @@ export async function ensureBridgeKey(bridgeDir, {
   try {
     if (platform === "win32") {
       let sid = userSid;
-      let name = accountName || username;
+      let name = fullAccountName(accountName);
       if (!sid) {
         try {
           const acct = await currentWindowsAccount({ execFile });
