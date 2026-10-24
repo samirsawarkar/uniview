@@ -4,13 +4,15 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
+import { spawn } from "node:child_process";
+import { Duplex } from "node:stream";
 
 // @ts-expect-error plain ESM module without types
-import { BridgeError, encodeFrame, FrameDecoder, clientProof } from "../../electron/lib/bridge-proto.mjs";
+import { BridgeError, encodeFrame, FrameDecoder, clientProof, serverProof } from "../../electron/lib/bridge-proto.mjs";
 // @ts-expect-error plain ESM module without types
-import { ensureBridgeDir, ensureBridgeKey, readBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint } from "../../electron/lib/bridge-key.mjs";
+import { ensureBridgeDir, ensureBridgeKey, readBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint, parseIcaclsEntries } from "../../electron/lib/bridge-key.mjs";
 // @ts-expect-error plain ESM module without types
-import { startBridgeServer } from "../../electron/lib/bridge-server.mjs";
+import { startBridgeServer, attachSocketGuards, createAuthFailureLogger, defaultAuthFailureLogger } from "../../electron/lib/bridge-server.mjs";
 // @ts-expect-error plain ESM module without types
 import { connectBridge } from "../../electron/lib/bridge-client.mjs";
 
@@ -91,43 +93,58 @@ describe("bridge transport", () => {
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
-  it("ensures fake server cannot learn the client proof", async () => {
-    // Mutation: client sending proof frame to an unauthenticated/spoofed server before server proof verification
+  it("fake server cannot authenticate to client without key", async () => {
+    // Mutation comment: Fails if the client stops verifying the server proof.
     const testDir = await makeTestDir();
     const endpoint = makeEndpoint(testDir);
-    const goodKey = crypto.randomBytes(32);
-    const fakeKey = crypto.randomBytes(32);
+    const clientKey = crypto.randomBytes(32);
+    const wrongServerKey = crypto.randomBytes(32);
 
-    const recordedChunks: Buffer[] = [];
-    const fakeServer = net.createServer((sock) => {
+    let proofFrameReceived = false;
+    let serverSocket: net.Socket | undefined;
+
+    const server = net.createServer((socket) => {
+      serverSocket = socket;
       const decoder = new FrameDecoder();
-      sock.on("data", (chunk: Buffer) => {
-        recordedChunks.push(chunk);
+      socket.on("data", (chunk) => {
         try {
           const frames = decoder.push(chunk);
-          for (const f of frames) {
-            if (f.header.t === "hello") {
-              const serverNonce = crypto.randomBytes(32).toString("hex");
-              const hmac = crypto.createHmac("sha256", fakeKey);
-              hmac.update(Buffer.from(f.header.clientNonce, "hex"));
-              hmac.update(Buffer.from(serverNonce, "hex"));
-              const serverProof = hmac.digest("hex");
-              sock.write(encodeFrame({ t: "challenge", serverNonce, serverProof }));
+          for (const frame of frames) {
+            if (frame.header?.t === "hello") {
+              const clientNonce = Buffer.from(frame.header.clientNonce, "base64");
+              const serverNonce = crypto.randomBytes(32);
+              const proof = serverProof(wrongServerKey, clientNonce, serverNonce);
+              socket.write(
+                encodeFrame({
+                  t: "challenge",
+                  serverNonce: serverNonce.toString("base64"),
+                  serverProof: proof.toString("base64"),
+                })
+              );
+            } else if (frame.header?.t === "proof") {
+              proofFrameReceived = true;
             }
           }
         } catch {}
       });
     });
 
-    await new Promise<void>((resolve) => fakeServer.listen(endpoint, () => resolve()));
+    await new Promise<void>((resolve) => server.listen(endpoint, () => resolve()));
 
-    await expect(connectBridge({ endpoint, key: goodKey, handshakeTimeoutMs: 1000 })).rejects.toThrow();
+    await expect(
+      connectBridge({
+        endpoint,
+        key: clientKey,
+        handshakeTimeoutMs: 1000,
+      })
+    ).rejects.toThrow(expect.objectContaining({ code: "auth_failed" }));
 
-    const recordedStr = Buffer.concat(recordedChunks).toString("utf8");
-    expect(recordedStr.includes('"proof"')).toBe(false);
+    expect(proofFrameReceived).toBe(false);
 
-    await new Promise<void>((resolve) => fakeServer.close(() => resolve()));
-    await fs.rm(testDir, { recursive: true, force: true });
+    if (serverSocket) {
+      serverSocket?.destroy();
+    }
+    await new Promise((resolve) => server.close(resolve));
   });
 
   it("handles squatter / endpoint in use correctly", async () => {
@@ -151,17 +168,6 @@ describe("bridge transport", () => {
         expect.objectContaining({ code: "endpoint_not_ours" })
       );
       await fs.unlink(endpoint);
-
-      const staleServer = net.createServer();
-      await new Promise<void>((resolve) => staleServer.listen(endpoint, () => resolve()));
-      await new Promise<void>((resolve) => staleServer.close(() => resolve()));
-
-      const server = await startBridgeServer({ endpoint, key, onRequest: async () => ({ result: "ok" }) });
-      const client = await connectBridge({ endpoint, key });
-      const res = await client.request("test");
-      expect(res.result).toBe("ok");
-      await client.close();
-      await server.close();
     }
 
     await fs.rm(testDir, { recursive: true, force: true });
@@ -367,9 +373,11 @@ describe("bridge transport", () => {
 
     const winBridgeDir = path.join(testDir, "win-bridge");
     await fs.mkdir(winBridgeDir, { recursive: true });
-    const mockExec = vi.fn().mockImplementation((_cmd, _args, cb) => {
-      if (cb) cb(null, "", "");
-      return Promise.resolve("");
+    const mockExec = vi.fn().mockImplementation((_cmd: string, args: string[], cb?: any) => {
+      // `icacls <path>` (verification) lists one owner-only entry; the grant call prints nothing.
+      const out = args.length === 1 ? `${args[0]} alice:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\r\n` : "";
+      if (cb) cb(null, out, "");
+      return Promise.resolve(out);
     });
 
     const winKey = await ensureBridgeKey(winBridgeDir, {
@@ -378,11 +386,10 @@ describe("bridge transport", () => {
       username: "alice",
     });
     expect(winKey.length).toBe(32);
-    expect(mockExec).toHaveBeenCalledWith(
-      "icacls",
-      [path.join(winBridgeDir, "key"), "/inheritance:r", "/grant:r", "alice:F"],
-      expect.any(Function)
-    );
+    // The ACL is applied to the empty temp file before the secret is written, then verified.
+    const grantCalls = mockExec.mock.calls.filter((c: any[]) => c[0] === "icacls" && c[1].includes("/grant:r"));
+    expect(grantCalls.length).toBeGreaterThan(0);
+    expect(grantCalls.some((c: any[]) => c[1].slice(1).join(" ") === "/inheritance:r /grant:r alice:F")).toBe(true);
 
     const winBridgeDirFail = path.join(testDir, "win-bridge-fail");
     await fs.mkdir(winBridgeDirFail, { recursive: true });
@@ -503,6 +510,667 @@ describe("bridge transport", () => {
     expect(frames[1]?.t).toBe("ready");
     expect(frames[2]).toMatchObject({ t: "res", id: 1, ok: true, result: { echo: "ping" } });
     sock.destroy();
+    await server.close();
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("handles stale socket on POSIX", async () => {
+    // Mutation comment: Fails if startBridgeServer unlinks an endpoint without verifying dev/ino identity, or fails to clean up a dead socket.
+    if (process.platform === "win32") return;
+
+    const testDir = await makeTestDir();
+    const sockPath = path.join(testDir, "stale.sock");
+    const key = crypto.randomBytes(32);
+
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require('net').createServer().listen(process.argv[1]); setInterval(()=>{},1000)",
+        sockPath,
+      ],
+      { stdio: "ignore" }
+    );
+
+    let ready = false;
+    for (let i = 0; i < 50; i++) {
+      try {
+        const st = await fs.lstat(sockPath);
+        if (st.isSocket()) {
+          ready = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(ready).toBe(true);
+
+    child.kill("SIGKILL");
+    await new Promise((resolve) => child.on("exit", resolve));
+
+    const server = await startBridgeServer({
+      endpoint: sockPath,
+      key,
+      onRequest: async () => ({ result: "ok" }),
+    });
+    expect(server.connectionCount()).toBe(0);
+    await server.close();
+
+    await fs.writeFile(sockPath, "regular file content");
+    await expect(
+      startBridgeServer({
+        endpoint: sockPath,
+        key,
+        onRequest: async () => ({ result: "ok" }),
+      })
+    ).rejects.toThrow(expect.objectContaining({ code: "endpoint_not_ours" }));
+
+    await fs.unlink(sockPath).catch(() => {});
+  });
+
+  it("Windows key with inherited ACL throws bad_key_perms", async () => {
+    // Mutation comment: Fails if readBridgeKey does not reject keys with inherited Windows ACL entries.
+    if (process.platform !== "win32") return;
+    const testDir = await makeTestDir();
+    const keyPath = path.join(testDir, "key");
+    await fs.writeFile(keyPath, crypto.randomBytes(32));
+    await expect(
+      readBridgeKey(testDir, { platform: "win32" })
+    ).rejects.toThrow(expect.objectContaining({ code: "bad_key_perms" }));
+  });
+
+  it("parseIcaclsEntries parses sample icacls output including (I), (OI)(CI), and *S-1- forms", () => {
+    // Mutation comment: Fails if parseIcaclsEntries fails to extract principals, rights, and inheritance flags correctly.
+    const sample = `
+  C:\\bridge\\key NT AUTHORITY\\SYSTEM:(I)(F)
+                  BUILTIN\\Administrators:(I)(F)
+                  DESKTOP-TEST\\Alice:(F)
+                  *S-1-5-21-123456789-1001:(OI)(CI)(F)
+  Successfully processed 1 files; Failed processing 0 files
+  `;
+    const entries = parseIcaclsEntries(sample, "C:\\bridge\\key");
+    expect(entries).toEqual([
+      { principal: "NT AUTHORITY\\SYSTEM", rights: "(F)", inherited: true },
+      { principal: "BUILTIN\\Administrators", rights: "(F)", inherited: true },
+      { principal: "DESKTOP-TEST\\Alice", rights: "(F)", inherited: false },
+      { principal: "*S-1-5-21-123456789-1001", rights: "(OI)(CI)(F)", inherited: false },
+    ]);
+  });
+
+  it("ensureBridgeKey writes secret only after ACL check passes", async () => {
+    // Mutation comment: Fails if secret bytes are written to disk before ACL permissions are established and verified.
+    const testDir = await makeTestDir();
+    const operations: any[] = [];
+
+    const mockFs = {
+      ...fs,
+      stat: async (p: any) => {
+        operations.push(`stat:${path.basename(p)}`);
+        return fs.stat(p);
+      },
+      writeFile: async (p: any, data: any, opts: any) => {
+        const isBuffer = Buffer.isBuffer(data);
+        const len = isBuffer ? data.length : typeof data === "string" ? Buffer.byteLength(data) : 0;
+        operations.push(`writeFile:${path.basename(p)}:len=${len}`);
+        return fs.writeFile(p, data, opts);
+      },
+      rename: async (src: any, dst: any) => {
+        operations.push(`rename:${path.basename(src)}->${path.basename(dst)}`);
+        return fs.rename(src, dst);
+      },
+    };
+
+    const mockExecFile = (file: any, args: any, cb: any) => {
+      operations.push(`execFile:${file}:${args[1] || ""}`);
+      if (file === "icacls" && args.length === 1) operations.push(`verify:${path.basename(args[0])}`);
+      if (file === "icacls") {
+        if (args[1] === "/inheritance:r") {
+          cb(null, "processed 1 files", "");
+        } else {
+          const target = args[0];
+          cb(null, `${target} USER:(F)\nSuccessfully processed 1 files;`, "");
+        }
+        return;
+      }
+      cb(null, "", "");
+    };
+
+    await ensureBridgeKey(testDir, {
+      platform: "win32",
+      fs: mockFs,
+      execFile: mockExecFile,
+      username: "USER",
+    });
+
+    const emptyWriteIdx = operations.findIndex((op) => op.includes("writeFile") && op.includes("len=0"));
+    const icaclsCheckIdx = operations.findLastIndex((op) => op.includes("execFile:icacls"));
+    const secretWriteIdx = operations.findIndex((op) => op.includes("writeFile") && op.includes("len=32"));
+    const renameIdx = operations.findIndex((op) => op.includes("rename"));
+    // Mutation caught: writing the secret before the temp file's ACL was verified.
+    const tempVerifyIdx = operations.findIndex((op) => op.startsWith("verify:") && op !== "verify:key");
+    expect(tempVerifyIdx).toBeGreaterThanOrEqual(0);
+    expect(tempVerifyIdx).toBeLessThan(secretWriteIdx);
+
+    expect(emptyWriteIdx).toBeGreaterThanOrEqual(0);
+    expect(icaclsCheckIdx).toBeGreaterThan(emptyWriteIdx);
+    expect(secretWriteIdx).toBeGreaterThan(icaclsCheckIdx);
+    expect(renameIdx).toBeGreaterThan(secretWriteIdx);
+  });
+
+  it("hostile 9th connection that never reads or closes is destroyed within ~1s and does not appear in connectionCount", async () => {
+    // Mutation comment: Fails if over-limit rejected connections leak into connectionCount or fail to be destroyed on timeout.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      maxConnections: 8,
+      onRequest: async () => ({ result: "ok" }),
+    });
+
+    const clients = [];
+    for (let i = 0; i < 8; i++) {
+      clients.push(await connectBridge({ endpoint, key }));
+    }
+    expect(server.connectionCount()).toBe(8);
+
+    // Fill the separate handshake slots with silent sockets, then the 9th unauthenticated one is over the limit.
+    const silent: net.Socket[] = [];
+    for (let i = 0; i < 8; i++) {
+      const sk = net.connect(endpoint);
+      sk.on("error", () => {});
+      silent.push(sk);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    const hostileSocket = net.connect(endpoint);
+    hostileSocket.on("error", () => {});
+    expect(server.connectionCount()).toBe(8);
+
+    // The hostile peer reads nothing for 1.2 s (a non-reading client never sees "close" locally); then it resumes
+    // and must find the connection already closed by the server.
+    await new Promise((r) => setTimeout(r, 1200));
+    const closedAfterResume = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 300);
+      hostileSocket.once("close", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+      hostileSocket.resume();
+    });
+
+    expect(closedAfterResume).toBe(true);
+    expect(hostileSocket.destroyed).toBe(true);
+    expect(server.connectionCount()).toBe(8);
+    for (const sk of silent) sk.destroy();
+
+    for (const c of clients) {
+      await c.close();
+    }
+    await server.close();
+  });
+
+  it("handshakes have their own slots: 7 sessions plus 8 silent handshakes are all accepted", async () => {
+    // Mutation caught: counting handshakes and sessions in one pool (the 9th connection overall would get busy).
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      maxConnections: 8,
+      maxHandshakes: 8,
+      handshakeTimeoutMs: 5000,
+      onRequest: async () => ({ result: "ok" }),
+    });
+    const clients: any[] = [];
+    for (let i = 0; i < 7; i++) clients.push(await connectBridge({ endpoint, key }));
+    const busySeen: boolean[] = [];
+    const raws = Array.from({ length: 8 }, (_, i) => {
+      const sk = net.connect(endpoint);
+      sk.on("error", () => {});
+      const dec = new FrameDecoder();
+      busySeen[i] = false;
+      sk.on("data", (chunk: Buffer) => {
+        for (const f of dec.push(chunk)) if (f.header?.code === "busy") busySeen[i] = true;
+      });
+      return sk;
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(busySeen.every((b) => b === false)).toBe(true);
+    for (const c of clients) expect((await c.request("ping")).result).toBe("ok");
+    for (const sk of raws) sk.destroy();
+    for (const c of clients) await c.close();
+    await server.close();
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("attachSocketGuards prevents unhandled error throw, destroys socket and calls onError once", () => {
+    // Mutation comment: Fails if socket error throws an unhandled exception or fails to destroy the socket.
+    let errorCount = 0;
+    let receivedError = null;
+
+    const fakeSocket = new Duplex({
+      read() {},
+      write(chunk, enc, cb) { cb(); },
+    });
+
+    attachSocketGuards(fakeSocket, (err: any) => {
+      errorCount++;
+      receivedError = err;
+    });
+
+    expect(() => {
+      fakeSocket.emit("error", new Error("transport_failure_1"));
+      fakeSocket.emit("error", new Error("transport_failure_2"));
+    }).not.toThrow();
+
+    expect(fakeSocket.destroyed).toBe(true);
+    expect(errorCount).toBe(1);
+    expect((receivedError as Error | null)?.message).toBe("transport_failure_1");
+  });
+
+  it("abruptly destroying an authenticated client mid-request calls onSessionClosed once and leaves server serving next client", async () => {
+    // Mutation comment: Fails if abrupt client socket destruction leaves server broken or calls onSessionClosed multiple times.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    let sessionClosedCount = 0;
+    let closedSessionId = null;
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onSessionClosed: (sid: any) => {
+        sessionClosedCount++;
+        closedSessionId = sid;
+      },
+      onRequest: async () => {
+        await new Promise((r) => setTimeout(r, 500));
+        return { result: "ok" };
+      },
+    });
+
+    const client1Raw = net.connect(endpoint);
+    const client1 = await connectBridge({ endpoint, key, connect: () => client1Raw });
+    const sid1 = client1.sessionId;
+
+    client1.request("slow").catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+    client1Raw.destroy(new Error("abrupt_kill"));
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sessionClosedCount).toBe(1);
+    expect(closedSessionId).toBe(sid1);
+
+    const client2 = await connectBridge({ endpoint, key });
+    expect(server.connectionCount()).toBe(1);
+    await client2.close();
+    await server.close();
+  });
+
+  it("client.close with a request pending rejects the request with closed", async () => {
+    // Mutation comment: Fails if client.close() leaves in-flight pending requests unrejected or hanging.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async () => {
+        await new Promise((r) => setTimeout(r, 500));
+        return { result: "ok" };
+      },
+    });
+
+    const client = await connectBridge({ endpoint, key });
+    const pendingReq = client.request("test");
+
+    await client.close();
+
+    await expect(pendingReq).rejects.toThrow(expect.objectContaining({ code: "closed" }));
+    await server.close();
+  });
+
+  it("server closing connection with a request pending rejects client request with closed", async () => {
+    // Mutation comment: Fails if server disconnection does not reject pending client requests with closed.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async () => {
+        await new Promise((r) => setTimeout(r, 500));
+        return { result: "ok" };
+      },
+    });
+
+    const client = await connectBridge({ endpoint, key });
+    const pendingReq = client.request("test");
+
+    await server.close();
+
+    await expect(pendingReq).rejects.toThrow(expect.objectContaining({ code: "closed" }));
+    await client.close();
+  });
+
+  it("body exactly 2 MiB accepted and 2 MiB + 1 rejects with too_large and closes", async () => {
+    // Mutation comment: Fails if request bodies over 2 MiB are accepted instead of rejected with too_large.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async (sess: any, header: any, body: any) => ({ result: body ? body.length : 0 }),
+    });
+
+    const client = await connectBridge({ endpoint, key });
+    const twoMegs = Buffer.alloc(2 * 1024 * 1024, 0x41);
+    const res = await client.request("echo", {}, twoMegs);
+    expect(res.result).toBe(2 * 1024 * 1024);
+
+    const tooBig = Buffer.alloc(2 * 1024 * 1024 + 1, 0x42);
+    await expect(client.request("echo", {}, tooBig)).rejects.toThrow(
+      expect.objectContaining({ code: "too_large" })
+    );
+
+    await client.close();
+    await server.close();
+  });
+
+  it("malformed request id closes socket with bad_frame", async () => {
+    // Mutation comment: Fails if non-integer or string id > 64 chars is accepted instead of bad_frame.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async () => ({ result: "ok" }),
+    });
+
+    const rawSocket = net.connect(endpoint);
+    const client = await connectBridge({ endpoint, key, connect: () => rawSocket });
+
+    rawSocket.write(encodeFrame({ t: "req", id: -5, method: "test" }));
+
+    const errFrame = await new Promise((resolve) => {
+      const decoder = new FrameDecoder();
+      rawSocket.on("data", (chunk) => {
+        try {
+          const frames = decoder.push(chunk);
+          for (const f of frames) {
+            if (f.header?.t === "error") resolve(f.header);
+          }
+        } catch {}
+      });
+      rawSocket.once("close", () => resolve(null));
+    });
+
+    expect((errFrame as any)?.code).toBe("bad_frame");
+    await client.close();
+    await server.close();
+  });
+
+  it("duplicate in-flight id returns duplicate_id without closing connection", async () => {
+    // Mutation comment: Fails if duplicate concurrent in-flight id does not respond with duplicate_id error.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    let resolveFirst: any;
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async () => {
+        await new Promise((r) => { resolveFirst = r; });
+        return { result: "ok" };
+      },
+    });
+
+    const rawSocket = net.connect(endpoint);
+    const client = await connectBridge({ endpoint, key, connect: () => rawSocket });
+
+    rawSocket.write(encodeFrame({ t: "req", id: 99, method: "slow" }));
+    rawSocket.write(encodeFrame({ t: "req", id: 99, method: "slow" }));
+
+    const responses: any[] = [];
+    await new Promise<void>((resolve) => {
+      const decoder = new FrameDecoder();
+      rawSocket.on("data", (chunk) => {
+        try {
+          const frames = decoder.push(chunk);
+          for (const f of frames) {
+            if (f.header?.t === "res") {
+              responses.push(f.header);
+              if (responses.length === 1 && responses[0].error?.code === "duplicate_id") {
+                if (resolveFirst) resolveFirst();
+              }
+              if (responses.length === 2) {
+                resolve();
+              }
+            }
+          }
+        } catch {}
+      });
+    });
+
+    expect(responses).toHaveLength(2);
+    const dup = responses.find((r) => r.ok === false);
+    expect(dup?.error?.code).toBe("duplicate_id");
+
+    await client.close();
+    await server.close();
+  });
+
+  it("handler BridgeError maps to code and plain Error maps to internal", async () => {
+    // Mutation comment: Fails if handler errors leak unmapped error structures or fail to map plain Error to internal.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async (sess: any, header: any) => {
+        if (header.method === "custom") {
+          throw new BridgeError("not_found");
+        }
+        throw new Error("unexpected error");
+      },
+    });
+
+    const client = await connectBridge({ endpoint, key });
+
+    await expect(client.request("custom")).rejects.toThrow(
+      expect.objectContaining({ code: "not_found" })
+    );
+
+    await expect(client.request("plain")).rejects.toThrow(
+      expect.objectContaining({ code: "internal" })
+    );
+
+    await client.close();
+    await server.close();
+  });
+
+  it("after 16 failing handlers, 16 new requests succeed", async () => {
+    // Mutation comment: Fails if failing request handlers fail to decrement in-flight request accounting.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+
+    let fail = true;
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      maxInFlight: 16,
+      onRequest: async () => {
+        if (fail) throw new Error("intentional_failure");
+        return { result: "recovered_ok" };
+      },
+    });
+
+    const client = await connectBridge({ endpoint, key });
+
+    const failingPromises = Array.from({ length: 16 }, () =>
+      client.request("test").catch((err: any) => err)
+    );
+    await Promise.all(failingPromises);
+
+    fail = false;
+
+    const successPromises = Array.from({ length: 16 }, () =>
+      client.request("test")
+    );
+    const results = await Promise.all(successPromises);
+    for (const r of results) {
+      expect(r.result).toBe("recovered_ok");
+    }
+
+    await client.close();
+    await server.close();
+  });
+
+  it("onAuthFailure receives auth_failed for wrong key, timeout for silent socket, and default logger rate-limits", async () => {
+    // Mutation comment: Fails if onAuthFailure is not called with failure codes or logger fails to rate limit.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+    const wrongKey = crypto.randomBytes(32);
+
+    const authFailures: any[] = [];
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      handshakeTimeoutMs: 150,
+      onAuthFailure: (f: any) => authFailures.push(f),
+      onRequest: async () => ({ result: "ok" }),
+    });
+
+    await expect(
+      connectBridge({ endpoint, key: wrongKey, handshakeTimeoutMs: 150 })
+    ).rejects.toThrow();
+
+    // A raw client answering the challenge with a bogus proof.
+    const raw = net.connect(endpoint);
+    raw.on("error", () => {});
+    const rawDecoder = new FrameDecoder();
+    const rawFrames: any[] = [];
+    raw.on("data", (chunk: Buffer) => {
+      for (const f of rawDecoder.push(chunk)) rawFrames.push(f.header);
+    });
+    await new Promise<void>((resolve) => raw.once("connect", () => resolve()));
+    raw.write(encodeFrame({ t: "hello", v: 1, clientNonce: crypto.randomBytes(32).toString("base64") }));
+    for (let i = 0; i < 100 && rawFrames.length === 0; i++) await new Promise((r) => setTimeout(r, 2));
+    raw.write(encodeFrame({ t: "proof", clientProof: crypto.randomBytes(32).toString("base64") }));
+    for (let i = 0; i < 100 && rawFrames.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    raw.destroy();
+
+    const silentSocket = net.connect(endpoint);
+    await new Promise((r) => setTimeout(r, 250));
+    silentSocket.destroy();
+
+    expect(authFailures).toEqual(
+      expect.arrayContaining([
+        { code: "auth_failed" },
+        { code: "timeout" },
+      ])
+    );
+
+    await server.close();
+
+    const warnings: any[] = [];
+    let currentTime = 1000000;
+    const logger = createAuthFailureLogger({
+      log: (msg: any) => warnings.push(msg),
+      now: () => currentTime,
+    });
+
+    for (let i = 0; i < 15; i++) {
+      logger({ code: "auth_failed" });
+    }
+
+    expect(warnings).toHaveLength(10);
+
+    currentTime += 60000;
+    logger({ code: "timeout" });
+
+    expect(warnings).toHaveLength(12);
+    expect(warnings[10]).toMatch(/5 more failures suppressed/);
+  });
+
+  it("server-side socket errors after authentication do not crash and close the session once", async () => {
+    // Mutation caught: the connection handler not attaching its persistent error guard.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+    const serverSockets: net.Socket[] = [];
+    let closed = 0;
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      onRequest: async () => ({ result: "ok" }),
+      onSessionClosed: () => { closed++; },
+      createServer: () => {
+        const srv = net.createServer();
+        srv.on("connection", (sk: net.Socket) => serverSockets.push(sk));
+        return srv;
+      },
+    });
+    const client = await connectBridge({ endpoint, key });
+    expect((await client.request("ping")).result).toBe("ok");
+    const sk = serverSockets[serverSockets.length - 1]!;
+    expect(() => sk.emit("error", Object.assign(new Error("boom"), { code: "ECONNRESET" }))).not.toThrow();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(closed).toBe(1);
+    const client2 = await connectBridge({ endpoint, key });
+    expect((await client2.request("ping")).result).toBe("ok");
+    await client2.close();
+    await client.close().catch(() => {});
+    await server.close();
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("a rejected socket whose busy write never flushes is destroyed after 1 s", async () => {
+    // Mutation caught: no timer fallback for rejected sockets.
+    const testDir = await makeTestDir();
+    const endpoint = makeEndpoint(testDir);
+    const key = crypto.randomBytes(32);
+    const serverSockets: net.Socket[] = [];
+    const server = await startBridgeServer({
+      endpoint,
+      key,
+      maxConnections: 1,
+      maxHandshakes: 1,
+      onRequest: async () => ({ result: "ok" }),
+      createServer: () => {
+        const srv = net.createServer();
+        srv.on("connection", (sk: net.Socket) => {
+          serverSockets.push(sk);
+          // Writes on the 2nd connection never complete, as with a peer that stops reading.
+          if (serverSockets.length === 2) (sk as any).write = () => true;
+        });
+        return srv;
+      },
+    });
+    const first = await connectBridge({ endpoint, key });
+    const second = net.connect(endpoint);
+    second.on("error", () => {});
+    await new Promise((r) => setTimeout(r, 200));
+    expect(serverSockets[1]?.destroyed).toBe(false);
+    await new Promise((r) => setTimeout(r, 1100));
+    expect(serverSockets[1]?.destroyed).toBe(true);
+    second.destroy();
+    await first.close();
     await server.close();
     await fs.rm(testDir, { recursive: true, force: true });
   });

@@ -51,13 +51,16 @@ export async function connectBridge({
     if (closed) return;
     closed = true;
     for (const p of pending.values()) {
-      p.reject(new BridgeError("closed"));
+      try {
+        p.reject(new BridgeError("closed"));
+      } catch {}
     }
     pending.clear();
   }
 
   socket.once("close", () => cleanup());
   socket.once("error", () => cleanup());
+  socket.once("end", () => cleanup());
 
   function handleFrame(frame) {
     const header = frame?.header;
@@ -78,7 +81,6 @@ export async function connectBridge({
   }
 
   try {
-    // Frames that arrived together with the server's ready frame come first.
     for (const f of early) {
       handleFrame(f);
     }
@@ -110,8 +112,10 @@ export async function connectBridge({
           const frame = encodeFrame({ t: "req", id, method, params }, body);
           socket.write(frame, (err) => {
             if (err) {
-              pending.delete(id);
-              reject(new BridgeError("closed"));
+              if (pending.has(id)) {
+                pending.delete(id);
+                reject(new BridgeError("closed"));
+              }
             }
           });
         } catch (err) {
@@ -121,11 +125,10 @@ export async function connectBridge({
       });
     },
     async close() {
-      if (!closed) {
-        closed = true;
-        cleanup();
+      cleanup();
+      try {
         socket.destroy();
-      }
+      } catch {}
     },
   };
 }

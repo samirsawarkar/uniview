@@ -51,16 +51,216 @@ function runExecFile(execFileFn, file, args) {
 }
 
 /**
+ * Parses icacls output into structured entries.
+ * @param {string} output
+ * @param {string} [filePath]
+ * @returns {Array<{ principal: string, rights: string, inherited: boolean }>}
+ */
+export function parseIcaclsEntries(output, filePath) {
+  if (!output || typeof output !== "string") return [];
+
+  const lines = output.split(/\r?\n/);
+  const entries = [];
+
+  for (let line of lines) {
+    line = line.trim();
+    if (!line) continue;
+    if (
+      line.startsWith("Successfully processed") ||
+      line.startsWith("Failed processing") ||
+      line.startsWith("No files found")
+    ) {
+      continue;
+    }
+
+    if (filePath) {
+      const candidates = [
+        filePath,
+        filePath.replace(/\//g, "\\"),
+        filePath.replace(/\\/g, "/"),
+      ];
+      for (const c of candidates) {
+        if (line.toLowerCase().startsWith(c.toLowerCase())) {
+          line = line.slice(c.length).trim();
+          break;
+        }
+        const quoted = `"${c}"`;
+        if (line.toLowerCase().startsWith(quoted.toLowerCase())) {
+          line = line.slice(quoted.length).trim();
+          break;
+        }
+      }
+    }
+
+    const pathMatch = line.match(/^(?:[a-zA-Z]:\\[^:]*?|"[^"]+?")\s+/);
+    if (pathMatch) {
+      line = line.slice(pathMatch[0].length).trim();
+    }
+
+    if (!line) continue;
+
+    const parenIdx = line.indexOf("(");
+    if (parenIdx === -1) continue;
+    const colonIdx = line.lastIndexOf(":", parenIdx);
+    if (colonIdx === -1) continue;
+
+    const principal = line.slice(0, colonIdx).trim();
+    const rawRights = line.slice(colonIdx + 1).trim();
+
+    if (!principal || !rawRights) continue;
+
+    const inherited = /\(I\)/i.test(rawRights);
+    const rights = rawRights.replace(/\(I\)/gi, "").trim();
+
+    entries.push({ principal, rights, inherited });
+  }
+
+  return entries;
+}
+
+/**
+ * Verifies that a Windows file or directory has strictly owner-only ACL permissions.
+ * @param {string} targetPath
+ * @param {{ isDirectory?: boolean, execFile?: Function, username?: string, userSid?: string }} options
+ */
+async function verifyWindowsAcl(targetPath, {
+  isDirectory = false,
+  execFile = defaultExecFile,
+  username,
+  userSid,
+} = {}) {
+  let stdout;
+  try {
+    const res = await runExecFile(execFile, "icacls", [targetPath]);
+    stdout = typeof res === "string" ? res : (res?.stdout || "");
+  } catch {
+    throw new BridgeError(isDirectory ? "bad_dir" : "bad_key_perms");
+  }
+
+  const entries = parseIcaclsEntries(stdout, targetPath);
+  if (entries.length !== 1) {
+    throw new BridgeError(isDirectory ? "bad_dir" : "bad_key_perms");
+  }
+
+  const [entry] = entries;
+
+  if (entry.inherited) {
+    throw new BridgeError(isDirectory ? "bad_dir" : "bad_key_perms");
+  }
+
+  if (isDirectory) {
+    const validDirRights =
+      entry.rights === "(OI)(CI)(F)" ||
+      entry.rights === "(CI)(OI)(F)" ||
+      entry.rights === "(OI)(CI)F" ||
+      entry.rights === "(F)";
+    if (!validDirRights) {
+      throw new BridgeError("bad_dir");
+    }
+  } else {
+    if (entry.rights !== "(F)") {
+      throw new BridgeError("bad_key_perms");
+    }
+  }
+
+  const user = (
+    username ||
+    process.env.USERNAME ||
+    (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
+    process.env.USER ||
+    ""
+  ).toLowerCase();
+
+  let matches = false;
+  const principal = entry.principal.toLowerCase();
+
+  if (user) {
+    if (principal === user) {
+      matches = true;
+    } else if (principal.includes("\\")) {
+      const parts = principal.split("\\");
+      if (parts[parts.length - 1] === user) {
+        matches = true;
+      }
+    }
+  }
+
+  if (!matches) {
+    let sid = userSid;
+    if (!sid && (principal.startsWith("*s-1-") || principal.startsWith("s-1-"))) {
+      sid = await windowsUserSid({ execFile }).catch(() => null);
+    }
+    if (sid) {
+      const cleanSid = sid.startsWith("*") ? sid.slice(1).toLowerCase() : sid.toLowerCase();
+      const cleanPrincipal = principal.startsWith("*") ? principal.slice(1) : principal;
+      if (cleanPrincipal === cleanSid) {
+        matches = true;
+      }
+    }
+  }
+
+  if (!matches) {
+    throw new BridgeError(isDirectory ? "bad_dir" : "bad_key_perms");
+  }
+}
+
+/**
  * Ensures the bridge directory exists with safe permissions.
  * On Unix, creates with 0700 and checks ownership and mode bits.
+ * On Windows, configures owner-only ACL (OI)(CI)F and verifies on start.
  * @param {string} userDataDir
- * @param {{ platform?: string, fs?: typeof import("node:fs/promises") }} [options]
+ * @param {{ platform?: string, fs?: typeof import("node:fs/promises"), execFile?: Function, username?: string, userSid?: string }} [options]
  * @returns {Promise<string>} Path to the bridge directory
  */
-export async function ensureBridgeDir(userDataDir, { platform = process.platform, fs = defaultFs } = {}) {
+export async function ensureBridgeDir(userDataDir, {
+  platform = process.platform,
+  fs = defaultFs,
+  execFile = defaultExecFile,
+  username,
+  userSid,
+} = {}) {
   const bridgeDir = path.join(userDataDir, "bridge");
   if (platform === "win32") {
-    await fs.mkdir(bridgeDir, { recursive: true });
+    let existed = false;
+    try {
+      const st = await fs.stat(bridgeDir);
+      if (!st.isDirectory()) {
+        throw new BridgeError("bad_dir");
+      }
+      existed = true;
+    } catch (err) {
+      if (err instanceof BridgeError) throw err;
+      if (err && err.code !== "ENOENT") throw err;
+    }
+
+    const user =
+      username ||
+      process.env.USERNAME ||
+      (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
+      process.env.USER ||
+      "USER";
+
+    if (!existed) {
+      await fs.mkdir(bridgeDir, { recursive: true });
+      try {
+        await runExecFile(execFile, "icacls", [
+          bridgeDir,
+          "/inheritance:r",
+          "/grant:r",
+          `${user}:(OI)(CI)F`,
+        ]);
+      } catch {
+        throw new BridgeError("bad_dir");
+      }
+    }
+
+    await verifyWindowsAcl(bridgeDir, {
+      isDirectory: true,
+      execFile,
+      username: user,
+      userSid,
+    });
+
     return bridgeDir;
   }
 
@@ -79,10 +279,16 @@ export async function ensureBridgeDir(userDataDir, { platform = process.platform
  * Reads an existing 256-bit bridge key, validating file permissions.
  * Never creates the key.
  * @param {string} bridgeDir
- * @param {{ platform?: string, fs?: typeof import("node:fs/promises") }} [options]
+ * @param {{ platform?: string, fs?: typeof import("node:fs/promises"), execFile?: Function, username?: string, userSid?: string }} [options]
  * @returns {Promise<Buffer>} 32-byte key buffer
  */
-export async function readBridgeKey(bridgeDir, { platform = process.platform, fs = defaultFs } = {}) {
+export async function readBridgeKey(bridgeDir, {
+  platform = process.platform,
+  fs = defaultFs,
+  execFile = defaultExecFile,
+  username,
+  userSid,
+} = {}) {
   const keyPath = path.join(bridgeDir, "key");
   let st;
   try {
@@ -94,7 +300,14 @@ export async function readBridgeKey(bridgeDir, { platform = process.platform, fs
     throw err;
   }
 
-  if (platform !== "win32") {
+  if (platform === "win32") {
+    await verifyWindowsAcl(keyPath, {
+      isDirectory: false,
+      execFile,
+      username,
+      userSid,
+    });
+  } else {
     if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
       throw new BridgeError("bad_key_perms");
     }
@@ -122,14 +335,15 @@ export async function readBridgeKey(bridgeDir, { platform = process.platform, fs
 
 /**
  * Ensures a 256-bit bridge key exists and has safe permissions.
- * If missing, creates atomically and configures ACLs/permissions.
+ * If missing, creates atomically and configures ACLs/permissions safely.
  * @param {string} bridgeDir
  * @param {{
  *   platform?: string,
  *   fs?: typeof import("node:fs/promises"),
  *   execFile?: Function,
  *   randomBytes?: Function,
- *   username?: string
+ *   username?: string,
+ *   userSid?: string
  * }} [options]
  * @returns {Promise<Buffer>} 32-byte key buffer
  */
@@ -139,9 +353,10 @@ export async function ensureBridgeKey(bridgeDir, {
   execFile = defaultExecFile,
   randomBytes = defaultRandomBytes,
   username,
+  userSid,
 } = {}) {
   try {
-    return await readBridgeKey(bridgeDir, { platform, fs });
+    return await readBridgeKey(bridgeDir, { platform, fs, execFile, username, userSid });
   } catch (err) {
     if (!(err instanceof BridgeError && err.code === "no_key")) {
       throw err;
@@ -149,38 +364,65 @@ export async function ensureBridgeKey(bridgeDir, {
   }
 
   const keyPath = path.join(bridgeDir, "key");
-  const key = randomBytes(32);
   const tmpPath = path.join(
     bridgeDir,
     `key.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`
   );
 
-  await fs.writeFile(tmpPath, key, { flag: "wx", mode: 0o600 });
-  await fs.rename(tmpPath, keyPath);
+  const user =
+    username ||
+    process.env.USERNAME ||
+    (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
+    process.env.USER ||
+    "USER";
 
-  if (platform === "win32") {
-    const user =
-      username ||
-      process.env.USERNAME ||
-      (typeof os.userInfo === "function" ? os.userInfo().username : "") ||
-      process.env.USER ||
-      "USER";
-    try {
-      await runExecFile(execFile, "icacls", [
-        keyPath,
-        "/inheritance:r",
-        "/grant:r",
-        `${user}:F`,
-      ]);
-    } catch {
-      await fs.unlink(keyPath).catch(() => {});
-      throw new BridgeError("acl_failed");
+  // Step 1: create an empty temp file with flag wx
+  await fs.writeFile(tmpPath, Buffer.alloc(0), { flag: "wx", mode: 0o600 });
+
+  try {
+    if (platform === "win32") {
+      // Step 2: apply ACL to temp file
+      try {
+        await runExecFile(execFile, "icacls", [
+          tmpPath,
+          "/inheritance:r",
+          "/grant:r",
+          `${user}:F`,
+        ]);
+      } catch {
+        throw new BridgeError("acl_failed");
+      }
+
+      // Step 3: verify with the same check
+      await verifyWindowsAcl(tmpPath, {
+        isDirectory: false,
+        execFile,
+        username: user,
+        userSid,
+      });
+    } else {
+      await fs.chmod(tmpPath, 0o600).catch(() => {});
+      const st = await fs.stat(tmpPath);
+      if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
+        throw new BridgeError("bad_key_perms");
+      }
+      if ((st.mode & 0o077) !== 0) {
+        throw new BridgeError("bad_key_perms");
+      }
     }
-  } else {
-    await fs.chmod(keyPath, 0o600).catch(() => {});
-  }
 
-  return key;
+    // Step 4: write the 32 secret bytes only after ACL verification
+    const key = randomBytes(32);
+    await fs.writeFile(tmpPath, key);
+
+    // Step 5: rename to final destination
+    await fs.rename(tmpPath, keyPath);
+
+    return key;
+  } catch (err) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 /**
