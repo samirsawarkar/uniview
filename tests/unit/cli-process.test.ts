@@ -8,6 +8,8 @@ import { spawn } from "node:child_process";
 import { ensureBridgeDir, ensureBridgeKey, ensureInstallId, windowsUserSid, bridgeEndpoint } from "../../electron/lib/bridge-key.mjs";
 // @ts-expect-error plain ESM module without types
 import { startBridgeServer } from "../../electron/lib/bridge-server.mjs";
+// @ts-expect-error plain ESM module without types
+import { BridgeError } from "../../electron/lib/bridge-proto.mjs";
 
 // Process-level CLI tests (the cli.e2e row of the behaviour-to-test map, without Electron): the real CLI entry
 // (scripts/cli-runner.mjs -> electron/lib/cli.mjs -> bridge-client.mjs) runs as a separate node process against a
@@ -18,7 +20,7 @@ import { startBridgeServer } from "../../electron/lib/bridge-server.mjs";
 const runner = path.resolve(__dirname, "../../scripts/cli-runner.mjs");
 const KILL_AFTER_MS = 20000;
 
-type Req = { method: string; params: any };
+type Req = { method: string; params: any; paths?: string[] };
 type ChildResult = { code: number | null; stdout: string; stderr: string; exitedAt: number };
 
 async function makeDir(): Promise<string> {
@@ -33,7 +35,7 @@ afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
 });
 
-/** Real bridge server with a stub `open` / `wait_review` handler; reviews are decided by the test. */
+/** Real bridge server with stub `open` / `view.show` / `review.open` / `review.wait` handlers; reviews are decided by the test. */
 async function startStub() {
   const work = await makeDir();
   const userData = path.join(work, "userData");
@@ -54,21 +56,27 @@ async function startStub() {
   const server = await startBridgeServer({
     endpoint,
     key,
-    onRequest: async (_session: unknown, header: any) => {
-      requests.push({ method: header.method, params: header.params });
+    onRequest: async (_session: unknown, header: any, body?: Buffer) => {
+      const paths: string[] | undefined = body && body.length > 0 ? JSON.parse(body.toString("utf8")) : undefined;
+      requests.push({ method: header.method, params: header.params, ...(paths ? { paths } : {}) });
+      const refused = (p: string) => failPath.value !== "" && p.endsWith(failPath.value);
       if (header.method === "open") {
-        const p = header.params;
-        const all: string[] = [...p.files, ...(p.receipt ? [p.receipt] : []), ...(p.view ? [p.view] : [])];
-        const failed = all.filter((f) => failPath.value && f.endsWith(failPath.value)).map((f) => ({ path: f, code: "bad_path" }));
-        const opened = all.filter((f) => !failed.some((x) => x.path === f));
-        const reviewId = p.wait ? `review-${++nextReview}` : undefined;
-        return { result: { opened, failed, ...(reviewId ? { reviewId } : {}) } };
+        if (refused(paths![0]!)) throw new BridgeError("bad_path");
+        return { result: { opened: 1 } };
       }
-      if (header.method === "wait_review") {
+      if (header.method === "view.show") {
+        if (refused(header.params.path)) throw new BridgeError("invalid_spec");
+        return { result: { scopeId: "scope-1" } };
+      }
+      if (header.method === "review.open") {
+        if (refused(header.params.path)) throw new BridgeError("invalid_receipt");
+        return { result: { reviewId: `review-${++nextReview}` } };
+      }
+      if (header.method === "review.wait") {
         const id = header.params.reviewId as string;
-        return new Promise((resolve) => waiting.set(id, (decision) => resolve({ result: { decision } })));
+        return new Promise((resolve) => waiting.set(id, (decision) => resolve({ result: { status: "decided", decision } })));
       }
-      throw Object.assign(new Error("unknown_method"), { code: "unknown_method" });
+      throw new BridgeError("unknown_method");
     },
   });
   let closed = false;
@@ -129,7 +137,7 @@ describe("cli process (real CLI process, real bridge server and key)", () => {
     const abs = path.join(stub.work, "a.txt");
     expect(r.stdout).toBe(`Opened in UniView: ${abs}\n`);
     expect(r.stderr).toBe("");
-    expect(stub.requests).toEqual([{ method: "open", params: { files: [abs], wait: false } }]);
+    expect(stub.requests).toEqual([{ method: "open", params: {}, paths: [abs] }]);
   }, 30000);
 
   it("usage error: exit 2, usage line, no request reaches the app", async () => {
@@ -184,7 +192,7 @@ describe("cli process (real CLI process, real bridge server and key)", () => {
       expect(r.stderr).toBe(`Opened in UniView: ${path.join(stub.work, "r.receipt.json")}; waiting for the review decision\n`);
       expect(r.exitedAt - decidedAt).toBeLessThan(3000);
     }
-    expect(stub.requests.map((q) => q.method)).toEqual(["open", "wait_review", "open", "wait_review", "open", "wait_review"]);
+    expect(stub.requests.map((q) => q.method)).toEqual(["review.open", "review.wait", "review.open", "review.wait", "review.open", "review.wait"]);
   }, 60000);
 
   it("two simultaneous --wait processes each get their own decision", async () => {
