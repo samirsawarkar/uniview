@@ -29,34 +29,34 @@ const wait = (id: number, seconds = 600) => toolCall(id, "request_review", { rec
 const open1 = (id: number) => toolCall(id, "open_files", { paths: ["C:\\work\\a.txt"] });
 
 describe("MCP admission bound", () => {
-  it("admits 16 in-flight tool calls and answers the 17th with a busy tool error; ending a call frees its slot", async () => {
+  it("admits 15 in-flight tool calls and answers the 16th with a busy tool error; ending a call frees its slot", async () => {
     // Mutation: no cap on in-flight tool calls (a flood of waiting requests is retained without bound) or an off-by-one cap.
-    expect(MCP_LIMITS.MAX_INFLIGHT_CALLS).toBe(16);
+    expect(MCP_LIMITS.MAX_INFLIGHT_CALLS).toBe(15);
     const clock = createFakeClock();
     const s = startServer({ clock });
     await s.initialize();
-    for (let i = 1; i <= 16; i++) s.send(wait(i));
+    for (let i = 1; i <= 15; i++) s.send(wait(i));
     await flush();
     expect(s.lines).toEqual([]);
-    s.send(open1(17));
-    expect(await s.nextJson()).toEqual(BUSY(17));
+    s.send(open1(16));
+    expect(await s.nextJson()).toEqual(BUSY(16));
     expect(s.fake.calls.filter((c) => c.method === "open")).toHaveLength(0);
 
     // A cancelled wait frees its slot.
     s.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } });
     await flush();
-    s.send(open1(18));
+    s.send(open1(17));
     expect((await s.nextJson()).result.structuredContent).toEqual({ opened: 1 });
 
-    // Settling (here: the local deadline) frees the rest, so another 16 waits are admitted and the 17th is busy again.
+    // Settling (here: the local deadline) frees the rest, so another 15 waits are admitted and the 16th is busy again.
     await clock.advance(600_000 + MCP_LIMITS.WAIT_GRACE_MS);
-    for (let i = 2; i <= 16; i++) expect((await s.nextJson()).result.structuredContent.code).toBe("timeout");
+    for (let i = 2; i <= 15; i++) expect((await s.nextJson()).result.structuredContent.code).toBe("timeout");
     expect(s.lines).toEqual([]);
-    for (let i = 19; i <= 34; i++) s.send(wait(i));
+    for (let i = 18; i <= 32; i++) s.send(wait(i));
     await flush();
     expect(s.lines).toEqual([]);
-    s.send(open1(35));
-    expect(await s.nextJson()).toEqual(BUSY(35));
+    s.send(open1(33));
+    expect(await s.nextJson()).toEqual(BUSY(33));
     await s.end();
   });
 
@@ -81,14 +81,14 @@ describe("MCP local deadlines", () => {
     const clock = createFakeClock();
     const s = startServer({ clock, connect: () => new Promise(() => {}) });
     await s.initialize();
-    for (let i = 1; i <= 16; i++) s.send(open1(i));
+    for (let i = 1; i <= 15; i++) s.send(open1(i));
     await flush();
-    s.send(open1(17));
-    expect(await s.nextJson()).toEqual(BUSY(17));
+    s.send(open1(16));
+    expect(await s.nextJson()).toEqual(BUSY(16));
     await clock.advance(29_999);
     expect(s.lines).toEqual([]);
     await clock.advance(1);
-    for (let i = 1; i <= 16; i++) expect(await s.nextJson()).toEqual(UNAVAILABLE(i));
+    for (let i = 1; i <= 15; i++) expect(await s.nextJson()).toEqual(UNAVAILABLE(i));
     // The slots are free again: this one is admitted (and ends at its own deadline), not busy.
     s.send(open1(18));
     await flush();

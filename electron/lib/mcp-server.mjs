@@ -16,6 +16,11 @@ import { validateReceipt } from "../../shared/receipt.mjs";
  *   review.wait       {reviewId, timeoutMs}  -> {status: "decided", decision} | {status: "pending"}
  *   review.cancelWait {reviewId}             ends a wait early; the review stays open
  *   review.get        {reviewId}             -> {status: "decided", decision} | {status: "pending"}
+ *
+ * Contract for the bridge side: `review.cancelWait` must never be answered `busy`. The bridge admits 16 requests in
+ * flight per connection; this server uses at most 15 of them for tool calls (MCP_LIMITS.MAX_INFLIGHT_CALLS) so a
+ * cancel always has a slot, and the bridge handler (agent-host.mjs, bridge-server.mjs) exempts cancelWait from that
+ * limit as well.
  */
 
 export const MCP_LIMITS = Object.freeze({
@@ -29,8 +34,14 @@ export const MCP_LIMITS = Object.freeze({
   WAIT_GRACE_MS: 10_000,
   MAX_CLIENT_NAME_LENGTH: 80,
   MAX_CLIENT_VERSION_LENGTH: 40,
-  /** Tool calls in flight at once; the 17th is answered `busy` (the bridge allows 16 in flight per connection). */
-  MAX_INFLIGHT_CALLS: 16,
+  /**
+   * Tool calls in flight at once; the 16th is answered `busy`. The bridge allows 16 requests in flight per
+   * connection, so one slot is always left for `review.cancelWait` (see the note in the header comment).
+   */
+  MAX_INFLIGHT_CALLS: 15,
+  /** Complete input lines held back while stdout is not draining; beyond either cap the server closes. */
+  MAX_QUEUED_INPUT_LINES: 100_000,
+  MAX_QUEUED_INPUT_BYTES: 32 * 1024 * 1024,
   /** Local deadline for connecting, the hello and every bridge request except a review wait. */
   REQUEST_DEADLINE_MS: 30_000,
   /** Output written to stdout but not yet flushed; above this the server stops. */
@@ -348,6 +359,8 @@ export function runMcp({
   clientInfo = { name: "UniView", version: "0.0.0" },
   clock = { now: Date.now, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout },
   maxQueuedOutputBytes = MCP_LIMITS.MAX_QUEUED_OUTPUT_BYTES,
+  maxQueuedInputLines = MCP_LIMITS.MAX_QUEUED_INPUT_LINES,
+  maxQueuedInputBytes = MCP_LIMITS.MAX_QUEUED_INPUT_BYTES,
 }) {
   const splitter = new LineSplitter();
   /** "new" -> "initializing" (initialize answered) -> "ready" (notifications/initialized) */
@@ -362,9 +375,35 @@ export function runMcp({
   const queue = [];
   let blocked = false;
   let queuedBytes = 0;
-  let finish = () => {};
+  /** Bytes of the lines in `queue`. */
+  let queuedInputBytes = 0;
+  let finish = (_drop) => {};
 
-  const sleep = (ms) => new Promise((resolve) => clock.setTimeout(resolve, ms));
+  // Every timer this server arms is tracked, so shutdown can cancel the ones still pending (request guards, the
+  // backoff sleep, a review wait's guard) and a real process is not kept alive by them.
+  const timers = new Set();
+  let timersStopped = false;
+  function setTimer(fn, ms) {
+    if (timersStopped) return null;
+    const handle = clock.setTimeout(() => {
+      timers.delete(handle);
+      fn();
+    }, ms);
+    timers.add(handle);
+    return handle;
+  }
+  function clearTimer(handle) {
+    if (handle === null || handle === undefined) return;
+    timers.delete(handle);
+    clock.clearTimeout(handle);
+  }
+  function stopTimers() {
+    timersStopped = true;
+    for (const handle of timers) clock.clearTimeout(handle);
+    timers.clear();
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimer(resolve, ms));
 
   function log(message) {
     try {
@@ -379,20 +418,18 @@ export function runMcp({
     queuedBytes += size;
     let ok = true;
     try {
-      ok = stdout.write(line, () => {
+      ok = stdout.write(line, (err) => {
         queuedBytes -= size;
+        if (err) abort(`stdout write failed: ${err?.message || err}; closing`);
       });
     } catch (err) {
       queuedBytes -= size;
-      log(`stdout write failed: ${err?.message}`);
+      abort(`stdout write failed: ${err?.message || err}; closing`);
       return;
     }
     if (queuedBytes > maxQueuedOutputBytes) {
       // The reader is not keeping up and answers keep arriving: stop instead of growing without bound.
-      log(`output backlog larger than ${maxQueuedOutputBytes} bytes; closing`);
-      closed = true;
-      queue.length = 0;
-      finish();
+      abort(`output backlog larger than ${maxQueuedOutputBytes} bytes; closing`);
       return;
     }
     if (ok === false) {
@@ -402,8 +439,27 @@ export function runMcp({
     }
   }
 
+  /** Stops the server for good: logs why, drops pending input, cancels everything and resolves runMcp. */
+  function abort(message) {
+    if (closed) return;
+    log(message);
+    closed = true;
+    queue.length = 0;
+    queuedInputBytes = 0;
+    try {
+      stdin.pause();
+    } catch {}
+    finish(true);
+  }
+
+  function takeLine() {
+    const item = queue.shift();
+    queuedInputBytes -= item && item.line ? item.line.length : 0;
+    return item;
+  }
+
   function pump() {
-    while (!blocked && !closed && queue.length > 0) handleLine(queue.shift());
+    while (!blocked && !closed && queue.length > 0) handleLine(takeLine());
     if (!blocked && !closed && queue.length === 0) stdin.resume();
   }
 
@@ -411,7 +467,7 @@ export function runMcp({
     promise.catch(() => {});
     let timer;
     const guard = new Promise((_, reject) => {
-      timer = clock.setTimeout(() => {
+      timer = setTimer(() => {
         try {
           onTimeout?.();
         } finally {
@@ -419,7 +475,7 @@ export function runMcp({
         }
       }, ms);
     });
-    return Promise.race([promise, guard]).finally(() => clock.clearTimeout(timer));
+    return Promise.race([promise, guard]).finally(() => clearTimer(timer));
   }
 
   function reply(id, result) {
@@ -590,7 +646,8 @@ export function runMcp({
       exactlyOne(args, "receiptText", "receiptPath");
       if (args.receiptPath !== undefined) checkPath("receiptPath", args.receiptPath);
       else checkText("receiptText", args.receiptText);
-      const waitSeconds = args.waitSeconds ?? 0;
+      // Only an absent field means 0: null (or any other non-integer) must not slip past the schema.
+      const waitSeconds = args.waitSeconds === undefined ? 0 : args.waitSeconds;
       if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > MCP_LIMITS.MAX_WAIT_SECONDS) {
         throw new ParamsError(`waitSeconds must be an integer from 0 to ${MCP_LIMITS.MAX_WAIT_SECONDS}`);
       }
@@ -611,12 +668,12 @@ export function runMcp({
         let timer;
         const stop = new Promise((resolve) => {
           entry.cancel = () => resolve("cancelled");
-          timer = clock.setTimeout(() => resolve("timeout"), timeoutMs + MCP_LIMITS.WAIT_GRACE_MS);
+          timer = setTimer(() => resolve("timeout"), timeoutMs + MCP_LIMITS.WAIT_GRACE_MS);
         });
         const waited = call("review.wait", { reviewId, timeoutMs }, undefined, { wait: true });
         waited.catch(() => {});
         const outcome = await Promise.race([waited, stop]).finally(() => {
-          clock.clearTimeout(timer);
+          clearTimer(timer);
           entry.cancel = null;
         });
         if (outcome === "cancelled" || outcome === "timeout") {
@@ -648,8 +705,9 @@ export function runMcp({
     try {
       let run;
       try {
-        if (typeof params.name !== "string" || !Object.hasOwn(handlers, params.name)) {
-          throw new ParamsError(`unknown tool ${JSON.stringify(String(params.name))}`);
+        if (typeof params.name !== "string") throw new ParamsError("name must be a string");
+        if (!Object.hasOwn(handlers, params.name)) {
+          throw new ParamsError(`unknown tool ${JSON.stringify(params.name.slice(0, 64))}`);
         }
         const args = params.arguments === undefined ? {} : params.arguments;
         if (!isPlainObject(args)) throw new ParamsError("arguments must be an object");
@@ -787,16 +845,25 @@ export function runMcp({
 
   return new Promise((resolve) => {
     let finished = false;
-    finish = () => {
+    /** @param {boolean} [drop] true when the server must stop at once (stdout failed): input is not processed. */
+    finish = (drop = false) => {
       if (finished) return;
       finished = true;
-      for (const item of splitter.end()) queue.push(item);
-      while (queue.length > 0) handleLine(queue.shift());
+      if (!drop) {
+        for (const item of splitter.end()) {
+          queue.push(item);
+          queuedInputBytes += item.line ? item.line.length : 0;
+        }
+        while (queue.length > 0) handleLine(takeLine());
+      }
       closed = true;
+      queue.length = 0;
+      queuedInputBytes = 0;
       for (const entry of inflight.values()) {
         entry.cancelled = true;
         if (entry.cancel) entry.cancel();
       }
+      stopTimers();
       const b = bridge;
       bridge = null;
       Promise.resolve(b?.close()).catch(() => {}).then(() => resolve());
@@ -806,11 +873,20 @@ export function runMcp({
       blocked = false;
       pump();
     });
-    stdout.on("error", (err) => log(`stdout error: ${err?.message || err}`));
+    // A stdout that failed or went away cannot carry answers any more: stop instead of waiting for input forever.
+    stdout.on("error", (err) => abort(`stdout error: ${err?.message || err}; closing`));
+    stdout.on("close", () => abort("stdout closed; closing"));
     stdin.on("data", (chunk) => {
+      if (closed) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      for (const item of splitter.push(buf)) queue.push(item);
+      for (const item of splitter.push(buf)) {
+        queue.push(item);
+        queuedInputBytes += item.line ? item.line.length : 0;
+      }
       pump();
+      // Whatever is still held now is waiting behind a stdout that is not draining.
+      if (!closed && queue.length > maxQueuedInputLines) abort(`input backlog larger than ${maxQueuedInputLines} lines; closing`);
+      else if (!closed && queuedInputBytes > maxQueuedInputBytes) abort(`input backlog larger than ${maxQueuedInputBytes} bytes; closing`);
     });
     stdin.once("end", finish);
     stdin.once("close", finish);
