@@ -3,13 +3,16 @@ import crypto from "node:crypto";
 import { validateReceipt, validateDecision, sha256Hex, fileState, canDecide } from "../../shared/receipt.mjs";
 import { writeDecisionNextToReceipt } from "./review-store.mjs";
 
-export const REVIEW_LIMITS = {
+export const REVIEW_LIMITS = Object.freeze({
   maxBytesPerPass: 8 * 1024 * 1024 * 1024, // 8 GiB
   passDeadlineMs: 120_000,
   concurrentFiles: 2,
   queuedVerifications: 4,
   chunkBytes: 1024 * 1024, // 1 MiB
-};
+});
+
+// How often a pending pass re-checks the deadline against the injected clock.
+const DEADLINE_TICK_MS = 250;
 
 export class ReviewError extends Error {
   constructor(code, details = undefined) {
@@ -50,6 +53,7 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
   const concurrentFiles = limits?.concurrentFiles ?? REVIEW_LIMITS.concurrentFiles;
   const queuedVerifications = limits?.queuedVerifications ?? REVIEW_LIMITS.queuedVerifications;
   const chunkBytes = limits?.chunkBytes ?? REVIEW_LIMITS.chunkBytes;
+  const deadlineTickMs = limits?.deadlineTickMs ?? DEADLINE_TICK_MS;
 
   let isRunning = false;
   const queue = [];
@@ -88,6 +92,14 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
     });
   }
 
+  /** Closes a handle without waiting for it (a pending read would block an awaited close). */
+  function closeDetached(handle) {
+    try {
+      const p = handle?.close?.();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch {}
+  }
+
   async function runPass(files, { baseline, signal } = {}) {
     const list = Array.isArray(files) ? files : [];
     const baselineResults = Array.isArray(baseline) ? baseline : (baseline?.results ?? []);
@@ -102,64 +114,98 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
     let limitReached = false;
     let aborted = signal?.aborted ?? false;
 
+    // One promise that settles when the pass is cancelled or runs out of time; every pending
+    // open/read is raced against it so a stalled read cannot outlive the pass.
+    let tripInterrupt;
+    const interrupted = new Promise((resolve) => {
+      tripInterrupt = resolve;
+    });
+    let interruptReason = null;
+    const trip = (reason) => {
+      if (interruptReason === null) {
+        interruptReason = reason;
+        tripInterrupt(reason);
+      }
+    };
+
+    const onAbort = () => {
+      aborted = true;
+      trip("abort");
+    };
     if (signal) {
-      signal.addEventListener("abort", () => {
-        aborted = true;
-      }, { once: true });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    let timer = null;
+    const armDeadlineTimer = () => {
+      const wait = Math.max(1, Math.min(deadlineTickMs, deadline - now() + 1));
+      timer = setTimeout(() => {
+        if (now() > deadline) {
+          limitReached = true;
+          trip("deadline");
+        } else {
+          armDeadlineTimer();
+        }
+      }, wait);
+      if (typeof timer?.unref === "function") timer.unref();
+    };
+    armDeadlineTimer();
+
+    /** Turns a rejection into a value, and lets an interrupt win the race. */
+    function raceInterrupt(promise) {
+      return Promise.race([
+        promise.then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        ),
+        interrupted.then((reason) => ({ interrupt: reason })),
+      ]);
     }
 
     const results = new Array(list.length);
     let nextIdx = 0;
 
+    function resultFor(file, state, identity, baselineEntry, observedSha256 = null) {
+      return {
+        path: file.path,
+        expectedSha256: file.sha256,
+        observedSha256,
+        state,
+        identity,
+        // The identity first seen when the review opened; "replaced" is judged against it.
+        firstIdentity: baselineEntry?.firstIdentity ?? baselineEntry?.identity ?? identity ?? null,
+      };
+    }
+
     async function hashFile(file) {
       const baselineEntry = baselineMap.get(file.path);
+      const make = (state, identity = null, observed = null) => resultFor(file, state, identity, baselineEntry, observed);
+      const interruptedResult = (reason, identity = null) => make(reason === "abort" ? "unreadable" : "too_large", identity);
 
-      if (aborted) {
-        return {
-          path: file.path,
-          expectedSha256: file.sha256,
-          observedSha256: null,
-          state: "unreadable",
-          identity: null,
-        };
-      }
+      if (aborted) return make("unreadable");
 
       if (limitReached || now() > deadline || totalBytesHashed >= maxBytesPerPass) {
         limitReached = true;
-        return {
-          path: file.path,
-          expectedSha256: file.sha256,
-          observedSha256: null,
-          state: "too_large",
-          identity: null,
-        };
+        return make("too_large");
       }
 
-      let openRes;
-      try {
-        openRes = await openAgentPath(file.path);
-      } catch {
-        return {
-          path: file.path,
-          expectedSha256: file.sha256,
-          observedSha256: null,
-          state: "unreadable",
-          identity: null,
-        };
+      const openPromise = Promise.resolve().then(() => openAgentPath(file.path));
+      const opened = await raceInterrupt(openPromise);
+      if (opened.interrupt) {
+        // The open may still finish later; do not leak the handle it produces.
+        openPromise.then((r) => r?.handle && closeDetached(r.handle), () => {});
+        return interruptedResult(opened.interrupt);
       }
+      if (opened.error) return make("unreadable");
 
+      const openRes = opened.value;
       if (!openRes || !openRes.ok) {
         const code = openRes?.code;
         let state = "unreadable";
         if (code === "not_found") state = "missing";
         else if (code === "too_large") state = "too_large";
-        return {
-          path: file.path,
-          expectedSha256: file.sha256,
-          observedSha256: null,
-          state,
-          identity: null,
-        };
+        return make(state);
       }
 
       const { handle, dev, ino } = openRes;
@@ -167,59 +213,37 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
         ? { dev: String(dev), ino: String(ino) }
         : null;
 
+      let readPending = false;
       try {
-        if (aborted || signal?.aborted) {
-          aborted = true;
-          return {
-            path: file.path,
-            expectedSha256: file.sha256,
-            observedSha256: null,
-            state: "unreadable",
-            identity,
-          };
-        }
+        if (aborted) return make("unreadable", identity);
 
         const hash = crypto.createHash("sha256");
         const buffer = Buffer.alloc(chunkBytes);
 
         while (true) {
-          if (aborted || signal?.aborted) {
-            aborted = true;
-            return {
-              path: file.path,
-              expectedSha256: file.sha256,
-              observedSha256: null,
-              state: "unreadable",
-              identity,
-            };
-          }
-
+          if (aborted) return make("unreadable", identity);
           if (now() > deadline) {
             limitReached = true;
-            return {
-              path: file.path,
-              expectedSha256: file.sha256,
-              observedSha256: null,
-              state: "too_large",
-              identity,
-            };
+            return make("too_large", identity);
           }
 
-          const readResult = await handle.read(buffer, 0, chunkBytes, null);
-          const bytesRead = readResult?.bytesRead ?? 0;
+          readPending = true;
+          const read = await raceInterrupt(Promise.resolve().then(() => handle.read(buffer, 0, chunkBytes, null)));
+          if (read.interrupt) return interruptedResult(read.interrupt, identity);
+          readPending = false;
+          if (read.error) return make("unreadable", identity);
+
+          const bytesRead = read.value?.bytesRead ?? 0;
+          if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > chunkBytes) {
+            return make("unreadable", identity);
+          }
           if (bytesRead === 0) {
             break;
           }
 
           if (totalBytesHashed + bytesRead > maxBytesPerPass) {
             limitReached = true;
-            return {
-              path: file.path,
-              expectedSha256: file.sha256,
-              observedSha256: null,
-              state: "too_large",
-              identity,
-            };
+            return make("too_large", identity);
           }
 
           totalBytesHashed += bytesRead;
@@ -227,43 +251,33 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
 
           if (now() > deadline) {
             limitReached = true;
-            return {
-              path: file.path,
-              expectedSha256: file.sha256,
-              observedSha256: null,
-              state: "too_large",
-              identity,
-            };
+            return make("too_large", identity);
           }
+        }
+
+        // The deadline also covers the final read that reports end of file.
+        if (aborted) return make("unreadable", identity);
+        if (now() > deadline) {
+          limitReached = true;
+          return make("too_large", identity);
         }
 
         const observedSha256 = hash.digest("hex");
 
-        let state;
-        let isReplaced = false;
-        if (baselineEntry?.identity && identity) {
-          if (baselineEntry.identity.dev !== identity.dev || baselineEntry.identity.ino !== identity.ino) {
-            isReplaced = true;
-          }
-        }
-
-        if (isReplaced) {
-          state = "replaced";
-        } else {
-          state = fileState(file.sha256, observedSha256);
-        }
-
-        return {
-          path: file.path,
-          expectedSha256: file.sha256,
-          observedSha256,
-          state,
-          identity,
-        };
+        const first = baselineEntry?.firstIdentity ?? baselineEntry?.identity ?? null;
+        const isReplaced = Boolean(first && identity && (first.dev !== identity.dev || first.ino !== identity.ino));
+        const state = isReplaced ? "replaced" : fileState(file.sha256, observedSha256);
+        return make(state, identity, observedSha256);
+      } catch {
+        return make("unreadable", identity);
       } finally {
-        try {
-          await handle.close();
-        } catch {}
+        if (readPending) {
+          closeDetached(handle);
+        } else {
+          try {
+            await handle.close();
+          } catch {}
+        }
       }
     }
 
@@ -272,26 +286,30 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
         if (aborted || limitReached) break;
         const idx = nextIdx++;
         if (idx >= list.length) break;
-        results[idx] = await hashFile(list[idx]);
+        try {
+          results[idx] = await hashFile(list[idx]);
+        } catch {
+          results[idx] = resultFor(list[idx], "unreadable", null, baselineMap.get(list[idx].path));
+        }
       }
     }
 
-    const workerCount = Math.min(concurrentFiles, list.length);
-    const workers = [];
-    for (let i = 0; i < workerCount; i++) {
-      workers.push(worker());
+    try {
+      const workerCount = Math.min(concurrentFiles, list.length);
+      const workers = [];
+      for (let i = 0; i < workerCount; i++) {
+        workers.push(worker());
+      }
+      // Workers never reject; the pass (and so the queue) only advances once every one has settled.
+      await Promise.allSettled(workers);
+    } finally {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
-    await Promise.all(workers);
 
     for (let i = 0; i < list.length; i++) {
       if (!results[i]) {
-        results[i] = {
-          path: list[i].path,
-          expectedSha256: list[i].sha256,
-          observedSha256: null,
-          state: aborted ? "unreadable" : "too_large",
-          identity: null,
-        };
+        results[i] = resultFor(list[i], aborted ? "unreadable" : "too_large", null, baselineMap.get(list[i].path));
       }
     }
 
@@ -304,10 +322,43 @@ export function createVerifier({ openAgentPath, now = Date.now, limits = REVIEW_
   return {
     verify,
     queueSize,
+    limits: { maxBytesPerPass, passDeadlineMs, concurrentFiles, queuedVerifications, chunkBytes, deadlineTickMs },
   };
 }
 
-export async function decide({
+// Used by decide() when no store is supplied; with a store the claims live on the store.
+const fallbackClaims = new Set();
+
+export async function decide(args) {
+  const { review, decision, comment = "", store } = args;
+  if (!["approved", "changes_requested", "dismissed"].includes(decision)) {
+    throw new ReviewError("bad_decision", `Invalid decision: ${decision}`);
+  }
+
+  const commentBytes = new TextEncoder().encode(comment ?? "").byteLength;
+  if (commentBytes > 8192) {
+    throw new ReviewError("bad_comment", "Comment exceeds 8 KiB");
+  }
+
+  // Synchronous claim: nothing awaits between the check and the add, so two concurrent calls for the
+  // same review cannot both pass. It is released on any failure so the review can be retried.
+  const claims = store?.claims ?? fallbackClaims;
+  if (claims.has(review.reviewId)) {
+    throw new ReviewError("already_decided", `Review ${review.reviewId} is already decided`);
+  }
+  claims.add(review.reviewId);
+
+  let keepClaim = false;
+  try {
+    const result = await decideClaimed(args);
+    keepClaim = result.ok === true;
+    return result;
+  } finally {
+    if (!keepClaim) claims.delete(review.reviewId);
+  }
+}
+
+async function decideClaimed({
   review,
   shown,
   decision,
@@ -317,15 +368,7 @@ export async function decide({
   writeNextToReceipt = true,
   now = Date.now,
 }) {
-  if (!["approved", "changes_requested", "dismissed"].includes(decision)) {
-    throw new ReviewError("bad_decision", `Invalid decision: ${decision}`);
-  }
-
   const commentStr = comment ?? "";
-  const commentBytes = new TextEncoder().encode(commentStr).byteLength;
-  if (commentBytes > 8192) {
-    throw new ReviewError("bad_comment", "Comment exceeds 8 KiB");
-  }
 
   if (store && (await store.hasDecision(review.reviewId))) {
     throw new ReviewError("already_decided", `Review ${review.reviewId} is already decided`);
@@ -376,24 +419,37 @@ export async function decide({
     throw new ReviewError("invalid_decision", validation.errors);
   }
 
-  let nextOk = true;
-  if (review.receiptPath !== null && review.receiptPath !== undefined && writeNextToReceipt) {
-    nextOk = await writeDecisionNextToReceipt(review.receiptPath, decisionObj, { fs: store?.fs });
-  }
-
+  // 1. The store record (created exclusively) with persisted true.
   let storeOk = false;
   if (store) {
+    decisionObj.persisted = true;
     try {
-      decisionObj.persisted = nextOk;
       await store.save(decisionObj);
       storeOk = true;
-    } catch {
-      storeOk = false;
+    } catch (err) {
+      if (err?.code === "EEXIST") {
+        throw new ReviewError("already_decided", `Review ${review.reviewId} is already decided`);
+      }
+      decisionObj.persisted = false;
     }
   }
 
-  const persisted = Boolean(storeOk && nextOk);
-  decisionObj.persisted = persisted;
+  // 2. The sidecar, only after a successful store write. Its content is the returned decision.
+  let nextOk = true;
+  const wantsSidecar = review.receiptPath !== null && review.receiptPath !== undefined && writeNextToReceipt;
+  if (wantsSidecar && (storeOk || !store)) {
+    nextOk = await writeDecisionNextToReceipt(review.receiptPath, decisionObj, { fs: store?.fs });
+  }
+
+  // 3. Make the store copy agree with what is returned when the sidecar failed.
+  if (storeOk && !nextOk) {
+    decisionObj.persisted = false;
+    try {
+      await store.rewrite(decisionObj);
+    } catch {}
+  }
+
+  decisionObj.persisted = Boolean(storeOk && nextOk);
 
   return {
     ok: true,

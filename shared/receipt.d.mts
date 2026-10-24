@@ -136,6 +136,6 @@ export declare function fileState(
   opts?: { replaced?: boolean; missing?: boolean; unreadable?: boolean; tooLarge?: boolean }
 ): FileState;
 export declare function canDecide(
-  shown: Array<{ state: FileState; observedSha256: string | null; path?: string }>,
-  current: Array<{ state: FileState; observedSha256: string | null; path?: string }>
+  shown: Array<{ state: FileState; observedSha256: string | null; path?: string; identity?: { dev: string; ino: string } | null }>,
+  current: Array<{ state: FileState; observedSha256: string | null; path?: string; identity?: { dev: string; ino: string } | null }>
 ): boolean;

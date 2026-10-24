@@ -475,6 +475,18 @@ export function fileState(expected, observed, opts = {}) {
   return observed === expected ? "unchanged" : "changed";
 }
 
+function sameIdentity(a, b) {
+  const x = a ?? null;
+  const y = b ?? null;
+  if (x === null || y === null) return x === y;
+  return String(x.dev) === String(y.dev) && String(x.ino) === String(y.ino);
+}
+
+/**
+ * A decision is allowed only when the states being decided on are exactly the states that were shown:
+ * same files in the same order, same state and observed hash, and the same file identity (dev, ino).
+ * Identity matters because a file replaced a second time with identical bytes looks identical otherwise.
+ */
 export function canDecide(shown, current) {
   if (!Array.isArray(shown) || !Array.isArray(current)) {
     return false;
@@ -488,6 +500,7 @@ export function canDecide(shown, current) {
     if (!s || !c) return false;
     if (s.state !== c.state) return false;
     if (s.observedSha256 !== c.observedSha256) return false;
+    if (!sameIdentity(s.identity, c.identity)) return false;
     if (s.path !== undefined && c.path !== undefined && s.path !== c.path) {
       return false;
     }

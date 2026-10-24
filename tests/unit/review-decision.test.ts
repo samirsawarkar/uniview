@@ -97,7 +97,7 @@ describe("review-decision", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("changed");
     expect(result.current.results[0].state).toBe("changed");
-    expect(store.hasDecision(review.reviewId)).toBe(false);
+    expect(await store.hasDecision(review.reviewId)).toBe(false);
   });
 
   // Mutation caught: ignoring missing state at click-time and deciding anyway
@@ -118,7 +118,7 @@ describe("review-decision", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("changed");
     expect(result.current.results[0].state).toBe("missing");
-    expect(store.hasDecision(review.reviewId)).toBe(false);
+    expect(await store.hasDecision(review.reviewId)).toBe(false);
   });
 
   // Mutation caught: failing to persist or validate decision object on identical state
@@ -141,7 +141,7 @@ describe("review-decision", () => {
 
     const val = await validateDecision(result.decision);
     expect(val.ok).toBe(true);
-    expect(store.hasDecision(review.reviewId)).toBe(true);
+    expect(await store.hasDecision(review.reviewId)).toBe(true);
   });
 
   // Mutation caught: allowing multiple decisions on the same reviewId

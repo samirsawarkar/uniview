@@ -1,17 +1,78 @@
 import path from "node:path";
 import defaultFs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 
-export function createDecisionStore({ dir, fs = defaultFs, now = Date.now, max = 500, ttlDays = 30 }) {
+// Errors that mean "this filesystem cannot make hard links"; the exclusive copy is used instead.
+const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EINVAL", "EMLINK"]);
+
+function tempNameFor(dir, base) {
+  return path.join(dir, `.tmp-${base}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+}
+
+/** Writes `text` to a brand-new temp file (flag wx) and flushes it to disk before returning. */
+async function writeTempDurably(fs, tempPath, text) {
+  const handle = await fs.open(tempPath, "wx");
+  try {
+    await handle.writeFile(text, "utf8");
+    if (typeof handle.sync === "function") await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Creates `targetPath` with `text` only if nothing is there yet, and never overwrites.
+ * The content is written to a temp file first and then hard-linked into place, so the target
+ * either does not exist or is complete. Resolves "created" or "exists"; any other failure throws.
+ */
+async function createExclusive(fs, targetPath, text) {
+  const tempPath = tempNameFor(path.dirname(targetPath), path.basename(targetPath));
+  await writeTempDurably(fs, tempPath, text);
+  try {
+    try {
+      await fs.link(tempPath, targetPath);
+      return "created";
+    } catch (err) {
+      if (err?.code === "EEXIST") return "exists";
+      if (!LINK_UNSUPPORTED.has(err?.code)) throw err;
+    }
+    try {
+      await fs.copyFile(tempPath, targetPath, fsConstants.COPYFILE_EXCL);
+      return "created";
+    } catch (err) {
+      if (err?.code === "EEXIST") return "exists";
+      throw err;
+    }
+  } finally {
+    try {
+      await fs.unlink(tempPath);
+    } catch {}
+  }
+}
+
+export const STORE_DEFAULTS = Object.freeze({ max: 500, ttlDays: 30 });
+
+export function createDecisionStore({
+  dir,
+  fs = defaultFs,
+  now = Date.now,
+  max = STORE_DEFAULTS.max,
+  ttlDays = STORE_DEFAULTS.ttlDays,
+}) {
   const knownIds = new Set();
+  // In-memory claims taken synchronously by decide(): one decision per review per store.
+  const claims = new Set();
 
-  function hasDecision(reviewId) {
+  async function hasDecision(reviewId) {
     if (knownIds.has(reviewId)) return true;
     try {
-      if (typeof fs.existsSync === "function") {
-        return fs.existsSync(path.join(dir, `${reviewId}.json`));
-      }
-    } catch {}
-    return false;
+      await fs.access(path.join(dir, `${reviewId}.json`));
+      return true;
+    } catch (err) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return false;
+      // Cannot tell: fail closed rather than let a second decision through.
+      throw err;
+    }
   }
 
   async function prune() {
@@ -71,15 +132,33 @@ export function createDecisionStore({ dir, fs = defaultFs, now = Date.now, max =
     }
   }
 
+  /** Creates the record exclusively. Rejects with code EEXIST when the review already has one. */
   async function save(decision) {
     await fs.mkdir(dir, { recursive: true });
     const targetPath = path.join(dir, `${decision.reviewId}.json`);
-    const tempPath = path.join(
-      dir,
-      `${decision.reviewId}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
-    );
+    const outcome = await createExclusive(fs, targetPath, JSON.stringify(decision, null, 2));
+    if (outcome === "exists") {
+      knownIds.add(decision.reviewId);
+      throw Object.assign(new Error(`Decision for review ${decision.reviewId} already exists`), { code: "EEXIST" });
+    }
 
-    await fs.writeFile(tempPath, JSON.stringify(decision, null, 2), "utf8");
+    knownIds.add(decision.reviewId);
+    try {
+      await prune();
+    } catch {
+      // Retention is housekeeping; the record itself is safely on disk.
+    }
+  }
+
+  /** Atomically replaces this review's own existing record (used to correct `persisted`). */
+  async function rewrite(decision) {
+    const targetPath = path.join(dir, `${decision.reviewId}.json`);
+    const existing = JSON.parse(await fs.readFile(targetPath, "utf8"));
+    if (!existing || existing.reviewId !== decision.reviewId) {
+      throw Object.assign(new Error("Existing record belongs to another review"), { code: "EEXIST" });
+    }
+    const tempPath = tempNameFor(dir, path.basename(targetPath));
+    await writeTempDurably(fs, tempPath, JSON.stringify(decision, null, 2));
     try {
       await fs.rename(tempPath, targetPath);
     } catch (err) {
@@ -88,9 +167,6 @@ export function createDecisionStore({ dir, fs = defaultFs, now = Date.now, max =
       } catch {}
       throw err;
     }
-
-    knownIds.add(decision.reviewId);
-    await prune();
   }
 
   async function load(reviewId) {
@@ -108,21 +184,50 @@ export function createDecisionStore({ dir, fs = defaultFs, now = Date.now, max =
 
   return {
     fs,
+    claims,
+    limits: { max, ttlDays },
     hasDecision,
     save,
+    rewrite,
     load,
     prune,
   };
 }
 
+function comparablePath(p) {
+  const resolved = path.resolve(p);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** True when no component of `dir` is a symlink or junction (realpath equals the resolved path). */
+async function parentIsLinkFree(fs, dir) {
+  try {
+    const real = await fs.realpath(dir);
+    return comparablePath(real) === comparablePath(dir);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Writes `<receipt>.decision.json` next to the receipt. Never overwrites another review's decision:
+ * the file is created atomically only if absent. Resolves true when this review's decision is there.
+ */
 export async function writeDecisionNextToReceipt(receiptPath, decision, { fs = defaultFs } = {}) {
   if (!receiptPath || receiptPath === null || !decision) {
     return false;
   }
 
-  const targetPath = `${receiptPath}.decision.json`;
-
   try {
+    const resolvedReceipt = path.resolve(receiptPath);
+    const targetPath = `${resolvedReceipt}.decision.json`;
+    const dir = path.dirname(targetPath);
+
+    if (!(await parentIsLinkFree(fs, dir))) {
+      return false;
+    }
+
+    // A pre-existing symlink is refused outright; the exclusive create below is what closes the race.
     let stats;
     try {
       stats = await fs.lstat(targetPath);
@@ -131,40 +236,22 @@ export async function writeDecisionNextToReceipt(receiptPath, decision, { fs = d
         return false;
       }
     }
-
-    if (stats) {
-      if (stats.isSymbolicLink()) {
-        return false;
-      }
-      let existing;
-      try {
-        const raw = await fs.readFile(targetPath, "utf8");
-        existing = JSON.parse(raw);
-      } catch {
-        return false;
-      }
-      if (!existing || existing.reviewId !== decision.reviewId) {
-        return false;
-      }
-    }
-
-    const dir = path.dirname(targetPath);
-    const tempPath = path.join(
-      dir,
-      `.tmp-${path.basename(targetPath)}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`
-    );
-
-    await fs.writeFile(tempPath, JSON.stringify(decision, null, 2), "utf8");
-    try {
-      await fs.rename(tempPath, targetPath);
-    } catch {
-      try {
-        await fs.unlink(tempPath);
-      } catch {}
+    if (stats?.isSymbolicLink()) {
       return false;
     }
 
-    return true;
+    const outcome = await createExclusive(fs, targetPath, JSON.stringify(decision, null, 2));
+    if (outcome === "created") {
+      return true;
+    }
+
+    // Something is already there: fine only if it is this review's own decision.
+    const existingStats = await fs.lstat(targetPath);
+    if (existingStats.isSymbolicLink()) {
+      return false;
+    }
+    const existing = JSON.parse(await fs.readFile(targetPath, "utf8"));
+    return Boolean(existing) && existing.reviewId === decision.reviewId;
   } catch {
     return false;
   }

@@ -101,10 +101,10 @@ describe("review-persist", () => {
     expect(success).toBe(false);
   });
 
-  // Mutation caught: unhandled store failure or reporting persisted true when rename throws
-  it("sets persisted: false when store rename fails", async () => {
+  // Mutation caught: unhandled store failure or reporting persisted true when the exclusive create throws
+  it("sets persisted: false when the store record cannot be created", async () => {
     const store = createDecisionStore({ dir: storeDir, fs });
-    vi.spyOn(fs, "rename").mockRejectedValueOnce(new Error("Disk rename error"));
+    vi.spyOn(fs, "link").mockRejectedValueOnce(Object.assign(new Error("Disk link error"), { code: "EIO" }));
 
     const review = {
       reviewId: "11112222333344445555666677778888",
