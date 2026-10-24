@@ -113,6 +113,7 @@ export type FormatKind =
   | "markdown"
   | "json"
   | "viewspec"
+  | "receipt"
   | "text"
   | "font"
   | "legacy-office"

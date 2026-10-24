@@ -45,7 +45,7 @@ const ZIP_EXTS = new Set(["zip", "jar", "apk", "aar", "whl", "nupkg", "vsix", "x
 const LABELS: Record<FormatKind, string> = {
   pdf: "PDF document", image: "Image", tiff: "TIFF image", video: "Video", audio: "Audio",
   docx: "Word document", sheet: "Spreadsheet", pptx: "PowerPoint presentation", epub: "EPUB book",
-  zip: "ZIP archive", markdown: "Markdown", json: "JSON", viewspec: "UniView view", text: "Text", font: "Font",
+  zip: "ZIP archive", markdown: "Markdown", json: "JSON", viewspec: "UniView view", receipt: "Review receipt", text: "Text", font: "Font",
   "legacy-office": "Legacy Office document", binary: "Binary file",
 };
 
@@ -240,6 +240,10 @@ export function detect(name: string, head: Uint8Array, mimeHint?: string): Detec
 
   if (name.toLowerCase().endsWith(".uview.json")) {
     return make("viewspec", "uview.json", "extension");
+  }
+
+  if (name.toLowerCase().endsWith(".receipt.json")) {
+    return make("receipt", "receipt.json", "extension");
   }
 
   const byExt = byExtension(ext);

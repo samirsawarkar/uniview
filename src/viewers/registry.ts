@@ -17,6 +17,7 @@ const zip = lazy(() => import("./ZipViewer"));
 const markdown = lazy(() => import("./MarkdownViewer"));
 const json = lazy(() => import("./JsonViewer"));
 const viewspec = lazy(() => import("./ViewSpecViewer"));
+const receipt = lazy(() => import("./ReceiptViewer"));
 const text = lazy(() => import("./TextViewer"));
 const font = lazy(() => import("./FontViewer"));
 const legacy = lazy(() => import("./LegacyOfficeViewer"));
@@ -24,7 +25,7 @@ export const HexViewer = lazy(() => import("./HexViewer"));
 export const TextViewer = text;
 
 export const VIEWERS: Record<FormatKind, Lazy> = {
-  pdf, image, tiff, video: media, audio: media, docx, sheet, pptx, epub, zip, markdown, json, viewspec, text, font,
+  pdf, image, tiff, video: media, audio: media, docx, sheet, pptx, epub, zip, markdown, json, viewspec, receipt, text, font,
   "legacy-office": legacy, binary: HexViewer,
 };
 

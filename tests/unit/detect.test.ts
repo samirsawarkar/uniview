@@ -137,4 +137,14 @@ describe("detect view specs", () => {
   it("detects uview.json without dot prefix part as json", () => {
     expect(detect("uview.json", empty).kind).toBe("json");
   });
+
+  it("detects .receipt.json as receipt", () => {
+    // Mutation: failing to recognize .receipt.json as review receipt format
+    expect(detect("task.receipt.json", empty).kind).toBe("receipt");
+  });
+
+  it("detects .RECEIPT.JSON case-insensitively as receipt", () => {
+    // Mutation: case-sensitive .receipt.json check failing on uppercase names
+    expect(detect("TASK.RECEIPT.JSON", empty).kind).toBe("receipt");
+  });
 });
