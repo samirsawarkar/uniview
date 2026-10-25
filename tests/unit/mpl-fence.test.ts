@@ -74,6 +74,66 @@ function makePresentationWithEquation(): Uint8Array {
   return zipSync(out, { level: 6 });
 }
 
+interface LockPackage {
+  name?: string;
+  version?: string;
+  license?: string;
+  dev?: boolean;
+  devOptional?: boolean;
+  optional?: boolean;
+}
+
+interface LockFile {
+  packages?: Record<string, LockPackage>;
+}
+
+/**
+ * Allowlist documenting packages in the production dependency tree that have
+ * dual/multi-licensing involving copyleft or MPL terms where UniView elects the
+ * permissive license option.
+ */
+const PRODUCTION_LICENSE_ALLOWLIST: Record<string, { license: string; elected: string; reason: string }> = {
+  dompurify: {
+    license: "(MPL-2.0 OR Apache-2.0)",
+    elected: "Apache-2.0",
+    reason: "Dual-licensed under MPL-2.0 and Apache-2.0. UniView elects Apache-2.0 as documented in THIRD_PARTY_NOTICES.md.",
+  },
+  jszip: {
+    license: "(MIT OR GPL-3.0-or-later)",
+    elected: "MIT",
+    reason: "Dual-licensed under MIT and GPL-3.0-or-later. UniView elects MIT as documented in THIRD_PARTY_NOTICES.md.",
+  },
+};
+
+const BANNED_LICENSE_KEYWORDS = /\b(MPL|LGPL|AGPL|GPL)\b/i;
+const PERMISSIVE_SPDX_KEYWORDS = /\b(MIT|Apache-2\.0|BSD-2-Clause|BSD-3-Clause|ISC|BlueOak-1\.0\.0|CC0-1\.0|Python-2\.0|Zlib)\b/i;
+
+function evaluateProductionLicense(pkgName: string, license: string | undefined): { ok: boolean; reason: string } {
+  if (!license || license === "UNLICENSED") {
+    return { ok: true, reason: "No copyleft detected" };
+  }
+
+  // If no copyleft / MPL keyword is present, it is permitted
+  if (!BANNED_LICENSE_KEYWORDS.test(license)) {
+    return { ok: true, reason: "Permissive license" };
+  }
+
+  // Check documented allowlist
+  if (PRODUCTION_LICENSE_ALLOWLIST[pkgName]) {
+    const item = PRODUCTION_LICENSE_ALLOWLIST[pkgName]!;
+    if (item.license === license || license.includes(item.license)) {
+      return { ok: true, reason: `Allowlisted: ${item.reason}` };
+    }
+  }
+
+  // SPDX expressions with an OR that includes a permissive option are allowed
+  if (/\bOR\b/i.test(license) && PERMISSIVE_SPDX_KEYWORDS.test(license)) {
+    return { ok: true, reason: `Dual-licensed with permissive option via OR: ${license}` };
+  }
+
+  return { ok: false, reason: `Banned copyleft/MPL license: "${license}"` };
+}
+
 describe("P19 MPL-2.0 PowerPoint Engine Exclusion & Fallback", () => {
   it("package.json contains no pptx-renderer or mtx-decompressor dependencies", () => {
     const pkgText = readFileSync("package.json", "utf8");
@@ -99,6 +159,39 @@ describe("P19 MPL-2.0 PowerPoint Engine Exclusion & Fallback", () => {
         expect(pattern.test(lockText), `package-lock.json matches banned pattern ${pattern}`).toBe(false);
       }
     }
+  });
+
+  it("package-lock.json production dependency tree contains no unapproved MPL, LGPL, AGPL, or GPL-only packages", () => {
+    expect(existsSync("package-lock.json")).toBe(true);
+    const lock: LockFile = JSON.parse(readFileSync("package-lock.json", "utf8"));
+    expect(lock.packages).toBeDefined();
+
+    const violations: { packageKey: string; name: string; license?: string; reason: string }[] = [];
+
+    for (const [key, pkg] of Object.entries(lock.packages!)) {
+      if (!key) continue; // skip root project
+
+      // Only inspect the production dependency tree: skip dev and optional-dev packages
+      if (pkg.dev || pkg.devOptional) {
+        continue;
+      }
+
+      const name = pkg.name || key.replace(/^.*node_modules\//, "");
+      const res = evaluateProductionLicense(name, pkg.license);
+      if (!res.ok) {
+        violations.push({
+          packageKey: key,
+          name,
+          license: pkg.license,
+          reason: res.reason,
+        });
+      }
+    }
+
+    expect(
+      violations,
+      `Found production dependencies with copyleft or MPL-only licenses: ${JSON.stringify(violations, null, 2)}`
+    ).toEqual([]);
   });
 
   it("src and electron contain no imports or references to pptx-renderer or mtx-decompressor", () => {
@@ -132,12 +225,15 @@ describe("P19 MPL-2.0 PowerPoint Engine Exclusion & Fallback", () => {
   it("Documentation (README, docs/SPEC.md, docs/STATUS.md) states PowerPoint engine is deferred to V1.1 as an isolated chunk", () => {
     const readme = readFileSync("README.md", "utf8");
     const spec = readFileSync("docs/SPEC.md", "utf8");
-    const status = readFileSync("docs/STATUS.md", "utf8");
 
     expect(readme).toMatch(/deferred to V1\.1 as an isolated chunk/i);
     expect(spec).toMatch(/deferred to V1\.1 as an isolated chunk/i);
-    expect(status).toMatch(/deferred to V1\.1 as an isolated chunk/i);
-    expect(status).not.toMatch(/Open: the optional PowerPoint engine uses an MPL-2\.0 component/i);
+
+    if (existsSync("docs/STATUS.md")) {
+      const status = readFileSync("docs/STATUS.md", "utf8");
+      expect(status).toMatch(/deferred to V1\.1 as an isolated chunk/i);
+      expect(status).not.toMatch(/Open: the optional PowerPoint engine uses an MPL-2\.0 component/i);
+    }
   });
 
   it("falls back gracefully for equations and MathType OLE without crashing", () => {

@@ -6,6 +6,28 @@ import { deflateSync } from "node:zlib";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 
+export const ICON_CONSTANTS = {
+  viewBox: "0 0 512 512",
+  viewBoxSize: 512,
+  colors: {
+    primary: "#2563eb",
+    primaryRgb: [37, 99, 235],
+    white: "#ffffff",
+    monochrome: "#000000",
+  },
+  geometry: {
+    squircleRadius: 112,
+    squircleRadiusRatio: 0.22,
+    lensArcRadius: 185,
+    pupilRadius: 54,
+    pupilRadiusRatio: 0.105,
+    glintRadius: 16,
+    glintRadiusRatio: 0.032,
+    glintCx: 276,
+    glintCy: 236,
+  },
+};
+
 // CRC32 implementation
 const CRC_TABLE = new Uint32Array(256);
 for (let n = 0; n < 256; n++) {
@@ -27,15 +49,31 @@ function calcCrc32(buf, offset = 0, length = buf.length) {
 /**
  * Encodes raw RGBA buffer into PNG format
  */
-export function encodePng(width, height, rgba) {
-  const bytesPerPixel = 4;
+export function encodePng(width, height, data, colorType = 6) {
+  const bytesPerPixel = colorType === 2 ? 3 : 4;
   const lineLength = width * bytesPerPixel;
   const scanlines = Buffer.alloc(height * (lineLength + 1));
 
   for (let y = 0; y < height; y++) {
     const scanlineOffset = y * (lineLength + 1);
     scanlines[scanlineOffset] = 0; // Filter: None
-    rgba.copy(scanlines, scanlineOffset + 1, y * lineLength, (y + 1) * lineLength);
+
+    if (colorType === 2) {
+      if (data.length === width * height * 4) {
+        // Strip alpha channel from RGBA data
+        for (let x = 0; x < width; x++) {
+          const srcIdx = (y * width + x) * 4;
+          const dstIdx = scanlineOffset + 1 + x * 3;
+          scanlines[dstIdx] = data[srcIdx];
+          scanlines[dstIdx + 1] = data[srcIdx + 1];
+          scanlines[dstIdx + 2] = data[srcIdx + 2];
+        }
+      } else {
+        data.copy(scanlines, scanlineOffset + 1, y * lineLength, (y + 1) * lineLength);
+      }
+    } else {
+      data.copy(scanlines, scanlineOffset + 1, y * lineLength, (y + 1) * lineLength);
+    }
   }
 
   const compressed = deflateSync(scanlines, { level: 6 });
@@ -48,7 +86,7 @@ export function encodePng(width, height, rgba) {
   ihdrData.writeUInt32BE(width, 0);
   ihdrData.writeUInt32BE(height, 4);
   ihdrData[8] = 8; // Bit depth: 8
-  ihdrData[9] = 6; // Color type: 6 (RGBA)
+  ihdrData[9] = colorType; // Color type: 2 (RGB) or 6 (RGBA)
   ihdrData[10] = 0; // Compression
   ihdrData[11] = 0; // Filter
   ihdrData[12] = 0; // Interlace (no)
@@ -110,6 +148,9 @@ export function renderSquareIcon(size, options = {}) {
   const rgba = Buffer.alloc(size * size * 4);
   const primaryR = 37, primaryG = 99, primaryB = 235; // #2563eb
   const mono = options.monochrome;
+  const fullBleed = Boolean(options.fullBleed);
+  const colorType = options.colorType ?? 6;
+
   const fillR = mono ? 0 : primaryR;
   const fillG = mono ? 0 : primaryG;
   const fillB = mono ? 0 : primaryB;
@@ -136,12 +177,15 @@ export function renderSquareIcon(size, options = {}) {
       const x = px + 0.5 - center;
       const idx = (py * size + px) * 4;
 
-      // 1. Squircle SDF
-      const qx = Math.max(0, Math.abs(x) - (hw - cornerRadius));
-      const qy = Math.max(0, Math.abs(y) - (hh - cornerRadius));
-      const distSquircle = Math.hypot(qx, qy) - cornerRadius;
-      const boxAlpha = Math.max(0, Math.min(1, 0.5 - distSquircle));
-      if (boxAlpha <= 0) continue;
+      let boxAlpha = 1.0;
+      if (!fullBleed) {
+        // Squircle SDF
+        const qx = Math.max(0, Math.abs(x) - (hw - cornerRadius));
+        const qy = Math.max(0, Math.abs(y) - (hh - cornerRadius));
+        const distSquircle = Math.hypot(qx, qy) - cornerRadius;
+        boxAlpha = Math.max(0, Math.min(1, 0.5 - distSquircle));
+        if (boxAlpha <= 0) continue;
+      }
 
       // Base background color
       let cr = fillR;
@@ -188,7 +232,7 @@ export function renderSquareIcon(size, options = {}) {
     }
   }
 
-  return encodePng(size, size, rgba);
+  return encodePng(size, size, rgba, colorType);
 }
 
 export function renderRoundIcon(size) {
@@ -424,7 +468,10 @@ export async function generateAll() {
   const icon512 = renderSquareIcon(512);
   writeAsset("build/icon.png", icon512);
   writeAsset("public/icon.png", icon512);
-  writeAsset("assets/branding/play-store-512.png", icon512);
+
+  // Play Store 512: full-bleed square (Play masks it) with no transparent corners
+  const playStore512 = renderSquareIcon(512, { fullBleed: true });
+  writeAsset("assets/branding/play-store-512.png", playStore512);
 
   const favicon64 = renderSquareIcon(64);
   writeAsset("public/favicon.png", favicon64);
@@ -432,8 +479,8 @@ export async function generateAll() {
   const logo256 = renderSquareIcon(256);
   writeAsset("src/ui/assets/logo.png", logo256);
 
-  // 2. iOS AppIcon
-  const icon1024 = renderSquareIcon(1024);
+  // 2. iOS AppIcon: full-bleed OPAQUE square with no alpha channel (PNG colour type 2)
+  const icon1024 = renderSquareIcon(1024, { fullBleed: true, colorType: 2 });
   writeAsset("ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png", icon1024);
 
   // 3. iOS Splash Screens (2732x2732)
