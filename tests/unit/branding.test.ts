@@ -1,93 +1,62 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { inflateSync } from "node:zlib";
+
+// Always-on tests only READ the committed assets. Regeneration lives in branding-generate.test.ts
+// (UNIVIEW_GENERATE_ICONS=1) or `node scripts/generate-icons.mjs`.
 
 const ROOT = resolve(".");
+const MASTER_REL = "assets/branding/uniview-logo-source.png";
+const MASTER_SHA256 = "10eb69956383c4bc78cf00eb4dda95710a7cf1a7417f201ff4fdca1bb6203e3a";
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const RES = "android/app/src/main/res";
 
 function sha256(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
 
+function readPngHeader(buf: Buffer): { width: number; height: number; bitDepth: number; colorType: number } {
+  if (buf.length < 33) throw new Error("PNG buffer too short");
+  if (!buf.subarray(0, 8).equals(PNG_MAGIC)) throw new Error("Not a PNG signature");
+  if (buf.toString("ascii", 12, 16) !== "IHDR") throw new Error("Expected IHDR chunk");
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), bitDepth: buf.readUInt8(24), colorType: buf.readUInt8(25) };
+}
+
 function readPngDimensions(buf: Buffer): { width: number; height: number } {
-  if (buf.length < 24) throw new Error("PNG buffer too short");
-  const magic = buf.subarray(0, 8);
-  const expectedMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (!magic.equals(expectedMagic)) throw new Error("Not a PNG signature");
-  const type = buf.toString("ascii", 12, 16);
-  if (type !== "IHDR") throw new Error("Expected IHDR chunk");
-  const width = buf.readUInt32BE(16);
-  const height = buf.readUInt32BE(20);
+  const { width, height } = readPngHeader(buf);
   return { width, height };
 }
 
-function readPngDetails(buf: Buffer): {
+interface IcoEntry {
   width: number;
   height: number;
-  bitDepth: number;
-  colorType: number;
-  pixel0: { r: number; g: number; b: number; a: number };
-} {
-  if (buf.length < 24) throw new Error("PNG buffer too short");
-  const magic = buf.subarray(0, 8);
-  const expectedMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (!magic.equals(expectedMagic)) throw new Error("Not a PNG signature");
-  const type = buf.toString("ascii", 12, 16);
-  if (type !== "IHDR") throw new Error("Expected IHDR chunk");
-  const width = buf.readUInt32BE(16);
-  const height = buf.readUInt32BE(20);
-  const bitDepth = buf.readUInt8(24);
-  const colorType = buf.readUInt8(25);
-
-  let offset = 8;
-  const idatParts: Buffer[] = [];
-  while (offset < buf.length) {
-    const len = buf.readUInt32BE(offset);
-    const chunkType = buf.toString("ascii", offset + 4, offset + 8);
-    if (chunkType === "IDAT") {
-      idatParts.push(buf.subarray(offset + 8, offset + 8 + len));
-    }
-    offset += 8 + len + 4;
-  }
-
-  const decompressed = inflateSync(Buffer.concat(idatParts));
-  // First byte is filter type for line 0
-  const r = decompressed[1] ?? 0;
-  const g = decompressed[2] ?? 0;
-  const b = decompressed[3] ?? 0;
-  const a = colorType === 2 ? 255 : (decompressed[4] ?? 0);
-
-  return { width, height, bitDepth, colorType, pixel0: { r, g, b, a } };
+  size: number;
+  offset: number;
 }
 
-function readIcoSizes(buf: Buffer): { width: number; height: number }[] {
+function readIco(buf: Buffer): IcoEntry[] {
   if (buf.length < 6) throw new Error("ICO buffer too short");
-  const reserved = buf.readUInt16LE(0);
-  const type = buf.readUInt16LE(2);
+  if (buf.readUInt16LE(0) !== 0 || buf.readUInt16LE(2) !== 1) throw new Error("Not a valid ICO format");
   const count = buf.readUInt16LE(4);
-  if (reserved !== 0 || type !== 1) throw new Error("Not a valid ICO format");
-  const sizes: { width: number; height: number }[] = [];
+  const entries: IcoEntry[] = [];
   for (let i = 0; i < count; i++) {
-    const offset = 6 + i * 16;
-    let w = buf.readUInt8(offset);
-    let h = buf.readUInt8(offset + 1);
-    if (w === 0) w = 256;
-    if (h === 0) h = 256;
-    sizes.push({ width: w, height: h });
+    const o = 6 + i * 16;
+    entries.push({
+      width: buf.readUInt8(o) || 256,
+      height: buf.readUInt8(o + 1) || 256,
+      size: buf.readUInt32LE(o + 8),
+      offset: buf.readUInt32LE(o + 12),
+    });
   }
-  return sizes;
+  return entries;
 }
 
-const HASH_LOG_PATH = join(ROOT, "assets/branding/removed-capacitor-assets.txt");
-
-function loadCapacitorLedger(): Set<string> {
-  if (!existsSync(HASH_LOG_PATH)) {
-    throw new Error(`Capacitor hash ledger missing at ${HASH_LOG_PATH}`);
-  }
-  const lines = readFileSync(HASH_LOG_PATH, "utf8").split("\n");
+function loadLedger(rel: string): Set<string> {
+  const path = join(ROOT, rel);
+  if (!existsSync(path)) throw new Error(`Hash ledger missing at ${path}`);
   const banned = new Set<string>();
-  for (const line of lines) {
+  for (const line of readFileSync(path, "utf8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const [hash] = trimmed.split(/\s+/);
@@ -96,7 +65,7 @@ function loadCapacitorLedger(): Set<string> {
   return banned;
 }
 
-const IMAGE_REGEX = /\.(png|ico|jpg|jpeg|webp)$/i;
+const IMAGE_REGEX = /\.(png|ico|jpg|jpeg|webp|svg)$/i;
 const IGNORED_IMAGE_PATHS = [
   /[\\/]android[\\/]app[\\/]build[\\/]/i,
   /[\\/]android[\\/]build[\\/]/i,
@@ -106,219 +75,182 @@ const IGNORED_IMAGE_PATHS = [
   /[\\/]node_modules[\\/]/i,
 ];
 
-function isTrackedImagePath(filePath: string): boolean {
-  return !IGNORED_IMAGE_PATHS.some((re) => re.test(filePath));
-}
-
-function collectTrackedImages(dir: string): string[] {
+function collectImages(dir: string): string[] {
   const fullDir = join(ROOT, dir);
   if (!existsSync(fullDir)) return [];
   const results: string[] = [];
-
-  function walk(current: string) {
-    const entries = readdirSync(current, { withFileTypes: true });
-    for (const entry of entries) {
+  const walk = (current: string) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
       const full = join(current, entry.name);
-      if (entry.isDirectory()) {
-        if (isTrackedImagePath(full + "/")) {
-          walk(full);
-        }
-      } else if (entry.isFile() && IMAGE_REGEX.test(entry.name) && isTrackedImagePath(full)) {
-        results.push(full);
-      }
+      if (IGNORED_IMAGE_PATHS.some((re) => re.test(full + (entry.isDirectory() ? "/" : "")))) continue;
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && IMAGE_REGEX.test(entry.name)) results.push(full);
     }
-  }
-
+  };
   walk(fullDir);
   return results;
 }
 
+const sq = (n: number) => ({ width: n, height: n });
+
 const REQUIRED_PNG_DIMENSIONS: Record<string, { width: number; height: number }> = {
-  "build/icon.png": { width: 512, height: 512 },
-  "public/icon.png": { width: 512, height: 512 },
-  "public/favicon.png": { width: 64, height: 64 },
-  "src/ui/assets/logo.png": { width: 256, height: 256 },
-  "assets/branding/play-store-512.png": { width: 512, height: 512 },
-  "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": { width: 1024, height: 1024 },
-  "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png": { width: 2732, height: 2732 },
-  "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-1.png": { width: 2732, height: 2732 },
-  "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-2.png": { width: 2732, height: 2732 },
-  "android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png": { width: 108, height: 108 },
-  "android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png": { width: 162, height: 162 },
-  "android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png": { width: 216, height: 216 },
-  "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png": { width: 324, height: 324 },
-  "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png": { width: 432, height: 432 },
-  "android/app/src/main/res/mipmap-mdpi/ic_launcher.png": { width: 48, height: 48 },
-  "android/app/src/main/res/mipmap-hdpi/ic_launcher.png": { width: 72, height: 72 },
-  "android/app/src/main/res/mipmap-xhdpi/ic_launcher.png": { width: 96, height: 96 },
-  "android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png": { width: 144, height: 144 },
-  "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": { width: 192, height: 192 },
-  "android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png": { width: 48, height: 48 },
-  "android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png": { width: 72, height: 72 },
-  "android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png": { width: 96, height: 96 },
-  "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png": { width: 144, height: 144 },
-  "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png": { width: 192, height: 192 },
-  "android/app/src/main/res/drawable/splash.png": { width: 480, height: 320 },
-  "android/app/src/main/res/drawable-port-mdpi/splash.png": { width: 320, height: 480 },
-  "android/app/src/main/res/drawable-port-hdpi/splash.png": { width: 480, height: 800 },
-  "android/app/src/main/res/drawable-port-xhdpi/splash.png": { width: 720, height: 1280 },
-  "android/app/src/main/res/drawable-port-xxhdpi/splash.png": { width: 960, height: 1600 },
-  "android/app/src/main/res/drawable-port-xxxhdpi/splash.png": { width: 1280, height: 1920 },
-  "android/app/src/main/res/drawable-land-mdpi/splash.png": { width: 480, height: 320 },
-  "android/app/src/main/res/drawable-land-hdpi/splash.png": { width: 800, height: 480 },
-  "android/app/src/main/res/drawable-land-xhdpi/splash.png": { width: 1280, height: 720 },
-  "android/app/src/main/res/drawable-land-xxhdpi/splash.png": { width: 1600, height: 960 },
-  "android/app/src/main/res/drawable-land-xxxhdpi/splash.png": { width: 1920, height: 1280 },
+  "build/icon.png": sq(512),
+  "build/icon-1024.png": sq(1024),
+  "public/icon.png": sq(512),
+  "public/favicon.png": sq(64),
+  "src/ui/assets/logo.png": sq(256),
+  "assets/branding/play-store-512.png": sq(512),
+  "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": sq(1024),
+  "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png": sq(2732),
+  "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-1.png": sq(2732),
+  "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-2.png": sq(2732),
+  [`${RES}/mipmap-mdpi/ic_launcher_foreground.png`]: sq(108),
+  [`${RES}/mipmap-hdpi/ic_launcher_foreground.png`]: sq(162),
+  [`${RES}/mipmap-xhdpi/ic_launcher_foreground.png`]: sq(216),
+  [`${RES}/mipmap-xxhdpi/ic_launcher_foreground.png`]: sq(324),
+  [`${RES}/mipmap-xxxhdpi/ic_launcher_foreground.png`]: sq(432),
+  [`${RES}/mipmap-mdpi/ic_launcher.png`]: sq(48),
+  [`${RES}/mipmap-hdpi/ic_launcher.png`]: sq(72),
+  [`${RES}/mipmap-xhdpi/ic_launcher.png`]: sq(96),
+  [`${RES}/mipmap-xxhdpi/ic_launcher.png`]: sq(144),
+  [`${RES}/mipmap-xxxhdpi/ic_launcher.png`]: sq(192),
+  [`${RES}/mipmap-mdpi/ic_launcher_round.png`]: sq(48),
+  [`${RES}/mipmap-hdpi/ic_launcher_round.png`]: sq(72),
+  [`${RES}/mipmap-xhdpi/ic_launcher_round.png`]: sq(96),
+  [`${RES}/mipmap-xxhdpi/ic_launcher_round.png`]: sq(144),
+  [`${RES}/mipmap-xxxhdpi/ic_launcher_round.png`]: sq(192),
+  [`${RES}/drawable/splash.png`]: { width: 480, height: 320 },
+  [`${RES}/drawable-port-mdpi/splash.png`]: { width: 320, height: 480 },
+  [`${RES}/drawable-port-hdpi/splash.png`]: { width: 480, height: 800 },
+  [`${RES}/drawable-port-xhdpi/splash.png`]: { width: 720, height: 1280 },
+  [`${RES}/drawable-port-xxhdpi/splash.png`]: { width: 960, height: 1600 },
+  [`${RES}/drawable-port-xxxhdpi/splash.png`]: { width: 1280, height: 1920 },
+  [`${RES}/drawable-land-mdpi/splash.png`]: { width: 480, height: 320 },
+  [`${RES}/drawable-land-hdpi/splash.png`]: { width: 800, height: 480 },
+  [`${RES}/drawable-land-xhdpi/splash.png`]: { width: 1280, height: 720 },
+  [`${RES}/drawable-land-xxhdpi/splash.png`]: { width: 1600, height: 960 },
+  [`${RES}/drawable-land-xxxhdpi/splash.png`]: { width: 1920, height: 1280 },
 };
 
-describe("UniView Branding Asset Replacement (P20 / P21)", () => {
-  beforeAll(async () => {
-    // Note: branding.test.ts strictly reads committed assets.
-    // If a regeneration marker exists from an ongoing test run, wait briefly for it to complete.
-    const marker = join(ROOT, "assets/branding/.regenerate");
-    if (existsSync(marker)) {
-      for (let i = 0; i < 200; i++) {
-        if (!existsSync(marker)) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-  }, 30_000);
+const OPAQUE_PNGS = ["assets/branding/play-store-512.png", "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"];
 
-  it("master SVG source and README exist in assets/branding", () => {
-    expect(existsSync(join(ROOT, "assets/branding/uniview-icon.svg"))).toBe(true);
-    expect(existsSync(join(ROOT, "assets/branding/uniview-icon-monochrome.svg"))).toBe(true);
-    expect(existsSync(join(ROOT, "assets/branding/README.md"))).toBe(true);
-
-    const svg = readFileSync(join(ROOT, "assets/branding/uniview-icon.svg"), "utf8");
-    expect(svg).toContain("<svg");
-    expect(svg).toContain("#2563eb");
-
-    const readme = readFileSync(join(ROOT, "assets/branding/README.md"), "utf8");
-    expect(readme.toLowerCase()).toContain("placeholder");
-    expect(readme.toLowerCase()).toContain("replace");
+describe("UniView logo: the CEO-supplied image is the only logo", () => {
+  it("the master logo exists, is a 135x133 PNG, and its hash equals the one recorded in the README", () => {
+    const full = join(ROOT, MASTER_REL);
+    expect(existsSync(full)).toBe(true);
+    const buf = readFileSync(full);
+    expect(readPngDimensions(buf)).toEqual({ width: 135, height: 133 });
+    const recorded = readFileSync(join(ROOT, "assets/branding/README.md"), "utf8").match(/Master SHA-256:\s*`([0-9a-f]{64})`/);
+    expect(recorded, "README must record the master SHA-256").not.toBeNull();
+    expect(sha256(buf)).toBe(recorded![1]);
+    expect(sha256(buf)).toBe(MASTER_SHA256);
   });
 
-  it("master SVG key numbers (colours, viewBox, geometry) match generator ICON_CONSTANTS", async () => {
-    const { ICON_CONSTANTS } = await import("../../scripts/generate-icons.mjs");
-    const svgPath = join(ROOT, "assets/branding/uniview-icon.svg");
-    expect(existsSync(svgPath)).toBe(true);
-    const svg = readFileSync(svgPath, "utf8");
+  it("assets/branding contains only the master, README, ledgers and the generated Play Store icon", () => {
+    expect(readdirSync(join(ROOT, "assets/branding")).sort()).toEqual(
+      [
+        "README.md",
+        "play-store-512.png",
+        "removed-capacitor-assets.txt",
+        "removed-placeholder-assets.txt",
+        "uniview-logo-source.png",
+      ].sort()
+    );
+  });
 
-    expect(svg).toContain(`viewBox="${ICON_CONSTANTS.viewBox}"`);
-    expect(svg).toContain(`width="${ICON_CONSTANTS.viewBoxSize}"`);
-    expect(svg).toContain(`height="${ICON_CONSTANTS.viewBoxSize}"`);
-    expect(svg).toContain(ICON_CONSTANTS.colors.primary);
-    expect(svg).toContain(ICON_CONSTANTS.colors.white);
-    expect(svg).toContain(`rx="${ICON_CONSTANTS.geometry.squircleRadius}"`);
-    expect(svg).toContain(`A ${ICON_CONSTANTS.geometry.lensArcRadius} ${ICON_CONSTANTS.geometry.lensArcRadius}`);
-    expect(svg).toContain(`r="${ICON_CONSTANTS.geometry.pupilRadius}"`);
-    expect(svg).toContain(`r="${ICON_CONSTANTS.geometry.glintRadius}"`);
-    expect(svg).toContain(`cx="${ICON_CONSTANTS.geometry.glintCx}" cy="${ICON_CONSTANTS.geometry.glintCy}"`);
+  it("the blue-eye placeholder masters are gone (no SVG, monochrome layer or vector foreground)", () => {
+    for (const rel of [
+      "assets/branding/uniview-icon.svg",
+      "assets/branding/uniview-icon-monochrome.svg",
+      `${RES}/drawable/ic_launcher_monochrome.xml`,
+      `${RES}/drawable-v24/ic_launcher_foreground.xml`,
+    ]) {
+      expect(existsSync(join(ROOT, rel)), `${rel} must not exist`).toBe(false);
+    }
   });
 
   it("electron-builder.json icon paths exist and resolve to valid files", () => {
     const config = JSON.parse(readFileSync(join(ROOT, "electron-builder.json"), "utf8"));
-    const winIcon = config.win?.icon;
-    const macIcon = config.mac?.icon;
-    const linuxIcon = config.linux?.icon;
-
-    expect(winIcon).toBe("build/icon.ico");
-    expect(existsSync(join(ROOT, winIcon))).toBe(true);
-    expect(existsSync(join(ROOT, macIcon))).toBe(true);
-    expect(existsSync(join(ROOT, linuxIcon))).toBe(true);
-  });
-
-  it("build/icon.ico exists and contains all 7 required dimensions (16,24,32,48,64,128,256)", () => {
-    const icoPath = join(ROOT, "build/icon.ico");
-    expect(existsSync(icoPath)).toBe(true);
-    const buf = readFileSync(icoPath);
-    const sizes = readIcoSizes(buf);
-    const required = [16, 24, 32, 48, 64, 128, 256];
-    for (const r of required) {
-      expect(sizes).toContainEqual({ width: r, height: r });
+    expect(config.win?.icon).toBe("build/icon.ico");
+    for (const icon of [config.win?.icon, config.mac?.icon, config.linux?.icon]) {
+      expect(existsSync(join(ROOT, icon)), `${icon} must exist`).toBe(true);
     }
   });
 
-  it("every required PNG asset exists and matches required width/height", () => {
-    for (const [rel, expectedDim] of Object.entries(REQUIRED_PNG_DIMENSIONS)) {
+  it("the Electron window icon is dist/icon.png, which is public/icon.png as built", () => {
+    const main = readFileSync(join(ROOT, "electron/main.mjs"), "utf8");
+    expect(main).toContain('icon: join(here, "..", "dist", "icon.png")');
+    expect(existsSync(join(ROOT, "public/icon.png"))).toBe(true);
+  });
+
+  it("build/icon.ico holds PNG frames at 16, 24, 32, 48, 64, 128 and 256", () => {
+    const buf = readFileSync(join(ROOT, "build/icon.ico"));
+    const entries = readIco(buf);
+    expect(entries.map((e) => e.width).sort((a, b) => a - b)).toEqual([16, 24, 32, 48, 64, 128, 256]);
+    for (const e of entries) {
+      expect(e.width).toBe(e.height);
+      const frame = buf.subarray(e.offset, e.offset + e.size);
+      expect(readPngDimensions(frame), `ICO frame ${e.width}`).toEqual({ width: e.width, height: e.height });
+    }
+  });
+
+  it("every required PNG asset exists with the right dimensions", () => {
+    for (const [rel, expected] of Object.entries(REQUIRED_PNG_DIMENSIONS)) {
       const full = join(ROOT, rel);
       expect(existsSync(full), `File must exist: ${rel}`).toBe(true);
-      const buf = readFileSync(full);
-      const dim = readPngDimensions(buf);
-      expect(dim, `Dimensions for ${rel}`).toEqual(expectedDim);
+      expect(readPngDimensions(readFileSync(full)), `Dimensions for ${rel}`).toEqual(expected);
     }
   });
 
-  it("iOS 1024 app icon is full-bleed opaque square with PNG colour type 2 (no alpha channel)", () => {
-    const full = join(ROOT, "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png");
-    expect(existsSync(full)).toBe(true);
-    const buf = readFileSync(full);
-    const details = readPngDetails(buf);
-
-    expect(details.width).toBe(1024);
-    expect(details.height).toBe(1024);
-    expect(details.colorType, "iOS app icon must have colour type 2 (Truecolour RGB, no alpha channel)").toBe(2);
-    expect(details.pixel0.a, "iOS app icon pixel (0,0) must be opaque").toBe(255);
-    expect(details.pixel0.r).toBe(37);
-    expect(details.pixel0.g).toBe(99);
-    expect(details.pixel0.b).toBe(235);
+  it("iOS 1024 and Play Store 512 icons are OPAQUE: PNG colour type 2, 8-bit, no alpha channel", () => {
+    for (const rel of OPAQUE_PNGS) {
+      const header = readPngHeader(readFileSync(join(ROOT, rel)));
+      expect(header.colorType, `${rel} colour type`).toBe(2);
+      expect(header.bitDepth).toBe(8);
+    }
   });
 
-  it("Play Store 512 icon is full-bleed square with opaque corners", () => {
-    const full = join(ROOT, "assets/branding/play-store-512.png");
-    expect(existsSync(full)).toBe(true);
-    const buf = readFileSync(full);
-    const details = readPngDetails(buf);
-
-    expect(details.width).toBe(512);
-    expect(details.height).toBe(512);
-    expect(details.pixel0.a, "Play Store icon pixel (0,0) must be opaque (no transparent corners)").toBe(255);
-    expect(details.pixel0.r).toBe(37);
-    expect(details.pixel0.g).toBe(99);
-    expect(details.pixel0.b).toBe(235);
+  it("iOS and Android splash images are plain opaque images (colour type 2)", () => {
+    const splashes = Object.keys(REQUIRED_PNG_DIMENSIONS).filter((p) => /splash/.test(p));
+    expect(splashes.length).toBe(14);
+    for (const rel of splashes) {
+      expect(readPngHeader(readFileSync(join(ROOT, rel))).colorType, rel).toBe(2);
+    }
   });
 
-  it("every tracked image under android/, ios/, public/, build/, src/ui/assets, assets/ differs from all recorded Capacitor hashes", () => {
-    const bannedHashes = loadCapacitorLedger();
-    expect(bannedHashes.size).toBeGreaterThan(0);
+  it("the adaptive icon is background + foreground only (no monochrome layer) on a white background", () => {
+    for (const name of ["ic_launcher.xml", "ic_launcher_round.xml"]) {
+      const xml = readFileSync(join(ROOT, `${RES}/mipmap-anydpi-v26/${name}`), "utf8");
+      expect(xml).toContain('@mipmap/ic_launcher_foreground"');
+      expect(xml).toContain('@color/ic_launcher_background"');
+      expect(xml.toLowerCase()).not.toContain("monochrome");
+    }
+    expect(readFileSync(join(ROOT, `${RES}/values/ic_launcher_background.xml`), "utf8")).toContain("#FFFFFF");
+    expect(readFileSync(join(ROOT, `${RES}/drawable/ic_launcher_background.xml`), "utf8")).toContain("#FFFFFF");
+  });
+
+  it("no file under android/, ios/, public/, build/, src/ui/assets, assets/ has the hash of a blue-eye placeholder or a Capacitor default", () => {
+    const placeholder = loadLedger("assets/branding/removed-placeholder-assets.txt");
+    const capacitor = loadLedger("assets/branding/removed-capacitor-assets.txt");
+    expect(placeholder.size).toBeGreaterThan(20);
+    expect(capacitor.size).toBeGreaterThan(20);
 
     const scanDirs = ["android", "ios", "public", "build", "src/ui/assets", "assets"];
-    const allImages = scanDirs.flatMap((d) => collectTrackedImages(d));
+    const allImages = scanDirs.flatMap((d) => collectImages(d));
+    expect(allImages.length).toBeGreaterThanOrEqual(35);
 
-    expect(allImages.length).toBeGreaterThanOrEqual(30);
-
-    const violations: { file: string; hash: string }[] = [];
+    const violations: { file: string; ledger: string }[] = [];
     for (const imgPath of allImages) {
-      const buf = readFileSync(imgPath);
-      const h = sha256(buf);
-      if (bannedHashes.has(h)) {
-        violations.push({ file: imgPath, hash: h });
-      }
+      const h = sha256(readFileSync(imgPath));
+      if (placeholder.has(h)) violations.push({ file: imgPath, ledger: "placeholder" });
+      if (capacitor.has(h)) violations.push({ file: imgPath, ledger: "capacitor" });
     }
-
-    expect(
-      violations,
-      `Tracked images must not match any hash in the Capacitor ledger`
-    ).toEqual([]);
+    expect(violations).toEqual([]);
   });
 
-  it("Android adaptive icon XMLs have been updated with UniView branding and monochrome layer", () => {
-    const fgXmlPath = join(ROOT, "android/app/src/main/res/drawable-v24/ic_launcher_foreground.xml");
-    expect(existsSync(fgXmlPath)).toBe(true);
-    const fgXml = readFileSync(fgXmlPath, "utf8");
-    expect(fgXml).not.toContain("M32,64C32,64"); // Old Capacitor path
-
-    const bgXmlPath = join(ROOT, "android/app/src/main/res/drawable/ic_launcher_background.xml");
-    expect(existsSync(bgXmlPath)).toBe(true);
-
-    const monoXmlPath = join(ROOT, "android/app/src/main/res/drawable/ic_launcher_monochrome.xml");
-    expect(existsSync(monoXmlPath)).toBe(true);
-
-    const anydpiLauncher = join(ROOT, "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml");
-    const anydpiRound = join(ROOT, "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml");
-    expect(existsSync(anydpiLauncher)).toBe(true);
-    expect(existsSync(anydpiRound)).toBe(true);
-    expect(readFileSync(anydpiLauncher, "utf8")).toContain("monochrome");
-    expect(readFileSync(anydpiRound, "utf8")).toContain("monochrome");
+  it("the in-app logo is a 256 px resampled copy of the master, not the old placeholder", () => {
+    const logo = readFileSync(join(ROOT, "src/ui/assets/logo.png"));
+    expect(readPngDimensions(logo)).toEqual({ width: 256, height: 256 });
+    expect(sha256(logo)).not.toBe(MASTER_SHA256);
   });
 });

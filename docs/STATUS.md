@@ -50,7 +50,7 @@
 - **Windows code-signing certificate:** buy one (recommended: SSL.com or Sectigo OV cloud signing, about $250 a year). The installers are unsigned until then.
 - **Google Play:** create the Play Console account ($25), verify identity, find 12 testers for a 14-day closed test. The release bundle is built but unsigned; it needs the Play upload key.
 - **Private GitHub repository:** say when. GitHub Pro (about $4 a month) is needed for branch protection on a private repository.
-- **Logo:** the current blue-eye icon is a placeholder used everywhere and locked. Send the final logo file and every size will be regenerated from it.
+- **Logo:** the CEO-supplied image `assets/branding/uniview-logo-source.png` is the only logo on every platform; all sizes are generated from it (`node scripts/generate-icons.mjs`, see `assets/branding/README.md`).
 - **Phone:** connect your phone for the real pairing and large-file timing test.
 
 ### Technical, not blocked on you
@@ -63,6 +63,6 @@
 ## 5. Decisions made (2026-10-25)
 - Ship V1 without the MPL-2.0 PowerPoint engine (V1.1).
 - Stay on Electron for V1 (Tauri deferred to V2).
-- Placeholder logo now; final logo from the CEO later.
+- Logo: final (CEO-supplied image), used everywhere.
 
 Tests, reviews and logs: `I:\AES\Data\uniview-lan-test\`, `.aes/` in the project, decision briefs in `docs/CEO-DECISIONS.md`.

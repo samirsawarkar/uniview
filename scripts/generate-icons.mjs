@@ -1,542 +1,373 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+// UniView icon pipeline.
+//
+// The ONLY source artwork is assets/branding/uniview-logo-source.png (the CEO-supplied logo, kept byte-identical).
+// Nothing is redrawn or restyled: every output is a resampled copy of that image, placed on a canvas.
+//
+// Resampling is done by headless Chromium (Playwright, no browser download: the cache is read from
+// PLAYWRIGHT_BROWSERS_PATH, default I:\AES\Data\ms-playwright). If Chromium cannot be launched, the same
+// canvas code runs inside the project's Electron binary instead. PNG and ICO encoding is done here in Node.
+//
+//   node scripts/generate-icons.mjs
+//   UNIVIEW_ICON_BACKEND=electron node scripts/generate-icons.mjs   (force the Electron fallback)
+
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { deflateSync } from "node:zlib";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const ROOT = resolve(__dirname, "..");
 
-export const ICON_CONSTANTS = {
-  viewBox: "0 0 512 512",
-  viewBoxSize: 512,
-  colors: {
-    primary: "#2563eb",
-    primaryRgb: [37, 99, 235],
-    white: "#ffffff",
-    monochrome: "#000000",
-  },
-  geometry: {
-    squircleRadius: 112,
-    squircleRadiusRatio: 0.22,
-    lensArcRadius: 185,
-    pupilRadius: 54,
-    pupilRadiusRatio: 0.105,
-    glintRadius: 16,
-    glintRadiusRatio: 0.032,
-    glintCx: 276,
-    glintCy: 236,
-  },
-};
+export const MASTER_PATH = "assets/branding/uniview-logo-source.png";
+export const DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "I:\\AES\\Data\\ms-playwright";
 
-// CRC32 implementation
+const RES = "android/app/src/main/res";
+
+// ---------------------------------------------------------------------------------------------
+// PNG / ICO encoding
+// ---------------------------------------------------------------------------------------------
+
 const CRC_TABLE = new Uint32Array(256);
 for (let n = 0; n < 256; n++) {
   let c = n;
-  for (let k = 0; k < 8; k++) {
-    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
   CRC_TABLE[n] = c;
 }
 
 function calcCrc32(buf, offset = 0, length = buf.length) {
   let crc = 0xffffffff;
-  for (let i = offset; i < offset + length; i++) {
-    crc = CRC_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
-  }
+  for (let i = offset; i < offset + length; i++) crc = CRC_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-/**
- * Encodes raw RGBA buffer into PNG format
- */
-export function encodePng(width, height, data, colorType = 6) {
-  const bytesPerPixel = colorType === 2 ? 3 : 4;
-  const lineLength = width * bytesPerPixel;
-  const scanlines = Buffer.alloc(height * (lineLength + 1));
-
-  for (let y = 0; y < height; y++) {
-    const scanlineOffset = y * (lineLength + 1);
-    scanlines[scanlineOffset] = 0; // Filter: None
-
-    if (colorType === 2) {
-      if (data.length === width * height * 4) {
-        // Strip alpha channel from RGBA data
-        for (let x = 0; x < width; x++) {
-          const srcIdx = (y * width + x) * 4;
-          const dstIdx = scanlineOffset + 1 + x * 3;
-          scanlines[dstIdx] = data[srcIdx];
-          scanlines[dstIdx + 1] = data[srcIdx + 1];
-          scanlines[dstIdx + 2] = data[srcIdx + 2];
-        }
-      } else {
-        data.copy(scanlines, scanlineOffset + 1, y * lineLength, (y + 1) * lineLength);
-      }
-    } else {
-      data.copy(scanlines, scanlineOffset + 1, y * lineLength, (y + 1) * lineLength);
-    }
-  }
-
-  const compressed = deflateSync(scanlines, { level: 6 });
-
-  // PNG Signature
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-  // IHDR Chunk
-  const ihdrData = Buffer.alloc(13);
-  ihdrData.writeUInt32BE(width, 0);
-  ihdrData.writeUInt32BE(height, 4);
-  ihdrData[8] = 8; // Bit depth: 8
-  ihdrData[9] = colorType; // Color type: 2 (RGB) or 6 (RGBA)
-  ihdrData[10] = 0; // Compression
-  ihdrData[11] = 0; // Filter
-  ihdrData[12] = 0; // Interlace (no)
-
-  const ihdrChunk = createChunk("IHDR", ihdrData);
-  const idatChunk = createChunk("IDAT", compressed);
-  const iendChunk = createChunk("IEND", Buffer.alloc(0));
-
-  return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk]);
-}
-
 function createChunk(type, data) {
-  const chunk = Buffer.alloc(4 + 4 + data.length + 4);
+  const chunk = Buffer.alloc(12 + data.length);
   chunk.writeUInt32BE(data.length, 0);
   chunk.write(type, 4, 4, "ascii");
   data.copy(chunk, 8);
-  const crc = calcCrc32(chunk, 4, 4 + data.length);
-  chunk.writeUInt32BE(crc, 8 + data.length);
+  chunk.writeUInt32BE(calcCrc32(chunk, 4, 4 + data.length), 8 + data.length);
   return chunk;
 }
 
-/**
- * Combines multiple PNG images into a multi-resolution Windows .ico container
- * @param {Array<{ width: number, height: number, buffer: Buffer }>} images
- */
-export function createIco(images) {
-  const count = images.length;
-  const headerSize = 6;
-  const dirEntrySize = 16;
-  let offset = headerSize + count * dirEntrySize;
-
-  const header = Buffer.alloc(headerSize);
-  header.writeUInt16LE(0, 0); // Reserved
-  header.writeUInt16LE(1, 2); // Type 1 = Icon
-  header.writeUInt16LE(count, 4); // Count
-
-  const entries = [];
-  for (const img of images) {
-    const entry = Buffer.alloc(dirEntrySize);
-    entry.writeUInt8(img.width >= 256 ? 0 : img.width, 0);
-    entry.writeUInt8(img.height >= 256 ? 0 : img.height, 1);
-    entry.writeUInt8(0, 2); // Color count
-    entry.writeUInt8(0, 3); // Reserved
-    entry.writeUInt16LE(1, 4); // Planes
-    entry.writeUInt16LE(32, 6); // Bits per pixel
-    entry.writeUInt32LE(img.buffer.length, 8); // Size
-    entry.writeUInt32LE(offset, 12); // File offset
-    entries.push(entry);
-    offset += img.buffer.length;
+/** Encodes a raw RGBA buffer as PNG. colorType 6 = RGBA, colorType 2 = RGB (alpha dropped, so the data must be opaque). */
+export function encodePng(width, height, rgba, colorType = 6) {
+  if (rgba.length !== width * height * 4) throw new Error(`encodePng: expected ${width * height * 4} RGBA bytes, got ${rgba.length}`);
+  const bpp = colorType === 2 ? 3 : 4;
+  const line = width * bpp;
+  const raw = Buffer.alloc(height * (line + 1));
+  for (let y = 0; y < height; y++) {
+    const o = y * (line + 1);
+    raw[o] = 0;
+    if (colorType === 2) {
+      for (let x = 0; x < width; x++) {
+        const s = (y * width + x) * 4;
+        const d = o + 1 + x * 3;
+        raw[d] = rgba[s];
+        raw[d + 1] = rgba[s + 1];
+        raw[d + 2] = rgba[s + 2];
+      }
+    } else {
+      rgba.copy(raw, o + 1, y * line, (y + 1) * line);
+    }
   }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = colorType;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    createChunk("IHDR", ihdr),
+    createChunk("IDAT", deflateSync(raw, { level: 9 })),
+    createChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
+/** Combines PNG frames into a multi-resolution Windows .ico container. */
+export function createIco(images) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(images.length, 4);
+  let offset = 6 + images.length * 16;
+  const entries = images.map((img) => {
+    const e = Buffer.alloc(16);
+    e.writeUInt8(img.width >= 256 ? 0 : img.width, 0);
+    e.writeUInt8(img.height >= 256 ? 0 : img.height, 1);
+    e.writeUInt16LE(1, 4);
+    e.writeUInt16LE(32, 6);
+    e.writeUInt32LE(img.buffer.length, 8);
+    e.writeUInt32LE(offset, 12);
+    offset += img.buffer.length;
+    return e;
+  });
   return Buffer.concat([header, ...entries, ...images.map((i) => i.buffer)]);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Output plan
+// ---------------------------------------------------------------------------------------------
+
 /**
- * Pure-JS SDF Rasterizer for UniView icon elements
+ * A render "job" = one canvas: w x h pixels, optional white background, the logo (aspect preserved, longer side
+ * = `box` px) centred on it. `circle` first fills a white disc of diameter min(w,h) (round launcher icons) and
+ * leaves the rest transparent. `opaque` outputs are written as PNG colour type 2 (no alpha channel).
  */
-export function renderSquareIcon(size, options = {}) {
-  const rgba = Buffer.alloc(size * size * 4);
-  const primaryR = 37, primaryG = 99, primaryB = 235; // #2563eb
-  const mono = options.monochrome;
-  const fullBleed = Boolean(options.fullBleed);
-  const colorType = options.colorType ?? 6;
+const mipmapDensities = [
+  { name: "mdpi", icon: 48, fg: 108 },
+  { name: "hdpi", icon: 72, fg: 162 },
+  { name: "xhdpi", icon: 96, fg: 216 },
+  { name: "xxhdpi", icon: 144, fg: 324 },
+  { name: "xxxhdpi", icon: 192, fg: 432 },
+];
 
-  const fillR = mono ? 0 : primaryR;
-  const fillG = mono ? 0 : primaryG;
-  const fillB = mono ? 0 : primaryB;
+const androidSplashes = [
+  ["drawable", 480, 320],
+  ["drawable-port-mdpi", 320, 480],
+  ["drawable-port-hdpi", 480, 800],
+  ["drawable-port-xhdpi", 720, 1280],
+  ["drawable-port-xxhdpi", 960, 1600],
+  ["drawable-port-xxxhdpi", 1280, 1920],
+  ["drawable-land-mdpi", 480, 320],
+  ["drawable-land-hdpi", 800, 480],
+  ["drawable-land-xhdpi", 1280, 720],
+  ["drawable-land-xxhdpi", 1600, 960],
+  ["drawable-land-xxxhdpi", 1920, 1280],
+];
 
-  const center = size / 2;
-  const hw = center - 0.5;
-  const hh = center - 0.5;
-  const cornerRadius = size * 0.22;
+export const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
+export const SPLASH_LOGO_PX = 256;
+export const ADAPTIVE_SAFE_ZONE = 0.66;
+export const ROUND_LOGO_RATIO = 0.74;
 
-  // Lens geometry
-  const ew = size * 0.35;
-  const eh = size * 0.24;
-  const R = (ew * ew + eh * eh) / (2 * eh);
-  const Yc = R - eh;
+/** @returns {{ jobs: Record<string, object>, files: Array<{ path: string, job: string }>, ico: { path: string, jobs: string[] } }} */
+export function buildPlan() {
+  const jobs = {};
+  const files = [];
+  const square = (size, extra = {}) => ({ w: size, h: size, box: size, ...extra });
+  const addSquare = (path, size, extra) => {
+    const key = `square-${size}${extra ? "-" + Object.keys(extra).join("-") : ""}`;
+    jobs[key] ??= square(size, extra);
+    files.push({ path, job: key });
+  };
 
-  const rp = size * 0.105;
-  const rg = size * 0.032;
-  const gx = size * 0.04;
-  const gy = -size * 0.04;
+  // Desktop / web / in-app: the logo full-size on a transparent canvas (its own rounded corners stay transparent).
+  addSquare("build/icon.png", 512);
+  addSquare("build/icon-1024.png", 1024);
+  addSquare("public/icon.png", 512);
+  addSquare("public/favicon.png", 64);
+  addSquare("src/ui/assets/logo.png", 256);
 
-  for (let py = 0; py < size; py++) {
-    const y = py + 0.5 - center;
-    for (let px = 0; px < size; px++) {
-      const x = px + 0.5 - center;
-      const idx = (py * size + px) * 4;
+  // Store icons: opaque (PNG colour type 2), logo composited on white.
+  addSquare("assets/branding/play-store-512.png", 512, { opaque: true, white: true });
+  addSquare("ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png", 1024, { opaque: true, white: true });
 
-      let boxAlpha = 1.0;
-      if (!fullBleed) {
-        // Squircle SDF
-        const qx = Math.max(0, Math.abs(x) - (hw - cornerRadius));
-        const qy = Math.max(0, Math.abs(y) - (hh - cornerRadius));
-        const distSquircle = Math.hypot(qx, qy) - cornerRadius;
-        boxAlpha = Math.max(0, Math.min(1, 0.5 - distSquircle));
-        if (boxAlpha <= 0) continue;
-      }
-
-      // Base background color
-      let cr = fillR;
-      let cg = fillG;
-      let cb = fillB;
-      let ca = boxAlpha;
-
-      // 2. Eye lens SDF
-      const dTop = Math.hypot(x, y + Yc) - R;
-      const dBottom = Math.hypot(x, y - Yc) - R;
-      const distLens = Math.max(dTop, dBottom);
-      const lensAlpha = Math.max(0, Math.min(1, 0.5 - distLens));
-
-      if (lensAlpha > 0) {
-        // Blend white lens over squircle
-        cr = cr * (1 - lensAlpha) + 255 * lensAlpha;
-        cg = cg * (1 - lensAlpha) + 255 * lensAlpha;
-        cb = cb * (1 - lensAlpha) + 255 * lensAlpha;
-
-        // 3. Central pupil SDF
-        const distPupil = Math.hypot(x, y) - rp;
-        const pupilAlpha = Math.max(0, Math.min(1, 0.5 - distPupil));
-
-        if (pupilAlpha > 0) {
-          cr = cr * (1 - pupilAlpha) + fillR * pupilAlpha;
-          cg = cg * (1 - pupilAlpha) + fillG * pupilAlpha;
-          cb = cb * (1 - pupilAlpha) + fillB * pupilAlpha;
-
-          // 4. Glint SDF
-          const distGlint = Math.hypot(x - gx, y - gy) - rg;
-          const glintAlpha = Math.max(0, Math.min(1, 0.5 - distGlint));
-          if (glintAlpha > 0) {
-            cr = cr * (1 - glintAlpha) + 255 * glintAlpha;
-            cg = cg * (1 - glintAlpha) + 255 * glintAlpha;
-            cb = cb * (1 - glintAlpha) + 255 * glintAlpha;
-          }
-        }
-      }
-
-      rgba[idx] = Math.round(cr);
-      rgba[idx + 1] = Math.round(cg);
-      rgba[idx + 2] = Math.round(cb);
-      rgba[idx + 3] = Math.round(ca * 255);
-    }
+  // Android launcher icons.
+  for (const d of mipmapDensities) {
+    addSquare(`${RES}/mipmap-${d.name}/ic_launcher.png`, d.icon);
+    const roundKey = `round-${d.icon}`;
+    jobs[roundKey] = { w: d.icon, h: d.icon, box: Math.round(d.icon * ROUND_LOGO_RATIO), circle: true };
+    files.push({ path: `${RES}/mipmap-${d.name}/ic_launcher_round.png`, job: roundKey });
+    const fgKey = `adaptive-${d.fg}`;
+    jobs[fgKey] = { w: d.fg, h: d.fg, box: Math.round(d.fg * ADAPTIVE_SAFE_ZONE) };
+    files.push({ path: `${RES}/mipmap-${d.name}/ic_launcher_foreground.png`, job: fgKey });
   }
 
-  return encodePng(size, size, rgba, colorType);
+  // Splash screens: the logo centred at ~256 px (never blown up to fill) on plain white. Small canvases cap the
+  // logo at half of their short side so it never crowds the screen.
+  const splash = (w, h) => {
+    const key = `splash-${w}x${h}`;
+    jobs[key] ??= { w, h, box: Math.min(SPLASH_LOGO_PX, Math.round(Math.min(w, h) * 0.5)), white: true, opaque: true };
+    return key;
+  };
+  const iosSplash = splash(2732, 2732);
+  for (const f of ["splash-2732x2732.png", "splash-2732x2732-1.png", "splash-2732x2732-2.png"]) {
+    files.push({ path: `ios/App/App/Assets.xcassets/Splash.imageset/${f}`, job: iosSplash });
+  }
+  for (const [dir, w, h] of androidSplashes) files.push({ path: `${RES}/${dir}/splash.png`, job: splash(w, h) });
+
+  const icoJobs = ICO_SIZES.map((s) => {
+    const key = `square-${s}`;
+    jobs[key] ??= square(s);
+    return key;
+  });
+  return { jobs, files, ico: { path: "build/icon.ico", jobs: icoJobs } };
 }
 
-export function renderRoundIcon(size) {
-  const rgba = Buffer.alloc(size * size * 4);
-  const primaryR = 37, primaryG = 99, primaryB = 235;
+// ---------------------------------------------------------------------------------------------
+// Canvas rendering. This function body is executed inside Chromium (Playwright page, or an Electron window), so
+// it must stay self-contained: it can only use browser globals.
+// ---------------------------------------------------------------------------------------------
 
-  const center = size / 2;
-  const radius = center - 0.5;
+/* eslint-disable */
+export async function renderInPage(masterB64, job) {
+  const img = new Image();
+  img.src = "data:image/png;base64," + masterB64;
+  await img.decode();
 
-  const ew = size * 0.35;
-  const eh = size * 0.24;
-  const R = (ew * ew + eh * eh) / (2 * eh);
-  const Yc = R - eh;
+  const make = (w, h) => {
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const x = c.getContext("2d");
+    x.imageSmoothingEnabled = true;
+    x.imageSmoothingQuality = "high";
+    return [c, x];
+  };
 
-  const rp = size * 0.105;
-  const rg = size * 0.032;
-  const gx = size * 0.04;
-  const gy = -size * 0.04;
-
-  for (let py = 0; py < size; py++) {
-    const y = py + 0.5 - center;
-    for (let px = 0; px < size; px++) {
-      const x = px + 0.5 - center;
-      const idx = (py * size + px) * 4;
-
-      const distCircle = Math.hypot(x, y) - radius;
-      const circleAlpha = Math.max(0, Math.min(1, 0.5 - distCircle));
-      if (circleAlpha <= 0) continue;
-
-      let cr = primaryR;
-      let cg = primaryG;
-      let cb = primaryB;
-      let ca = circleAlpha;
-
-      const dTop = Math.hypot(x, y + Yc) - R;
-      const dBottom = Math.hypot(x, y - Yc) - R;
-      const distLens = Math.max(dTop, dBottom);
-      const lensAlpha = Math.max(0, Math.min(1, 0.5 - distLens));
-
-      if (lensAlpha > 0) {
-        cr = cr * (1 - lensAlpha) + 255 * lensAlpha;
-        cg = cg * (1 - lensAlpha) + 255 * lensAlpha;
-        cb = cb * (1 - lensAlpha) + 255 * lensAlpha;
-
-        const distPupil = Math.hypot(x, y) - rp;
-        const pupilAlpha = Math.max(0, Math.min(1, 0.5 - distPupil));
-        if (pupilAlpha > 0) {
-          cr = cr * (1 - pupilAlpha) + primaryR * pupilAlpha;
-          cg = cg * (1 - pupilAlpha) + primaryG * pupilAlpha;
-          cb = cb * (1 - pupilAlpha) + primaryB * pupilAlpha;
-
-          const distGlint = Math.hypot(x - gx, y - gy) - rg;
-          const glintAlpha = Math.max(0, Math.min(1, 0.5 - distGlint));
-          if (glintAlpha > 0) {
-            cr = cr * (1 - glintAlpha) + 255 * glintAlpha;
-            cg = cg * (1 - glintAlpha) + 255 * glintAlpha;
-            cb = cb * (1 - glintAlpha) + 255 * glintAlpha;
-          }
-        }
-      }
-
-      rgba[idx] = Math.round(cr);
-      rgba[idx + 1] = Math.round(cg);
-      rgba[idx + 2] = Math.round(cb);
-      rgba[idx + 3] = Math.round(ca * 255);
+  // High-quality resample: when downscaling, halve repeatedly (each step is a 2:1 box-like reduction) and finish
+  // with one smoothed step; when upscaling, one smoothed step.
+  const resample = (src, tw, th) => {
+    let cur = src;
+    while (cur.width / 2 >= tw && cur.height / 2 >= th) {
+      const [c, x] = make(Math.max(1, Math.round(cur.width / 2)), Math.max(1, Math.round(cur.height / 2)));
+      x.drawImage(cur, 0, 0, c.width, c.height);
+      cur = c;
     }
+    const [out, ox] = make(tw, th);
+    ox.drawImage(cur, 0, 0, tw, th);
+    return out;
+  };
+
+  const [canvas, ctx] = make(job.w, job.h);
+  if (job.white) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, job.w, job.h);
+  }
+  if (job.circle) {
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(job.w / 2, job.h / 2, Math.min(job.w, job.h) / 2, 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  return encodePng(size, size, rgba);
+  // Contain-fit (aspect preserved): the longer side of the logo is `box` px.
+  const s = job.box / Math.max(img.naturalWidth, img.naturalHeight);
+  const tw = Math.max(1, Math.round(img.naturalWidth * s));
+  const th = Math.max(1, Math.round(img.naturalHeight * s));
+  const [base, bx] = make(img.naturalWidth, img.naturalHeight);
+  bx.drawImage(img, 0, 0);
+  const logo = resample(base, tw, th);
+  ctx.drawImage(logo, Math.floor((job.w - tw) / 2), Math.floor((job.h - th) / 2));
+
+  const data = ctx.getImageData(0, 0, job.w, job.h).data;
+  let bin = "";
+  const CH = 0x8000;
+  for (let i = 0; i < data.length; i += CH) bin += String.fromCharCode.apply(null, data.subarray(i, i + CH));
+  return btoa(bin);
+}
+/* eslint-enable */
+
+// ---------------------------------------------------------------------------------------------
+// Backends
+// ---------------------------------------------------------------------------------------------
+
+async function renderWithPlaywright(master, jobs) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH ||= DEFAULT_PLAYWRIGHT_BROWSERS_PATH;
+  const { chromium } = await import("@playwright/test");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent("<!doctype html><html><body></body></html>");
+    const out = {};
+    for (const [key, job] of Object.entries(jobs)) {
+      const b64 = await page.evaluate(`(${renderInPage.toString()})(${JSON.stringify(master.toString("base64"))}, ${JSON.stringify(job)})`);
+      out[key] = Buffer.from(b64, "base64");
+    }
+    return out;
+  } finally {
+    await browser.close();
+  }
 }
 
-export function renderAdaptiveForeground(size) {
-  const rgba = Buffer.alloc(size * size * 4);
-  const primaryR = 37, primaryG = 99, primaryB = 235;
+async function renderWithElectron(master, jobs) {
+  const electronPath = (await import("electron")).default;
+  const work = mkdtempSync(join(tmpdir(), "uniview-icons-"));
+  try {
+    const req = join(work, "request.json");
+    writeFileSync(req, JSON.stringify({ master: master.toString("base64"), jobs, outDir: work }));
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const r = spawnSync(electronPath, [__filename, "--electron-worker", req], { stdio: "inherit", env });
+    if (r.status !== 0) throw new Error(`Electron icon worker failed (exit ${r.status})`);
+    const out = {};
+    for (const key of Object.keys(jobs)) out[key] = readFileSync(join(work, `${key}.rgba`));
+    return out;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
 
-  const center = size / 2;
-  // In 108dp adaptive canvas, safe zone is 66dp (~61% scale)
-  const scale = size * 0.60;
-  const ew = scale * 0.42;
-  const eh = scale * 0.28;
-  const R = (ew * ew + eh * eh) / (2 * eh);
-  const Yc = R - eh;
+/** Runs inside the Electron main process (see renderWithElectron). */
+async function electronWorker(requestPath) {
+  const { app, BrowserWindow } = await import("electron");
+  const { master, jobs, outDir } = JSON.parse(readFileSync(requestPath, "utf8"));
+  await app.whenReady();
+  const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  await win.loadURL("data:text/html,<!doctype html><html><body></body></html>");
+  for (const [key, job] of Object.entries(jobs)) {
+    const b64 = await win.webContents.executeJavaScript(`(${renderInPage.toString()})(${JSON.stringify(master)}, ${JSON.stringify(job)})`);
+    writeFileSync(join(outDir, `${key}.rgba`), Buffer.from(b64, "base64"));
+  }
+  app.exit(0);
+}
 
-  const rp = scale * 0.13;
-  const rg = scale * 0.038;
-  const gx = scale * 0.05;
-  const gy = -scale * 0.05;
-
-  for (let py = 0; py < size; py++) {
-    const y = py + 0.5 - center;
-    for (let px = 0; px < size; px++) {
-      const x = px + 0.5 - center;
-      const idx = (py * size + px) * 4;
-
-      const dTop = Math.hypot(x, y + Yc) - R;
-      const dBottom = Math.hypot(x, y - Yc) - R;
-      const distLens = Math.max(dTop, dBottom);
-      const lensAlpha = Math.max(0, Math.min(1, 0.5 - distLens));
-      if (lensAlpha <= 0) continue;
-
-      let cr = 255, cg = 255, cb = 255;
-      let ca = lensAlpha;
-
-      const distPupil = Math.hypot(x, y) - rp;
-      const pupilAlpha = Math.max(0, Math.min(1, 0.5 - distPupil));
-      if (pupilAlpha > 0) {
-        cr = cr * (1 - pupilAlpha) + primaryR * pupilAlpha;
-        cg = cg * (1 - pupilAlpha) + primaryG * pupilAlpha;
-        cb = cb * (1 - pupilAlpha) + primaryB * pupilAlpha;
-
-        const distGlint = Math.hypot(x - gx, y - gy) - rg;
-        const glintAlpha = Math.max(0, Math.min(1, 0.5 - distGlint));
-        if (glintAlpha > 0) {
-          cr = cr * (1 - glintAlpha) + 255 * glintAlpha;
-          cg = cg * (1 - glintAlpha) + 255 * glintAlpha;
-          cb = cb * (1 - glintAlpha) + 255 * glintAlpha;
-        }
-      }
-
-      rgba[idx] = Math.round(cr);
-      rgba[idx + 1] = Math.round(cg);
-      rgba[idx + 2] = Math.round(cb);
-      rgba[idx + 3] = Math.round(ca * 255);
+async function renderJobs(master, jobs) {
+  const forced = process.env.UNIVIEW_ICON_BACKEND;
+  if (forced !== "electron") {
+    try {
+      const out = await renderWithPlaywright(master, jobs);
+      console.log("Backend: headless Chromium (Playwright)");
+      return out;
+    } catch (err) {
+      if (forced === "playwright") throw err;
+      console.warn(`Playwright Chromium unavailable (${String(err.message).split("\n")[0]}); falling back to Electron.`);
     }
   }
-
-  return encodePng(size, size, rgba);
+  const out = await renderWithElectron(master, jobs);
+  console.log("Backend: Electron (Chromium canvas)");
+  return out;
 }
 
-export function renderSplash(width, height) {
-  const rgba = Buffer.alloc(width * height * 4);
-  // Default fill: solid white
-  rgba.fill(255);
-
-  const primaryR = 37, primaryG = 99, primaryB = 235;
-
-  const cx = width / 2;
-  const cy = height / 2;
-  // Scaled logo in center of splash screen
-  const logoSize = Math.max(96, Math.min(384, Math.round(Math.min(width, height) * 0.28)));
-  const halfLogo = logoSize / 2;
-  const cornerRadius = logoSize * 0.22;
-
-  const ew = logoSize * 0.35;
-  const eh = logoSize * 0.24;
-  const R = (ew * ew + eh * eh) / (2 * eh);
-  const Yc = R - eh;
-
-  const rp = logoSize * 0.105;
-  const rg = logoSize * 0.032;
-  const gx = logoSize * 0.04;
-  const gy = -logoSize * 0.04;
-
-  const minX = Math.max(0, Math.floor(cx - halfLogo - 2));
-  const maxX = Math.min(width, Math.ceil(cx + halfLogo + 2));
-  const minY = Math.max(0, Math.floor(cy - halfLogo - 2));
-  const maxY = Math.min(height, Math.ceil(cy + halfLogo + 2));
-
-  for (let py = minY; py < maxY; py++) {
-    const y = py + 0.5 - cy;
-    for (let px = minX; px < maxX; px++) {
-      const x = px + 0.5 - cx;
-      const idx = (py * width + px) * 4;
-
-      const qx = Math.max(0, Math.abs(x) - (halfLogo - cornerRadius));
-      const qy = Math.max(0, Math.abs(y) - (halfLogo - cornerRadius));
-      const distSquircle = Math.hypot(qx, qy) - cornerRadius;
-      const boxAlpha = Math.max(0, Math.min(1, 0.5 - distSquircle));
-      if (boxAlpha <= 0) continue;
-
-      let cr = primaryR;
-      let cg = primaryG;
-      let cb = primaryB;
-
-      const dTop = Math.hypot(x, y + Yc) - R;
-      const dBottom = Math.hypot(x, y - Yc) - R;
-      const distLens = Math.max(dTop, dBottom);
-      const lensAlpha = Math.max(0, Math.min(1, 0.5 - distLens));
-
-      if (lensAlpha > 0) {
-        cr = cr * (1 - lensAlpha) + 255 * lensAlpha;
-        cg = cg * (1 - lensAlpha) + 255 * lensAlpha;
-        cb = cb * (1 - lensAlpha) + 255 * lensAlpha;
-
-        const distPupil = Math.hypot(x, y) - rp;
-        const pupilAlpha = Math.max(0, Math.min(1, 0.5 - distPupil));
-        if (pupilAlpha > 0) {
-          cr = cr * (1 - pupilAlpha) + primaryR * pupilAlpha;
-          cg = cg * (1 - pupilAlpha) + primaryG * pupilAlpha;
-          cb = cb * (1 - pupilAlpha) + primaryB * pupilAlpha;
-
-          const distGlint = Math.hypot(x - gx, y - gy) - rg;
-          const glintAlpha = Math.max(0, Math.min(1, 0.5 - distGlint));
-          if (glintAlpha > 0) {
-            cr = cr * (1 - glintAlpha) + 255 * glintAlpha;
-            cg = cg * (1 - glintAlpha) + 255 * glintAlpha;
-            cb = cb * (1 - glintAlpha) + 255 * glintAlpha;
-          }
-        }
-      }
-
-      // Blend over white background
-      rgba[idx] = Math.round(255 * (1 - boxAlpha) + cr * boxAlpha);
-      rgba[idx + 1] = Math.round(255 * (1 - boxAlpha) + cg * boxAlpha);
-      rgba[idx + 2] = Math.round(255 * (1 - boxAlpha) + cb * boxAlpha);
-      rgba[idx + 3] = 255;
-    }
-  }
-
-  return encodePng(width, height, rgba);
-}
+// ---------------------------------------------------------------------------------------------
 
 function writeAsset(relPath, buffer) {
-  const fullPath = join(ROOT, relPath);
-  mkdirSync(dirname(fullPath), { recursive: true });
-  writeFileSync(fullPath, buffer);
+  const full = join(ROOT, relPath);
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, buffer);
   console.log(`Generated: ${relPath}`);
 }
 
 export async function generateAll() {
-  console.log("Generating UniView Brand Assets (Packet P20)...");
+  const masterFile = join(ROOT, MASTER_PATH);
+  if (!existsSync(masterFile)) throw new Error(`Master logo missing: ${MASTER_PATH}`);
+  const master = readFileSync(masterFile);
+  console.log(`Generating UniView brand assets from ${MASTER_PATH} ...`);
 
-  // 1. Desktop & Web icons
-  const icoSizes = [16, 24, 32, 48, 64, 128, 256];
-  const icoImages = [];
-  for (const size of icoSizes) {
-    const png = renderSquareIcon(size);
-    icoImages.push({ width: size, height: size, buffer: png });
-  }
-  const icoBuffer = createIco(icoImages);
-  writeAsset("build/icon.ico", icoBuffer);
+  const plan = buildPlan();
+  const rgba = await renderJobs(master, plan.jobs);
 
-  const icon512 = renderSquareIcon(512);
-  writeAsset("build/icon.png", icon512);
-  writeAsset("public/icon.png", icon512);
+  const pngCache = new Map();
+  const png = (key) => {
+    const job = plan.jobs[key];
+    const cacheKey = `${key}`;
+    if (!pngCache.has(cacheKey)) pngCache.set(cacheKey, encodePng(job.w, job.h, rgba[key], job.opaque ? 2 : 6));
+    return pngCache.get(cacheKey);
+  };
 
-  // Play Store 512: full-bleed square (Play masks it) with no transparent corners
-  const playStore512 = renderSquareIcon(512, { fullBleed: true });
-  writeAsset("assets/branding/play-store-512.png", playStore512);
-
-  const favicon64 = renderSquareIcon(64);
-  writeAsset("public/favicon.png", favicon64);
-
-  const logo256 = renderSquareIcon(256);
-  writeAsset("src/ui/assets/logo.png", logo256);
-
-  // 2. iOS AppIcon: full-bleed OPAQUE square with no alpha channel (PNG colour type 2)
-  const icon1024 = renderSquareIcon(1024, { fullBleed: true, colorType: 2 });
-  writeAsset("ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png", icon1024);
-
-  // 3. iOS Splash Screens (2732x2732)
-  const iosSplash = renderSplash(2732, 2732);
-  writeAsset("ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png", iosSplash);
-  writeAsset("ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-1.png", iosSplash);
-  writeAsset("ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-2.png", iosSplash);
-
-  // 4. Android Mipmap Densities
-  const mipmapDensities = [
-    { name: "mdpi", size: 48, fg: 108 },
-    { name: "hdpi", size: 72, fg: 162 },
-    { name: "xhdpi", size: 96, fg: 216 },
-    { name: "xxhdpi", size: 144, fg: 324 },
-    { name: "xxxhdpi", size: 192, fg: 432 },
-  ];
-
-  for (const d of mipmapDensities) {
-    writeAsset(
-      `android/app/src/main/res/mipmap-${d.name}/ic_launcher.png`,
-      renderSquareIcon(d.size)
-    );
-    writeAsset(
-      `android/app/src/main/res/mipmap-${d.name}/ic_launcher_round.png`,
-      renderRoundIcon(d.size)
-    );
-    writeAsset(
-      `android/app/src/main/res/mipmap-${d.name}/ic_launcher_foreground.png`,
-      renderAdaptiveForeground(d.fg)
-    );
-  }
-
-  // 5. Android Splash Screens
-  const splashVariants = [
-    { path: "android/app/src/main/res/drawable/splash.png", w: 480, h: 320 },
-    { path: "android/app/src/main/res/drawable-port-mdpi/splash.png", w: 320, h: 480 },
-    { path: "android/app/src/main/res/drawable-port-hdpi/splash.png", w: 480, h: 800 },
-    { path: "android/app/src/main/res/drawable-port-xhdpi/splash.png", w: 720, h: 1280 },
-    { path: "android/app/src/main/res/drawable-port-xxhdpi/splash.png", w: 960, h: 1600 },
-    { path: "android/app/src/main/res/drawable-port-xxxhdpi/splash.png", w: 1280, h: 1920 },
-    { path: "android/app/src/main/res/drawable-land-mdpi/splash.png", w: 480, h: 320 },
-    { path: "android/app/src/main/res/drawable-land-hdpi/splash.png", w: 800, h: 480 },
-    { path: "android/app/src/main/res/drawable-land-xhdpi/splash.png", w: 1280, h: 720 },
-    { path: "android/app/src/main/res/drawable-land-xxhdpi/splash.png", w: 1600, h: 960 },
-    { path: "android/app/src/main/res/drawable-land-xxxhdpi/splash.png", w: 1920, h: 1280 },
-  ];
-
-  for (const s of splashVariants) {
-    writeAsset(s.path, renderSplash(s.w, s.h));
-  }
-
+  for (const f of plan.files) writeAsset(f.path, png(f.job));
+  writeAsset(plan.ico.path, createIco(plan.ico.jobs.map((k) => ({ width: plan.jobs[k].w, height: plan.jobs[k].h, buffer: png(k) }))));
   console.log("All branding assets generated successfully!");
 }
 
-// Auto-run if executed as script directly
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (process.versions.electron && process.argv.includes("--electron-worker")) {
+  electronWorker(process.argv[process.argv.indexOf("--electron-worker") + 1]).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else if (process.argv[1] && resolve(process.argv[1]) === __filename) {
   generateAll().catch((err) => {
     console.error(err);
     process.exit(1);

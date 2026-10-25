@@ -290,6 +290,7 @@ async function start() {
     minWidth: 480,
     minHeight: 360,
     title: "UniView",
+    icon: join(here, "..", "dist", "icon.png"),
     show: false,
     autoHideMenuBar: true,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#202124" : "#ffffff",
