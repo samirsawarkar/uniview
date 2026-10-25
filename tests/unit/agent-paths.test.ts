@@ -1220,7 +1220,7 @@ describe("P15a-4: network locality bound to opened handle", () => {
     expect(await classifier(10n)).toBe(false);
     expect(await classifier(99n)).toBe(false);
 
-    // 4. statDev failing for C: -> false for everything
+    // 4. statDev failing for C: (all local drives failing) -> empty usable set fails closed for everything
     fakeNow += 60_001;
     listDrivesResult = ["C:,3"];
     statDevThrows = true;

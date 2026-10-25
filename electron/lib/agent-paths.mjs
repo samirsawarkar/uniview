@@ -479,8 +479,9 @@ export async function defaultListDrives() {
 /**
  * Create a Windows local volume classifier binding locality to opened handle device IDs.
  * Only DriveType 2 (removable) and 3 (fixed) are local.
- * Any failure of listDrives, timeout, or failed statDev for a type-2/3 drive fails closed
- * (isLocalDev returns false for everything until the next refresh).
+ * A type-2/3 drive whose root cannot be stat'ed (or has no usable device id) is excluded
+ * from the local-device set (fail-closed per volume), while a failure/timeout of listDrives
+ * itself, or an empty usable set, fails closed for everything until the next refresh.
  *
  * @param {object} [options]
  * @param {function} [options.listDrives=defaultListDrives]
@@ -538,15 +539,21 @@ export function createLocalVolumeClassifier({
             }
             if (driveType === 2 || driveType === 3) {
               if (!letter) {
-                return { ok: false, devs: new Set() };
+                continue;
               }
-              const res = await statDev(letter + ":\\");
-              const dev = typeof res === "object" && res !== null && "dev" in res ? res.dev : res;
-              if (typeof dev !== "bigint") {
-                return { ok: false, devs: new Set() };
+              try {
+                const res = await statDev(letter + ":\\");
+                const dev = typeof res === "object" && res !== null && "dev" in res ? res.dev : res;
+                if (typeof dev === "bigint") {
+                  localDevs.add(dev);
+                }
+              } catch {
+                // Per-volume exclusion: unreadable or un-stat'able root excluded
               }
-              localDevs.add(dev);
             }
+          }
+          if (localDevs.size === 0) {
+            return { ok: false, devs: new Set() };
           }
           return { ok: true, devs: localDevs };
         })();
