@@ -6,8 +6,9 @@ import crypto from "node:crypto";
 import { connectBridge } from "../../electron/lib/bridge-client.mjs";
 // @ts-expect-error plain ESM module without types
 import { readBridgeKey, bridgeEndpoint, windowsUserSid, ensureInstallId } from "../../electron/lib/bridge-key.mjs";
+import { tmpBase as resolveTmpBase } from "../unit/helpers/tmp-base";
 
-const tmpBase = process.platform === "win32" ? "I:\\AES\\tmp" : "/tmp";
+const tmpBase = resolveTmpBase();
 
 test.describe("Packet P17c: agent behaviour through Electron app", () => {
   test("CLI session opens file; MCP session approval then tab", async () => {

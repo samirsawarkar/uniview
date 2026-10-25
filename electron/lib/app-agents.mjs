@@ -24,6 +24,7 @@ import { registerAgentsIpc } from "./agents-ipc.mjs";
 import { startBridgeServer } from "./bridge-server.mjs";
 import { connectBridge } from "./bridge-client.mjs";
 import {
+  removeExtraAclEntries,
   ensureBridgeDir,
   ensureBridgeKey,
   readBridgeKey,
@@ -208,6 +209,7 @@ export async function ensureAgentsDir(
           "/grant:r",
           `${grantSid}:(OI)(CI)F`,
         ]);
+        await removeExtraAclEntries(agentsDir, { execFile, accountName: name, userSid: sid });
       } catch {
         throw new BridgeError("bad_dir");
       }

@@ -6,8 +6,9 @@ import crypto from "node:crypto";
 import { connectBridge } from "../../electron/lib/bridge-client.mjs";
 // @ts-expect-error plain ESM module without types
 import { readBridgeKey, bridgeEndpoint, windowsUserSid, ensureInstallId } from "../../electron/lib/bridge-key.mjs";
+import { tmpBase as resolveTmpBase } from "../unit/helpers/tmp-base";
 
-const tmpBase = process.platform === "win32" ? "I:\\AES\\tmp" : "/tmp";
+const tmpBase = resolveTmpBase();
 
 test.describe("Packet P17c-3: Agent view reload verification", () => {
   test("Agent-opened view reload re-reads from open handle via uniview-file: and preserves original content after file swap", async () => {

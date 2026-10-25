@@ -174,6 +174,49 @@ export async function currentWindowsAccount({ execFile = defaultExecFile } = {})
 }
 
 /**
+ * True when an icacls principal (a DOMAIN\user name, or a SID with or without a leading "*") is the
+ * expected owner account. Only the full name or the SID identify the account.
+ * @param {string} principalRaw
+ * @param {string | undefined} expectedName
+ * @param {string | undefined} expectedSid
+ */
+function principalIsOwner(principalRaw, expectedName, expectedSid) {
+  const principal = principalRaw.trim();
+  if (expectedName && principal.toLowerCase() === expectedName.toLowerCase()) return true;
+  if (!expectedSid) return false;
+  const cleanSid = (expectedSid.startsWith("*") ? expectedSid.slice(1) : expectedSid).toLowerCase();
+  const cleanPrincipal = (principal.startsWith("*") ? principal.slice(1) : principal).toLowerCase();
+  return cleanPrincipal === cleanSid;
+}
+
+/**
+ * Removes every explicit ACL entry except the owner's from a freshly created file or directory.
+ *
+ * `icacls /inheritance:r` only drops INHERITED entries. A process running elevated (Administrator, as
+ * on CI runners) creates objects whose default DACL carries explicit entries for BUILTIN\Administrators
+ * and NT AUTHORITY\SYSTEM, and those survive it, so the owner-only check would reject a folder the app
+ * has just created itself. Only call this on objects this process created a moment ago.
+ * @param {string} targetPath
+ * @param {{ execFile?: Function, accountName?: string, userSid?: string }} options
+ */
+export async function removeExtraAclEntries(targetPath, { execFile = defaultExecFile, accountName, userSid } = {}) {
+  let stdout;
+  try {
+    const res = await runExecFile(execFile, "icacls", [targetPath]);
+    stdout = typeof res === "string" ? res : (res?.stdout || "");
+  } catch {
+    return;
+  }
+  const expectedName = fullAccountName(accountName);
+  const extra = [...new Set(parseIcaclsEntries(stdout, targetPath)
+    .filter((e) => !e.inherited && !principalIsOwner(e.principal, expectedName, userSid))
+    .map((e) => (/^S-1-/i.test(e.principal.trim()) ? `*${e.principal.trim()}` : e.principal.trim())))];
+  if (extra.length === 0) return;
+  // Best effort: the owner-only verification that follows is what decides success.
+  await runExecFile(execFile, "icacls", [targetPath, "/remove", ...extra]).catch(() => {});
+}
+
+/**
  * Verifies that a Windows file or directory has strictly owner-only ACL permissions.
  * @param {string} targetPath
  * @param {{ isDirectory?: boolean, execFile?: Function, username?: string, accountName?: string, userSid?: string }} options
@@ -309,6 +352,7 @@ export async function ensureBridgeDir(userDataDir, {
           "/grant:r",
           `${grantSid}:(OI)(CI)F`,
         ]);
+        await removeExtraAclEntries(bridgeDir, { execFile, accountName: name, userSid: sid });
       } catch {
         throw new BridgeError("bad_dir");
       }
@@ -467,6 +511,7 @@ export async function ensureBridgeKey(bridgeDir, {
           "/grant:r",
           `${grantSid}:F`,
         ]);
+        await removeExtraAclEntries(tmpPath, { execFile, accountName: name, userSid: sid });
       } catch {
         throw new BridgeError("acl_failed");
       }
