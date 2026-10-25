@@ -218,6 +218,20 @@ describe("defaultDriveLookup", () => {
   });
 });
 
+/**
+ * Deterministic stand-ins for the PowerShell (Get-CimInstance) drive lookups on Windows. The real
+ * lookups have a 3s fail-closed timeout, which a busy CI runner can exceed, so these tests inject a
+ * lister that reports the temp drive as fixed. The device-binding check itself stays real: the
+ * opened handle's device id is still compared with a real stat of the drive root.
+ */
+function fixedDriveDeps(somePath: string) {
+  const letter = path.parse(somePath).root.charAt(0);
+  return {
+    classifyDrive: async () => "allowed" as const,
+    listDrives: async () => [{ letter, driveType: 3 }],
+  };
+}
+
 describe("openAgentPath with real temp files", () => {
   let tempDirPath: string;
 
@@ -236,7 +250,7 @@ describe("openAgentPath with real temp files", () => {
 
     const res = await openAgentPath(testFile, {
       platform: process.platform,
-      classifyDrive: async () => "allowed",
+      ...fixedDriveDeps(testFile),
     });
 
     expect(res.ok).toBe(true);
@@ -253,7 +267,7 @@ describe("openAgentPath with real temp files", () => {
     // Catches mutation: permitting directories to be opened as files on real filesystem
     const res = await openAgentPath(tempDirPath, {
       platform: process.platform,
-      classifyDrive: async () => "allowed",
+      ...fixedDriveDeps(tempDirPath),
     });
 
     expect(res.ok).toBe(false);
@@ -1021,7 +1035,7 @@ describe("P15a-3 security fixes", () => {
       }
 
       const junctionFile = path.join(junctionDir, "target.txt");
-      const res = await openAgentPath(junctionFile);
+      const res = await openAgentPath(junctionFile, fixedDriveDeps(junctionFile));
       expect(res.ok).toBe(true);
       if (!res.ok) return;
 
@@ -1057,7 +1071,7 @@ describe("P15a-3 security fixes", () => {
       const filePath = path.join(testDir, "normal.txt");
       await fsPromises.writeFile(filePath, "hello world");
 
-      const res = await openAgentPath(filePath);
+      const res = await openAgentPath(filePath, fixedDriveDeps(filePath));
       expect(res.ok).toBe(true);
       if (!res.ok) return;
 
