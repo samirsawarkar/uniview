@@ -9,13 +9,7 @@ import { openReview, createVerifier, decide, ReviewError } from "../../electron/
 // @ts-expect-error plain ESM module without types
 import { createDecisionStore } from "../../electron/lib/review-store.mjs";
 import { validateDecision } from "../../shared/receipt.mjs";
-
-function getTempBaseDir(): string {
-  if (process.platform === "win32") {
-    return "I:\\AES\\tmp";
-  }
-  return os.tmpdir();
-}
+import { tmpBase } from "./helpers/tmp-base";
 
 async function realOpenAgentPath(filePath: string) {
   try {
@@ -45,7 +39,7 @@ describe("review-decision", () => {
   let storeDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(getTempBaseDir(), `review-decide-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(tmpBase(), `review-decide-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     storeDir = path.join(testDir, "store");
     await fs.mkdir(testDir, { recursive: true });
     await fs.mkdir(storeDir, { recursive: true });

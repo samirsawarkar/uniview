@@ -13,13 +13,7 @@ import { createVerifier } from "../../electron/lib/review-verify.mjs";
 import { createDecisionStore } from "../../electron/lib/review-store.mjs";
 // @ts-expect-error plain ESM module without types
 import { GrantStore } from "../../electron/lib/core.mjs";
-
-function getTempBaseDir(): string {
-  if (process.platform === "win32") {
-    return "I:\\AES\\tmp";
-  }
-  return os.tmpdir();
-}
+import { tmpBase } from "./helpers/tmp-base";
 
 async function mockOpenAgentPath(filePath: string) {
   try {
@@ -51,7 +45,7 @@ describe("review-ipc handlers", () => {
   let storeDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(getTempBaseDir(), `review-ipc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(tmpBase(), `review-ipc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     storeDir = path.join(testDir, "store");
     await fs.mkdir(testDir, { recursive: true });
     await fs.mkdir(storeDir, { recursive: true });

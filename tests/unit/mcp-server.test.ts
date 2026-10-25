@@ -11,6 +11,7 @@ import { MCP_LIMITS, LineSplitter } from "../../electron/lib/mcp-server.mjs";
 import { startBridgeServer } from "../../electron/lib/bridge-server.mjs";
 // @ts-expect-error plain ESM module without types
 import { connectBridge } from "../../electron/lib/bridge-client.mjs";
+import { tmpBase } from "./helpers/tmp-base";
 
 const MiB = 1024 * 1024;
 
@@ -337,7 +338,7 @@ describe("MCP bridge connection", () => {
 
   it("sends spec and receipt text over a real bridge as raw body bytes", async () => {
     // Mutation: sending the document inside the JSON header (escaped) instead of as the frame body.
-    const base = process.platform === "win32" ? "I:\\AES\\tmp" : path.join(os.tmpdir(), "aes-test");
+    const base = tmpBase();
     const testDir = path.join(base, `uv-mcp-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`);
     await fs.mkdir(testDir, { recursive: true });
     const endpoint = process.platform === "win32" ? `\\\\.\\pipe\\uniview-test-${crypto.randomBytes(8).toString("hex")}` : path.join(testDir, "b.sock");

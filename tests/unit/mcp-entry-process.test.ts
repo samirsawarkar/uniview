@@ -10,12 +10,13 @@ import { ensureBridgeDir, ensureBridgeKey, ensureInstallId, windowsUserSid, brid
 import { startBridgeServer } from "../../electron/lib/bridge-server.mjs";
 // @ts-expect-error plain ESM module without types
 import { BridgeError } from "../../electron/lib/bridge-proto.mjs";
+import { tmpBase } from "./helpers/tmp-base";
 
 const entryRunner = path.resolve(__dirname, "../../electron/mcp-entry.mjs");
 const KILL_AFTER_MS = 25000;
 
 async function makeDir(): Promise<string> {
-  const base = process.platform === "win32" ? "I:\\AES\\tmp" : path.join(os.tmpdir(), "aes-test");
+  const base = tmpBase();
   const dir = path.join(base, `uv-mcp-proc-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`);
   await fs.mkdir(dir, { recursive: true });
   return dir;

@@ -7,20 +7,14 @@ import os from "node:os";
 import { createDecisionStore, writeDecisionNextToReceipt } from "../../electron/lib/review-store.mjs";
 // @ts-expect-error plain ESM module without types
 import { decide, createVerifier } from "../../electron/lib/review-verify.mjs";
-
-function getTempBaseDir(): string {
-  if (process.platform === "win32") {
-    return "I:\\AES\\tmp";
-  }
-  return os.tmpdir();
-}
+import { tmpBase } from "./helpers/tmp-base";
 
 describe("review-sidecar-conflict", () => {
   let testDir: string;
   let storeDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(getTempBaseDir(), `sidecar-conflict-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(tmpBase(), `sidecar-conflict-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     storeDir = path.join(testDir, "store");
     await fs.mkdir(testDir, { recursive: true });
     await fs.mkdir(storeDir, { recursive: true });

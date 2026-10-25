@@ -5,19 +5,13 @@ import os from "node:os";
 
 // @ts-expect-error plain ESM module without types
 import { writeDecisionNextToReceipt, isDecisionEqual } from "../../electron/lib/review-store.mjs";
-
-function getTempBaseDir(): string {
-  if (process.platform === "win32") {
-    return "I:\\AES\\tmp";
-  }
-  return os.tmpdir();
-}
+import { tmpBase } from "./helpers/tmp-base";
 
 describe("review-store writeDecisionNextToReceipt exported helper without outcome", () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(getTempBaseDir(), `exported-helper-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(tmpBase(), `exported-helper-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await fs.mkdir(testDir, { recursive: true });
   });
 

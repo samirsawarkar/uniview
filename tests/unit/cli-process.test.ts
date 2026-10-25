@@ -10,6 +10,7 @@ import { ensureBridgeDir, ensureBridgeKey, ensureInstallId, windowsUserSid, brid
 import { startBridgeServer } from "../../electron/lib/bridge-server.mjs";
 // @ts-expect-error plain ESM module without types
 import { BridgeError } from "../../electron/lib/bridge-proto.mjs";
+import { tmpBase } from "./helpers/tmp-base";
 
 // Process-level CLI tests (the cli.e2e row of the behaviour-to-test map, without Electron): the real CLI entry
 // (scripts/cli-runner.mjs -> electron/lib/cli.mjs -> bridge-client.mjs) runs as a separate node process against a
@@ -24,7 +25,7 @@ type Req = { method: string; params: any; paths?: string[] };
 type ChildResult = { code: number | null; stdout: string; stderr: string; exitedAt: number };
 
 async function makeDir(): Promise<string> {
-  const base = process.platform === "win32" ? "I:\\AES\\tmp" : path.join(os.tmpdir(), "aes-test");
+  const base = tmpBase();
   const dir = path.join(base, `uv-cli-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`);
   await fs.mkdir(dir, { recursive: true });
   return dir;

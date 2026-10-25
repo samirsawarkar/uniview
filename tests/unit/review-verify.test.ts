@@ -7,13 +7,7 @@ import crypto from "node:crypto";
 // @ts-expect-error plain ESM module without types
 import { openReview, createVerifier, REVIEW_LIMITS, ReviewError } from "../../electron/lib/review-verify.mjs";
 import { sha256Hex } from "../../shared/receipt.mjs";
-
-function getTempBaseDir(): string {
-  if (process.platform === "win32") {
-    return "I:\\AES\\tmp";
-  }
-  return os.tmpdir();
-}
+import { tmpBase } from "./helpers/tmp-base";
 
 async function realOpenAgentPath(filePath: string) {
   try {
@@ -42,7 +36,7 @@ describe("review-verify", () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(getTempBaseDir(), `review-verify-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(tmpBase(), `review-verify-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await fs.mkdir(testDir, { recursive: true });
   });
 

@@ -17,9 +17,10 @@ import { startBridgeServer, attachSocketGuards, createAuthFailureLogger, default
 import { connectBridge } from "../../electron/lib/bridge-client.mjs";
 // @ts-expect-error plain ESM module without types
 import { powershellPath } from "../../electron/lib/agent-paths.mjs";
+import { tmpBase } from "./helpers/tmp-base";
 
 async function makeTestDir(): Promise<string> {
-  const base = process.platform === "win32" ? "I:\\AES\\tmp" : path.join(os.tmpdir(), "aes-test");
+  const base = tmpBase();
   const dir = path.join(base, `uv-test-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`);
   await fs.mkdir(dir, { recursive: true });
   return dir;

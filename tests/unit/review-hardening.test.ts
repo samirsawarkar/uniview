@@ -10,10 +10,7 @@ import { getEventListeners } from "node:events";
 import { openReview, createVerifier, decide, REVIEW_LIMITS } from "../../electron/lib/review-verify.mjs";
 // @ts-expect-error plain ESM module without types
 import { createDecisionStore, writeDecisionNextToReceipt, comparablePath } from "../../electron/lib/review-store.mjs";
-
-function getTempBaseDir(): string {
-  return process.platform === "win32" ? "I:\\AES\\tmp" : os.tmpdir();
-}
+import { tmpBase } from "./helpers/tmp-base";
 
 const sha = (s: string) => crypto.createHash("sha256").update(Buffer.from(s)).digest("hex");
 
@@ -68,7 +65,7 @@ describe("review hardening (P14b-1b)", () => {
   let storeDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(getTempBaseDir(), `review-hard-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(tmpBase(), `review-hard-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     storeDir = path.join(testDir, "store");
     await fs.mkdir(storeDir, { recursive: true });
   });

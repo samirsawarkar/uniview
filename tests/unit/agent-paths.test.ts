@@ -7,6 +7,7 @@ import fsPromises from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { aesRoot } from "./helpers/tmp-base";
 
 // @ts-expect-error plain ESM module without types
 import { MAX_AGENT_PATH, MAX_AGENT_FILE_BYTES, checkPathString, createDriveClassifier, defaultDriveLookup, openAgentPath, AgentGrantStore, createMountClassifier, parseLinuxMounts, parseMacMounts, linuxMakedev, parseLinuxMountinfo, createLocalVolumeClassifier } from "../../electron/lib/agent-paths.mjs";
@@ -960,7 +961,7 @@ describe("P15a-3 security fixes", () => {
     if (process.platform === "win32") {
       return;
     }
-    const baseDir = (fsSync.existsSync("I:\\AES")) ? "I:\\AES" : os.tmpdir();
+    const baseDir = aesRoot();
     const testDir = await fsPromises.mkdtemp(path.join(baseDir, "p15a3-posix-"));
     try {
       const fileA = path.join(testDir, "fileA.txt");
@@ -1003,7 +1004,7 @@ describe("P15a-3 security fixes", () => {
     if (process.platform !== "win32") {
       return;
     }
-    const baseDir = (fsSync.existsSync("I:\\AES")) ? "I:\\AES" : os.tmpdir();
+    const baseDir = aesRoot();
     const testDir = await fsPromises.mkdtemp(path.join(baseDir, "p15a3-win-"));
     try {
       const realDir = path.join(testDir, "real_dir");
@@ -1028,7 +1029,8 @@ describe("P15a-3 security fixes", () => {
       expect(res.canonical.startsWith("\\\\?\\")).toBe(false);
 
       // Resolves to target's canonical path
-      const expectedCanonical = path.resolve(targetFile);
+      // (realpath.native, not resolve: CI temp dirs can be 8.3 short names such as C:\Users\RUNNER~1)
+      const expectedCanonical = fsSync.realpathSync.native(targetFile);
       expect(res.canonical.toLowerCase()).toBe(expectedCanonical.toLowerCase());
 
       // Rename target file after opening
@@ -1049,7 +1051,7 @@ describe("P15a-3 security fixes", () => {
 
   it("canonical results for a normal temp file never start with \\\\?\\", async () => {
     // Catches mutation: canonical paths starting with \\?\ on Windows
-    const baseDir = (process.platform === "win32" && fsSync.existsSync("I:\\AES")) ? "I:\\AES" : os.tmpdir();
+    const baseDir = aesRoot();
     const testDir = await fsPromises.mkdtemp(path.join(baseDir, "p15a3-normal-"));
     try {
       const filePath = path.join(testDir, "normal.txt");
