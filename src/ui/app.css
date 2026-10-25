@@ -1258,3 +1258,16 @@ h5.vs-heading { font-size: 0.9rem; }
 }
 
 
+
+/* The "Content from the agent" label and the agent's self-reported identity are two lines, never one run of text. */
+.agent-content-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.agent-content-label .agent-badge,
+.agent-content-label .agent-identity {
+  display: block;
+}

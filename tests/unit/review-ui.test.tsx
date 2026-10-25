@@ -188,6 +188,19 @@ describe("ReviewTab (desktop)", () => {
   const commentBox = () => q<HTMLTextAreaElement>("[data-testid='review-comment']");
   const reloadBtn = () => q<HTMLButtonElement>(".receipt-reload-btn");
 
+  // Mutation caught (P28): the label and the identity sentence glued into one run ("agentReceipt from an agent")
+  it("(1b) the Content-from-the-agent label is its own element, separated from the identity line", async () => {
+    await renderReview();
+    const label = container!.querySelector(".agent-content-label")!;
+    const badge = label.querySelector(".agent-badge")!;
+    const identity = label.querySelector(".agent-identity")!;
+    expect(badge.textContent).toBe("Content from the agent");
+    expect(identity.textContent).toMatch(/^Receipt from an agent/);
+    expect(badge).not.toBe(identity);
+    expect(label.textContent).not.toContain("agentReceipt");
+    expect(label.textContent).toContain("Content from the agent Receipt from an agent");
+  });
+
   // Mutation caught: rendering receipt task/summary/files outside agent-content section
   it("(1) renders receipt strictly inside 'Content from the agent' region", async () => {
     await renderReview();

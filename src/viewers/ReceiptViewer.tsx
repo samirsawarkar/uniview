@@ -510,6 +510,7 @@ function ReadOnlyReceiptViewer({
         <div className="agent-content-header">
           <div className="agent-content-label">
             <span className="agent-badge">Content from the agent</span>
+            {" "}
             <span className="agent-identity">
               {agentName
                 ? `Receipt from an agent · says it is ${agentName}`

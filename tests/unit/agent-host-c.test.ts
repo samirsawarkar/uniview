@@ -124,6 +124,8 @@ describe("P17b-1c Finding B2: In-flight open fails if session disconnected while
 });
 
 describe("P17b-1c Finding B3: Stalled handle close in first scope does not block invalidation of second scope", () => {
+  // P28: only scopes NOT backed by a committed tab are released on disconnect, so these use opens still in flight
+  // (the UI has not answered yet) to have uncommitted scopes to release.
   it("first handle's close pending, second grant invalid immediately after disconnect", async () => {
     // Mutation: serializing scope cleanup behind handle close, so a stalled handle close in scope 1 leaves scope 2's tokens valid after disconnect
     let releaseClose1!: () => void;
@@ -148,31 +150,32 @@ describe("P17b-1c Finding B3: Stalled handle close in first scope does not block
     fakeFs.set("/w/normal.txt", "normal");
     const s = await t.cli();
 
-    // Open file 1 (scope 1)
-    await t.open(s, ["/w/stalled.txt"]);
-    // Open file 2 (scope 2)
-    await t.open(s, ["/w/normal.txt"]);
+    let releaseUi!: () => void;
+    t.ui.gate = new Promise<void>((r) => (releaseUi = r));
+    const seen: any[] = [];
+    const origOpenFile = t.ui.openFile;
+    t.ui.openFile = async (p: any) => {
+      seen.push(p);
+      return origOpenFile(p);
+    };
+    const opening = t.open(s, ["/w/stalled.txt", "/w/normal.txt"]).catch((e: any) => e.code);
+    for (let i = 0; i < 50 && seen.length === 0; i++) await flush();
+    expect(seen).toHaveLength(1);
+    // Both scopes exist, neither is committed (the UI has not answered).
+    expect(t.host.grants.scopeCount).toBe(2);
+    expect(t.host.grants.get(seen[0].token, seen[0].scopeId)).toBeDefined();
 
-    expect(t.ui.calls.openFile).toHaveLength(2);
-    const scopeId1 = t.ui.calls.openFile[0].scopeId;
-    const token1 = t.ui.calls.openFile[0].token;
-    const scopeId2 = t.ui.calls.openFile[1].scopeId;
-    const token2 = t.ui.calls.openFile[1].token;
-
-    // Both grants valid before disconnect
-    expect(t.host.grants.get(token1, scopeId1)).toBeDefined();
-    expect(t.host.grants.get(token2, scopeId2)).toBeDefined();
-
-    // Disconnect session - returns a promise while handle 1 close is still pending on close1Gate
+    // Disconnect: handle 1's close is still pending on close1Gate.
     const closeSessionPromise = t.host.onSessionClosed(s.sessionId);
 
-    // Immediately after disconnect (synchronously! handle 1 close still pending), scope 2's grant MUST BE INVALID!
-    expect(t.host.grants.get(token2, scopeId2)).toBeUndefined();
-    expect(t.host.grants.get(token1, scopeId1)).toBeUndefined();
+    // Immediately (synchronously) every scope is invalid, including scope 2 behind the stalled close.
+    expect(t.host.grants.scopeCount).toBe(0);
+    expect(t.host.grants.get(seen[0].token, seen[0].scopeId)).toBeUndefined();
 
-    // Release handle 1 close so cleanup completes cleanly
     releaseClose1();
     await closeSessionPromise;
+    releaseUi();
+    expect(await opening).toBe("not_found");
   });
 
   it("stalled handle close wait is bounded and detaches late close", async () => {
@@ -193,9 +196,17 @@ describe("P17b-1c Finding B3: Stalled handle close in first scope does not block
     fakeFs.set("/w/forever.txt", "forever");
     const s = await t.cli();
 
-    await t.open(s, ["/w/forever.txt"]);
-    const scopeId = t.ui.calls.openFile[0].scopeId;
-    const token = t.ui.calls.openFile[0].token;
+    let releaseUi!: () => void;
+    t.ui.gate = new Promise<void>((r) => (releaseUi = r));
+    const seen: any[] = [];
+    const origOpenFile = t.ui.openFile;
+    t.ui.openFile = async (p: any) => {
+      seen.push(p);
+      return origOpenFile(p);
+    };
+    const opening = t.open(s, ["/w/forever.txt"]).catch((e: any) => e.code);
+    for (let i = 0; i < 50 && seen.length === 0; i++) await flush();
+    const { scopeId, token } = seen[0];
 
     let closed = false;
     const p = t.host.onSessionClosed(s.sessionId).then(() => {
@@ -209,5 +220,7 @@ describe("P17b-1c Finding B3: Stalled handle close in first scope does not block
     await t.clock.advance(2500);
     await p;
     expect(closed).toBe(true);
+    releaseUi();
+    await opening;
   });
 });

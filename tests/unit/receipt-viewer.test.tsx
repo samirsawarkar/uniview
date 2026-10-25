@@ -129,6 +129,16 @@ describe("ReceiptViewer for phone and web", () => {
     expect(agentContent?.textContent).toContain("Optimize image compression pipeline");
   });
 
+  it("the Content-from-the-agent label is separated from the identity line (P28)", async () => {
+    // Mutation: label and identity rendered as adjacent inline text with no separation ("agentReceipt from an agent")
+    await renderAndWait(makeSource(sampleReceipt));
+    const label = container!.querySelector(".agent-content-label")!;
+    expect(label.querySelector(".agent-badge")!.textContent).toBe("Content from the agent");
+    expect(label.querySelector(".agent-identity")!.textContent).toMatch(/^Receipt from an agent/);
+    expect(label.textContent).not.toContain("agentReceipt");
+    expect(label.textContent).toContain("Content from the agent Receipt from an agent");
+  });
+
   it("renders summary using restricted Markdown (no <a> tags, URLs as text)", async () => {
     // Mutation: using unrestricted markdown renderer that emits raw <a> tags
     const source = makeSource(sampleReceipt);

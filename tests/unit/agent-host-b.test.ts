@@ -211,8 +211,9 @@ describe("P17b-1b Finding 3: Revocation and session close release grant scopes",
     expect(t.host.grants.get(token, scopeId)).toBeUndefined();
   });
 
-  it("connection-close (onSessionClosed) releases every grant scope of that session, closes handles, and invalidates grants", async () => {
-    // Mutation: onSessionClosed failing to close session scopes
+  it("connection-close (onSessionClosed) keeps the grant scopes of tabs already open (P28); the person closes them", async () => {
+    // Mutation: onSessionClosed closing committed tabs' scopes again (the demo bug: 'This file is no longer available'),
+    // or tabClosed failing to release a detached tab's scope (handle leak).
     const t = await makeHost();
     const s = await t.cli();
     t.fakeFs.set("/w/conn.txt", "conn data");
@@ -224,6 +225,10 @@ describe("P17b-1b Finding 3: Revocation and session close release grant scopes",
 
     await t.host.onSessionClosed(s.sessionId);
 
+    expect(t.fakeFs.state.live).toBe(1);
+    expect(t.host.grants.get(token, scopeId)).toBeDefined();
+
+    await t.host.tabClosed(scopeId);
     expect(t.fakeFs.state.live).toBe(0);
     expect(t.host.grants.get(token, scopeId)).toBeUndefined();
   });

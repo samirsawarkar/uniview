@@ -44,6 +44,8 @@
 //
 // ---- For the app (renderer / Agents panel) --------------------------------------------------------------------
 //   host.tabClosed(scopeId)                         the tab was closed: closes its handles; an undecided review is dismissed
+//   host.onSessionClosed(sessionId)                 the agent/CLI went away: opens still in flight are released; tabs already on screen
+//                                                   (file/view/review) stay readable until tabClosed, a revoke, or app quit
 //   host.viewGrant(scopeId, path)                   grant for an image/fileRef path the view itself names -> {token, name, size, canonical}
 //   host.verifyReview(reviewId)                     hashes the receipt files (what is shown) -> verifier result
 //   host.decideReview({reviewId, decision, comment}) approved | changes_requested | dismissed; {ok:false, code:"changed", current} blocks
@@ -298,6 +300,20 @@ export function createAgentHost(deps) {
     }
   }
 
+  /**
+   * A tab record. `sessionId` is the live owner (null once detached); `originSessionId` and `clientId` never change, so an
+   * explicit revoke can still find the tabs of a client whose sessions have already disconnected.
+   */
+  function newTab(state, fields) {
+    return { ...fields, sessionId: state.sessionId, originSessionId: state.sessionId, clientId: approval.clientIdOf(state.sessionId) ?? null, committed: false };
+  }
+
+  /** The tab is on screen: it now outlives the session that opened it (until tabClosed, a revoke, or app quit). */
+  function commitTab(scopeId) {
+    const tab = tabs.get(scopeId);
+    if (tab) tab.committed = true;
+  }
+
   async function dropTab(scopeId) {
     tabs.delete(scopeId);
     await grants.closeScope(scopeId);
@@ -401,7 +417,7 @@ export function createAgentHost(deps) {
         }
         throw e;
       }
-      for (const item of items) tabs.set(item.scopeId, { kind: "file", sessionId: state.sessionId });
+      for (const item of items) tabs.set(item.scopeId, newTab(state, { kind: "file" }));
       slots.placed();
       for (const item of items) {
         if (!isSessionLive(state, epoch)) throw err("not_found");
@@ -417,6 +433,8 @@ export function createAgentHost(deps) {
         shown.push(item.scopeId);
         if (!isSessionLive(state, epoch)) throw err("not_found");
       }
+      // Every tab is on screen and the session was alive to the end: from here the tabs belong to the person.
+      for (const item of items) commitTab(item.scopeId);
     } catch (e) {
       slots.rollback();
       for (const item of scopes) {
@@ -443,12 +461,13 @@ export function createAgentHost(deps) {
     if (!isSessionLive(state, epoch)) throw err("not_found");
     const slots = reserveTabs(state, 1);
     const scopeId = grants.openScope();
-    tabs.set(scopeId, { kind: "view", sessionId: state.sessionId, declared: declaredPaths(spec), granted: new Map() });
+    tabs.set(scopeId, newTab(state, { kind: "view", declared: declaredPaths(spec), granted: new Map() }));
     slots.placed();
     try {
       if (!isSessionLive(state, epoch)) throw err("not_found");
       await callUi("showView", { scopeId, specBytes: bytes, spec, sessionId: state.sessionId, agent: agentLabel(state) });
       if (!isSessionLive(state, epoch)) throw err("not_found");
+      commitTab(scopeId);
     } catch (e) {
       slots.rollback();
       await dropTab(scopeId);
@@ -497,7 +516,7 @@ export function createAgentHost(deps) {
     const scopeId = grants.openScope();
     let view = null;
     let record = null;
-    const tab = { kind: "review", sessionId: state.sessionId, reviewId: review.reviewId, declared: new Set(), granted: new Map() };
+    const tab = newTab(state, { kind: "review", reviewId: review.reviewId, declared: new Set(), granted: new Map() });
     tabs.set(scopeId, tab);
     slots.placed();
     try {
@@ -621,20 +640,9 @@ export function createAgentHost(deps) {
 
   // ---- bridge entry points --------------------------------------------------------------------------------
 
-  async function closeSessionScopes(sessionId) {
-    const sessionScopeIds = [];
-    for (const [scopeId, tab] of tabs.entries()) {
-      if (tab.sessionId === sessionId) {
-        if (tab.kind === "review") {
-          tab.sessionId = null;
-        } else {
-          tabs.delete(scopeId);
-          sessionScopeIds.push(scopeId);
-        }
-      }
-    }
-    // Invalidate ALL the session's scopes/tokens synchronously first, then close handles concurrently with a bounded wait.
-    const closePromises = sessionScopeIds.map((id) => {
+  /** Removes the tabs from the registry and invalidates ALL their scopes first, then closes handles with a bounded wait each. */
+  async function releaseScopes(scopeIds) {
+    const closePromises = scopeIds.map((id) => {
       const p = grants.closeScope(id);
       p.catch(() => {});
       return new Promise((resolve) => {
@@ -655,6 +663,39 @@ export function createAgentHost(deps) {
       });
     });
     await Promise.all(closePromises);
+  }
+
+  /**
+   * The session is gone. Review tabs detach (the person still decides). Committed file/view tabs detach too: they are on
+   * screen and stay readable until tabClosed, a revoke, or app quit. Everything else (opens still in flight) is released.
+   */
+  async function closeSessionScopes(sessionId) {
+    const sessionScopeIds = [];
+    for (const [scopeId, tab] of tabs.entries()) {
+      if (tab.sessionId !== sessionId) continue;
+      if (tab.kind === "review") {
+        tab.sessionId = null;
+      } else if (tab.committed) {
+        tab.sessionId = null;
+      } else {
+        tabs.delete(scopeId);
+        sessionScopeIds.push(scopeId);
+      }
+    }
+    await releaseScopes(sessionScopeIds);
+  }
+
+  /** Explicit revoke: every file/view scope the client's sessions ever opened, including those of sessions already gone. */
+  async function closeClientScopes(clientId, sessionIds) {
+    const scopeIds = [];
+    for (const [scopeId, tab] of tabs.entries()) {
+      if (tab.kind === "review") continue;
+      if (tab.clientId === clientId || sessionIds.includes(tab.originSessionId)) {
+        tabs.delete(scopeId);
+        scopeIds.push(scopeId);
+      }
+    }
+    await releaseScopes(scopeIds);
   }
 
   function cancelVerifications(record) {
@@ -933,6 +974,7 @@ export function createAgentHost(deps) {
       } catch {}
       await closeSessionScopes(id);
     }
+    await closeClientScopes(clientId, ids);
     log("revoked", undefined, `${removed ? "removed" : "not enrolled"}; ${ids.length} session(s) closed`);
     return { removed, sessionsClosed: ids.length };
   }
