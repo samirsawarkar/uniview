@@ -1,6 +1,7 @@
 // Client-side persistence for remote browsing: this device's identity and the computers it has paired with.
 import { generateIdentity, type Identity } from "../../shared/remote-protocol.mjs";
 import type { HostRecord } from "../../shared/remote-client.mjs";
+import { cleanSavedName, friendlyDeviceName } from "../../shared/device-name.mjs";
 
 const DB = "uniview-remote";
 const HOSTS_KEY = "uniview.remote.hosts.v1";
@@ -49,14 +50,18 @@ export function getDeviceIdentity(): Promise<Identity> {
 export function deviceName(): string {
   try {
     const saved = localStorage.getItem(NAME_KEY);
-    if (saved) return saved;
+    if (saved) {
+      // Names saved by older builds may still end in " Build/..."; clean them once.
+      const clean = cleanSavedName(saved);
+      if (clean && clean !== saved) localStorage.setItem(NAME_KEY, clean);
+      if (clean) return clean;
+    }
   } catch {
     /* storage unavailable */
   }
   const ua = navigator.userAgent;
-  const rawModel = /Android [\d.]+; ([^;)]+)/.exec(ua)?.[1];
-  const model = rawModel?.replace(/\s*Build\/.*$/, "").trim();
-  if (model && model !== "K") return model;
+  const model = friendlyDeviceName(/Android [\d.]+; ([^;)]+)/.exec(ua)?.[1]);
+  if (model) return model;
   if (/iPhone/.test(ua)) return "iPhone";
   if (/iPad/.test(ua)) return "iPad";
   if (/Android/.test(ua)) return "Android phone";

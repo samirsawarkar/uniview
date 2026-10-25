@@ -83,6 +83,13 @@ describe("ShareHost <-> RemoteHost", () => {
     expect(host.state.devices.find((d: { name: string }) => d.name === "Pixel 7")).toBeTruthy();
   });
 
+  it("shows a friendly name for devices saved with a raw ' Build/...' name", async () => {
+    await pairNewDevice("RMX2002 Build/RP1A.200720.011");
+    const names = host.state.devices.map((d: { name: string }) => d.name);
+    expect(names).toContain("realme RMX2002");
+    expect(names.some((n: string) => n.includes("Build/"))).toBe(false);
+  });
+
   it("refuses paths outside the share", async () => {
     const { client } = await pairNewDevice();
     const root = (await client.info()).roots[0]!.id;

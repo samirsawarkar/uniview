@@ -5,6 +5,7 @@ import { mkdir, open, readdir, readFile, realpath, rename, stat, writeFile, lsta
 import { networkInterfaces } from "node:os";
 import { basename, join, sep, isAbsolute } from "node:path";
 import * as P from "../../shared/remote-protocol.mjs";
+import { cleanSavedName } from "../../shared/device-name.mjs";
 import { isLanHost } from "./core.mjs";
 
 export function isLanPeer(address) {
@@ -168,7 +169,7 @@ export class ShareHost {
       addresses: this.#server ? lanAddresses() : [],
       hostName: this.#opts.hostName,
       roots: this.#config.roots.map(({ id, name, path }) => ({ id, name, path })),
-      devices: this.#config.devices.map(({ id, name, addedAt, lastSeen }) => ({ id, name, addedAt, lastSeen, connected: [...this.#sessions.values()].some((s) => s.deviceId === id) })),
+      devices: this.#config.devices.map(({ id, name, addedAt, lastSeen }) => ({ id, name: cleanSavedName(name), addedAt, lastSeen, connected: [...this.#sessions.values()].some((s) => s.deviceId === id) })),
       offer: this.#offer && this.#offer.expiresAt > this.#opts.now() ? { text: this.#offer.text, expiresAt: this.#offer.expiresAt } : null,
       log: this.#log.slice(-50).reverse(),
     };

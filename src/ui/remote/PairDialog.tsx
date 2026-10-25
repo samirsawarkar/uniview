@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import jsQR from "jsqr";
 import type { HostRecord } from "../../../shared/remote-client.mjs";
 import type { RemoteTransport } from "../../core/types";
 import { pair } from "../../remote/connections";
 import { deviceName, setDeviceName } from "../../remote/store";
+import { decodeQr, isBlackFrame } from "./qr";
 
 /** Connect to a computer: scan its QR code with the camera, or paste the pairing code. */
 export function PairDialog({ transport, canScan, onClose, onPaired }: {
@@ -64,11 +64,16 @@ function QrScanner({ onCode, onUnavailable }: { onCode: (text: string) => void; 
   const video = useRef<HTMLVideoElement>(null);
   const [msg, setMsg] = useState("Starting camera…");
 
+  const [facing, setFacing] = useState<"environment" | "user">("environment");
+  const [black, setBlack] = useState(false);
+
   useEffect(() => {
+    setBlack(false);
     let stream: MediaStream | null = null;
     let stopped = false;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    let blackSince = 0;
     const Detector = (window as unknown as { BarcodeDetector?: new (o: { formats: string[] }) => { detect(v: HTMLVideoElement): Promise<{ rawValue: string }[]> } }).BarcodeDetector;
     const detector = Detector ? new Detector({ formats: ["qr_code"] }) : null;
 
@@ -78,13 +83,22 @@ function QrScanner({ onCode, onUnavailable }: { onCode: (text: string) => void; 
       if (v && v.readyState >= 2) {
         try {
           let text: string | null = null;
-          if (detector) text = (await detector.detect(v))[0]?.rawValue ?? null;
-          else if (ctx) {
+          if (ctx && v.videoWidth > 0) {
             const w = (canvas.width = Math.min(720, v.videoWidth));
             const h = (canvas.height = Math.round((v.videoHeight * w) / v.videoWidth));
             ctx.drawImage(v, 0, 0, w, h);
-            text = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" })?.data ?? null;
+            const pixels = ctx.getImageData(0, 0, w, h).data;
+            // A black picture for a few seconds usually means the lens is covered (phone lying on a table).
+            if (isBlackFrame(pixels)) {
+              blackSince ||= Date.now();
+              if (Date.now() - blackSince > 2500) setBlack(true);
+            } else {
+              blackSince = 0;
+              setBlack(false);
+            }
+            if (!detector) text = decodeQr(pixels, w, h);
           }
+          if (detector) text = (await detector.detect(v))[0]?.rawValue ?? null;
           if (text?.startsWith("uniview:pair?")) {
             stopped = true;
             onCode(text);
@@ -98,13 +112,13 @@ function QrScanner({ onCode, onUnavailable }: { onCode: (text: string) => void; 
     };
 
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: "environment" }, audio: false })
+      .getUserMedia({ video: { facingMode: facing }, audio: false })
       .then((s) => {
         if (stopped) return s.getTracks().forEach((t) => t.stop());
         stream = s;
         if (video.current) {
           video.current.srcObject = s;
-          void video.current.play();
+          void video.current.play().catch(() => undefined);
         }
         setMsg("Point the camera at the code on the computer's screen.");
         void tick();
@@ -117,12 +131,13 @@ function QrScanner({ onCode, onUnavailable }: { onCode: (text: string) => void; 
       stopped = true;
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [onCode, onUnavailable]);
+  }, [onCode, onUnavailable, facing]);
 
   return (
     <div className="qr-scan">
-      <video ref={video} muted playsInline aria-label="Camera" />
-      <span className="small muted">{msg}</span>
+      <video ref={video} muted playsInline autoPlay aria-label="Camera" />
+      <span className="small muted">{black ? "The camera picture is black. Uncover the lens, or switch to the other camera." : msg}</span>
+      <button type="button" onClick={() => setFacing((f) => (f === "environment" ? "user" : "environment"))}>Switch camera</button>
     </div>
   );
 }
