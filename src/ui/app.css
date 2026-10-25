@@ -1183,3 +1183,72 @@ h5.vs-heading { font-size: 0.9rem; }
   margin: 0.5rem 0;
 }
 
+/* ------------------------------------------------------------------ agents panel (P17b-2) */
+.agents-panel {
+  background: var(--stage);
+}
+
+.agents-inner {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 28px 20px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.agents-head h1 {
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.agents-head p {
+  margin: 0;
+}
+
+.self-reported-hint {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+.session-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-name {
+  word-break: break-word;
+}
+
+.session-meta {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.agents-empty {
+  padding: 8px 0;
+  font-style: italic;
+}
+
+.agents-btn {
+  font-size: 16px;
+}
+
+.client-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+@media (max-width: 600px) {
+  .agents-inner {
+    padding: 16px 12px 40px;
+  }
+}
+
+

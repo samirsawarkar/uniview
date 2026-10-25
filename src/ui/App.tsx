@@ -8,6 +8,7 @@ import { badgeFor, KindBadge } from "./badges";
 import { loadRecents, rememberRecent, forgetRecent, type Recent } from "./recents";
 import { RecentThumb, captureRecentThumb } from "./recent-thumbs";
 import { SharingPanel } from "./remote/SharingPanel";
+import { AgentsPanel } from "./AgentsPanel";
 import { PairDialog } from "./remote/PairDialog";
 import { RemoteBrowser, type RemoteLocation } from "./remote/RemoteBrowser";
 import { forgetHost, loadHosts } from "../remote/store";
@@ -17,7 +18,7 @@ import type { HostRecord } from "../../shared/remote-client.mjs";
 import logoUrl from "./assets/logo.png";
 import { getTheme, setTheme, type Theme } from "./theme";
 
-type Page = { kind: "sharing" } | { kind: "remote"; hostId: string; location: RemoteLocation };
+type Page = { kind: "sharing" } | { kind: "agents" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
 interface Tab {
   id: string;
@@ -83,8 +84,8 @@ export function App() {
   const openPage = useCallback((page: Page, replaceActive = false) => {
     const t: Tab = { id: `page-${Math.random().toString(36).slice(2)}`, source: null, page };
     setTabs((prev) => {
-      if (page.kind === "sharing") {
-        const existing = prev.find((x) => x.page?.kind === "sharing");
+      if (page.kind === "sharing" || page.kind === "agents") {
+        const existing = prev.find((x) => x.page?.kind === page.kind);
         if (existing) {
           setActiveId(existing.id);
           return prev;
@@ -280,7 +281,7 @@ export function App() {
               onClick={() => setActiveId(t.id)}
               title={t.source ? `${t.source.path ?? t.source.name}\n${t.detection?.label ?? ""} · ${formatBytes(t.source.size)}` : "New tab"}
             >
-              {t.source ? <KindBadge kind={t.detection?.kind} small /> : <span className="tab-home" aria-hidden>{t.page?.kind === "sharing" ? "⇄" : t.page?.kind === "remote" ? "🖥" : <img className="tab-logo" src={logoUrl} alt="" />}</span>}
+              {t.source ? <KindBadge kind={t.detection?.kind} small /> : <span className="tab-home" aria-hidden>{t.page?.kind === "sharing" ? "⇄" : t.page?.kind === "agents" ? "🤖" : t.page?.kind === "remote" ? "🖥" : <img className="tab-logo" src={logoUrl} alt="" />}</span>}
               <span className="tab-title">{t.source?.name ?? pageTitle(t, hosts)}</span>
               <button className="tab-close" aria-label={`Close ${t.source?.name ?? "tab"}`} onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>×</button>
             </div>
@@ -297,6 +298,7 @@ export function App() {
           onOpenPath={openPath}
           onReveal={active.source && bridge.revealInFolder ? () => bridge.revealInFolder!(active.source!) : undefined}
           onHome={goHome}
+          onAgents={bridge.agents ? () => openPage({ kind: "agents" }, false) : undefined}
         />
       </header>
       {notice && (
@@ -312,6 +314,8 @@ export function App() {
               <TabView source={t.source} onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} active={t.id === activeId} />
             ) : t.page?.kind === "sharing" && bridge.share ? (
               <SharingPanel share={bridge.share} />
+            ) : t.page?.kind === "agents" ? (
+              <AgentsPanel agents={bridge.agents} />
             ) : t.page?.kind === "remote" && bridge.remoteTransport && hostFor(t.page.hostId) ? (
               <RemoteBrowser
                 record={hostFor(t.page.hostId)!}
@@ -336,6 +340,7 @@ export function App() {
                   setHosts(forgetHost(h.hostId));
                 }}
                 onShare={bridge.share ? () => openPage({ kind: "sharing" }, true) : undefined}
+                onAgents={bridge.agents ? () => openPage({ kind: "agents" }, true) : undefined}
               />
             )}
           </div>
@@ -362,7 +367,7 @@ export function App() {
   );
 }
 
-function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenPath, onReveal, onHome }: {
+function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenPath, onReveal, onHome, onAgents }: {
   active: Tab;
   tabs: Tab[];
   recents: Recent[];
@@ -372,6 +377,7 @@ function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenP
   onOpenPath: (p: string) => void;
   onReveal?: () => void;
   onHome: () => void;
+  onAgents?: () => void;
 }) {
   const [value, setValue] = useState<string | null>(null);
   const shown = value ?? (active.source ? active.source.path ?? active.source.name : "");
@@ -409,6 +415,17 @@ function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenP
           <polyline points="9 22 9 12 15 12 15 22" />
         </svg>
       </button>
+      {onAgents && (
+        <button
+          className="home-button agents-btn"
+          onClick={onAgents}
+          aria-label="Agents"
+          title="Agents"
+          data-testid="header-agents"
+        >
+          🤖
+        </button>
+      )}
       <button className="omni-open" onClick={onPick} title="Open files (Ctrl+O)">Open</button>
       <div className="omnibox-wrap">
         <span className="omni-icon" aria-hidden>{active.source ? <KindBadge kind={active.detection?.kind} small /> : "🔍"}</span>
@@ -448,6 +465,7 @@ function Omnibox({ active, tabs, recents, canOpenPath, onPick, onSwitch, onOpenP
 
 function pageTitle(t: Tab, hosts: HostRecord[]): string {
   if (t.page?.kind === "sharing") return "Sharing";
+  if (t.page?.kind === "agents") return "Agents";
   if (t.page?.kind === "remote") {
     const p = t.page;
     const host = hosts.find((h) => h.hostId === p.hostId)?.hostName ?? "Computer";
@@ -457,7 +475,7 @@ function pageTitle(t: Tab, hosts: HostRecord[]): string {
   return "New tab";
 }
 
-function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget, hosts, onConnect, onBrowse, onForgetHost, onShare }: {
+function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget, hosts, onConnect, onBrowse, onForgetHost, onShare, onAgents }: {
   recents: Recent[];
   canReopen: boolean;
   canReopenRemote?: boolean;
@@ -469,6 +487,7 @@ function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget,
   onBrowse: (h: HostRecord) => void;
   onForgetHost: (h: HostRecord) => void;
   onShare?: () => void;
+  onAgents?: () => void;
 }) {
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
   const handleTheme = (t: Theme) => {
@@ -523,6 +542,22 @@ function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget,
             </span>
             <strong className="action-card-title">Share this computer</strong>
             <span className="muted small action-card-sub">Let your phone browse folders you choose</span>
+          </button>
+        )}
+
+        {onAgents && (
+          <button className="action-card" onClick={onAgents} data-testid="open-agents">
+            <span className="action-card-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="10" rx="2" />
+                <circle cx="12" cy="5" r="2" />
+                <path d="M12 7v4" />
+                <line x1="8" y1="16" x2="8" y2="16" />
+                <line x1="16" y1="16" x2="16" y2="16" />
+              </svg>
+            </span>
+            <strong className="action-card-title">Agents</strong>
+            <span className="muted small action-card-sub">Connected sessions, enrolled tools and activity</span>
           </button>
         )}
       </div>

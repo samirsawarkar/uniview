@@ -38,6 +38,8 @@ export interface ShellBridge {
   remoteTransport?: RemoteTransport;
   /** Sharing this computer with paired devices (desktop only). */
   share?: ShareApi;
+  /** Agents panel API (desktop only). */
+  agents?: any;
   /** Whether a camera can be used to scan pairing QR codes. */
   canScanQr?: boolean;
 }

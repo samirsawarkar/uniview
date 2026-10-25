@@ -79,4 +79,17 @@ contextBridge.exposeInMainWorld("uniview", {
 
   // Talking to another computer's sharing service (client side), LAN only.
   remotePost: (host, port, path, body, type, timeoutMs) => ipcRenderer.invoke("remote:post", String(host), Number(port), String(path), body, String(type), timeoutMs),
+
+  // Agents panel desktop IPC (P17b-2). Exposes only list, revoke, and activity.
+  agents: {
+    list: () => ipcRenderer.invoke("agents:list"),
+    revoke: (args) => {
+      const clientId = typeof args === "object" && args !== null ? args.clientId : args;
+      return ipcRenderer.invoke("agents:revoke", { clientId: String(clientId) });
+    },
+    activity: (args) => {
+      const limit = typeof args === "object" && args !== null ? args.limit : args;
+      return ipcRenderer.invoke("agents:activity", { limit: limit === undefined ? 100 : Number(limit) });
+    },
+  },
 });

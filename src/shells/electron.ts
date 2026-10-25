@@ -55,6 +55,70 @@ export interface ReviewApi {
   refresh(reviewId: string): Promise<{ ok: boolean; files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>; verifiedAt?: string; error?: string }>;
 }
 
+export interface AgentSessionInfo {
+  sessionId: string;
+  kind: string;
+  client: { name: string; version: string };
+  approval: string;
+  clientId: string | null;
+  openedAt: string;
+  pendingReviews: number;
+  openTabs?: number;
+}
+
+export interface EnrolledClientInfo {
+  clientId: string;
+  name: string;
+  enrolledAt: string;
+}
+
+export interface AgentActivityEntry {
+  at: string;
+  type: string;
+  sessionId?: string;
+  client?: string;
+  detail?: string;
+}
+
+export interface AgentsListResult {
+  ok: boolean;
+  sessions?: AgentSessionInfo[];
+  clients?: EnrolledClientInfo[];
+  enrolledClients?: EnrolledClientInfo[];
+  activity?: AgentActivityEntry[];
+  error?: string;
+  code?: string;
+}
+
+export interface AgentsRevokeParams {
+  clientId: string;
+}
+
+export interface AgentsRevokeResult {
+  ok: boolean;
+  removed?: boolean;
+  sessionsClosed?: number;
+  error?: string;
+  code?: string;
+}
+
+export interface AgentsActivityParams {
+  limit?: number;
+}
+
+export interface AgentsActivityResult {
+  ok: boolean;
+  activity?: AgentActivityEntry[];
+  error?: string;
+  code?: string;
+}
+
+export interface AgentsApi {
+  list(): Promise<AgentsListResult>;
+  revoke(params: string | AgentsRevokeParams): Promise<AgentsRevokeResult>;
+  activity(params?: number | AgentsActivityParams): Promise<AgentsActivityResult>;
+}
+
 /** What electron/preload.cjs exposes on window.uniview. Keep in sync with the preload. */
 export interface ElectronApi {
   pickFiles(): Promise<GrantedFile[]>;
@@ -67,6 +131,7 @@ export interface ElectronApi {
   share: ShareApi;
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
   review?: ReviewApi;
+  agents?: AgentsApi;
 }
 
 export interface GrantedFile {
@@ -127,6 +192,7 @@ export function createElectronBridge(): ShellBridge {
     kind: "electron",
     remoteTransport,
     share: api().share,
+    agents: api().agents,
     canScanQr: false,
     thumbnail: async (source, size) => {
       const token = tokens.get(source);
