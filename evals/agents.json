@@ -1,0 +1,166 @@
+{
+  "command": [
+    "UniView.exe"
+  ],
+  "cases": [
+    {
+      "name": "open command prints acknowledgement",
+      "args": [
+        "open",
+        "README.md"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "Opened in UniView:"
+        ]
+      }
+    },
+    {
+      "name": "usage error missing command",
+      "args": [],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: missing command (expected 'open')",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "usage error unknown command",
+      "args": [
+        "not-open"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: unknown command 'not-open'",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "usage error nothing to open",
+      "args": [
+        "open"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: nothing to open",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "usage error wait requires receipt",
+      "args": [
+        "open",
+        "--wait",
+        "README.md"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: --wait requires --receipt",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "usage error timeout requires wait",
+      "args": [
+        "open",
+        "--timeout",
+        "10",
+        "--receipt",
+        "fixtures/receipt/valid/minimal.receipt.json"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: --timeout requires --wait",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "usage error receipt needs a value",
+      "args": [
+        "open",
+        "--receipt"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: --receipt needs a value",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "usage error view needs a value",
+      "args": [
+        "open",
+        "--view"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "contains": [
+          "UniView: --view needs a value",
+          "Usage: UniView open"
+        ]
+      }
+    },
+    {
+      "name": "mcp initialize and tools list transcript",
+      "args": [
+        "--mcp"
+      ],
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"eval-suite\",\"version\":\"1.0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n",
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"protocolVersion\":\"2025-06-18\"",
+          "\"serverInfo\":{\"name\":\"UniView\"",
+          "\"tools\":[",
+          "\"name\":\"open_files\"",
+          "\"name\":\"show_view\"",
+          "\"name\":\"request_review\"",
+          "\"name\":\"get_review\""
+        ]
+      }
+    },
+    {
+      "name": "mcp show_view returns invalid_spec error on invalid spec",
+      "args": [
+        "--mcp"
+      ],
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"eval-suite\",\"version\":\"1.0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"show_view\",\"arguments\":{\"specText\":\"{\\\"uniview\\\":\\\"view/1\\\",\\\"body\\\":[]}\"}}}\n",
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "invalid_spec",
+          "The view spec is not valid",
+          "schema"
+        ]
+      }
+    },
+    {
+      "name": "mcp request_review returns invalid_receipt error on invalid receipt",
+      "args": [
+        "--mcp"
+      ],
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"eval-suite\",\"version\":\"1.0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"request_review\",\"arguments\":{\"receiptText\":\"{\\\"uniview\\\":\\\"receipt/1\\\"}\"}}}\n",
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "invalid_receipt",
+          "The review receipt is not valid",
+          "schema"
+        ]
+      }
+    }
+  ]
+}

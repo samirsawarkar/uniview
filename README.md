@@ -27,6 +27,7 @@ UniView is one simple, Chrome-like app for viewing documents, spreadsheets, pres
 - **Open:** drag files anywhere, click **Open** (Ctrl+O), double-click a file in Explorer/Finder, or use "Open with" / Share on a phone.
 - **Tabs:** Ctrl+T new tab, Ctrl+W close, Ctrl+Tab / Ctrl+Shift+Tab switch, Ctrl+1…9 jump, middle-click closes.
 - **Omnibox (Ctrl+L):** search open tabs and recent files; on desktop, paste a file path and press Enter.
+- **AI agents:** connect over MCP (`--mcp`) or command line (`UniView open`), show files, render declarative view specs, and request human review approvals. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Measured
 
@@ -47,7 +48,7 @@ npm run bench        # time-to-first-view benchmark (needs `npm run preview` run
 npm run electron     # desktop app from the current build
 ```
 
-AES golden eval: `aes eval --workspace . --suite evals/detect.json --execute`.
+AES golden eval: `aes eval --workspace . --suite evals/detect.json --execute`; agent workspace eval: `aes eval --workspace . --suite evals/agents.json --execute`.
 
 Set `PLAYWRIGHT_BROWSERS_PATH` if your Playwright browsers live outside the default cache.
 
