@@ -95,6 +95,10 @@ export interface ElectronApi {
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
   review?: ReviewApi;
   agents?: AgentsApi;
+  onAgentShowView?(cb: (item: any) => void): () => void;
+  onAgentShowReview?(cb: (item: any) => void): () => void;
+  onAgentCloseTab?(cb: (scopeId: string) => void): () => void;
+  reopenAgent?(scopeId: string, token: string): Promise<GrantedFile>;
 }
 
 export interface GrantedFile {
@@ -125,7 +129,7 @@ export function attachGrantToken(source: FileSource, token: string): void {
   tokens.set(source, token);
 }
 
-function toSource(f: GrantedFile): FileSource {
+export function toSource(f: GrantedFile): FileSource {
   const read = async (start: number, end: number, signal?: AbortSignal) => {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     try {
@@ -153,7 +157,15 @@ function toSource(f: GrantedFile): FileSource {
         } catch {}
       }
     },
-    reopen: async () => toSource(await api().openPath(f.path)),
+    reopen: async () => {
+      if (f.scopeId) {
+        if (api().reopenAgent) {
+          return toSource(await api().reopenAgent!(f.scopeId, f.token));
+        }
+        return toSource(f);
+      }
+      return toSource(await api().openPath(f.path));
+    },
   };
   tokens.set(source, f.token);
   return source;

@@ -19,7 +19,7 @@ import { createEnrollmentStore, readClientKey } from "./agent-enrollment.mjs";
 import { createActivityLog, createFileActivityStore } from "./agent-activity.mjs";
 import { createDecisionStore } from "./review-store.mjs";
 import { createVerifier } from "./review-verify.mjs";
-import { createReviewIpcHandlers, registerReviewIpc } from "./review-ipc.mjs";
+import { createReviewIpcHandlers, registerReviewIpc, installShutdownDismiss } from "./review-ipc.mjs";
 import { registerAgentsIpc } from "./agents-ipc.mjs";
 import { startBridgeServer } from "./bridge-server.mjs";
 import { connectBridge } from "./bridge-client.mjs";
@@ -493,6 +493,8 @@ export async function thumbnailAgent(agentEntry, size, nativeImage) {
  */
 export function createReconciledReviewManager({ host, localManager }) {
   return {
+    openReviews: localManager.openReviews,
+    localManager,
     async handleReviewOpen(args) {
       return localManager.handleReviewOpen(args);
     },
@@ -566,14 +568,20 @@ export function createReconciledReviewManager({ host, localManager }) {
     },
 
     hasUndecided() {
-      const hostReviews = host.listSessions
-        ? host.listSessions().reduce((acc, s) => acc + (s.pendingReviews || 0), 0)
-        : 0;
-      return localManager.hasUndecided() || hostReviews > 0;
+      const hostReviews = host?.hasUndecided
+        ? host.hasUndecided()
+        : host?.listSessions
+        ? host.listSessions().reduce((acc, s) => acc + (s.pendingReviews || 0), 0) > 0
+        : false;
+      return localManager.hasUndecided() || hostReviews;
     },
 
     async dismissAll() {
-      return localManager.dismissAll();
+      const [localRes] = await Promise.all([
+        localManager.dismissAll(),
+        host?.dismissUndecided ? host.dismissUndecided() : Promise.resolve(),
+      ]);
+      return localRes;
     },
   };
 }
@@ -611,6 +619,15 @@ export function createMcpClock({ approvalGraceMs = 125_000, clock = realClock } 
 }
 
 /**
+ * Computes spawn args for launching UniView in packaged vs unpackaged mode.
+ * In unpackaged mode (dev), starts process.execPath with [appPath] so Electron loads this app.
+ * In packaged mode, starts process.execPath with [].
+ */
+export function computeAppSpawnArgs({ isPackaged = false, appPath = "" } = {}) {
+  return isPackaged ? [] : [appPath || process.cwd()];
+}
+
+/**
  * Runs the CLI client early before the single-instance lock.
  */
 export async function runEarlyCli({
@@ -625,6 +642,9 @@ export async function runEarlyCli({
   spawnApp,
   connect,
   sleep,
+  app,
+  isPackaged = false,
+  appPath,
 }) {
   const bridgeDir = path.join(userDataDir, "bridge");
   const doConnect =
@@ -646,9 +666,11 @@ export async function runEarlyCli({
   const doStartApp =
     spawnApp ||
     (async () => {
+      const resolvedAppPath = appPath ?? (app?.getAppPath ? app.getAppPath() : process.cwd());
+      const resolvedIsPackaged = app?.isPackaged ?? isPackaged;
       const child = spawn(
         process.execPath,
-        process.argv.slice(1).filter((a) => a !== "open" && !a.startsWith("-")),
+        computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
         {
           detached: true,
           stdio: "ignore",
@@ -683,6 +705,9 @@ export async function runEarlyMcp({
   connect,
   clock = realClock,
   approvalGraceMs = 125_000,
+  app,
+  isPackaged = false,
+  appPath,
 }) {
   const bridgeDir = path.join(userDataDir, "bridge");
   const agentsDir = path.join(userDataDir, "agents");
@@ -727,10 +752,16 @@ export async function runEarlyMcp({
   const doStartApp =
     spawnApp ||
     (async () => {
-      const child = spawn(process.execPath, [], {
-        detached: true,
-        stdio: "ignore",
-      });
+      const resolvedAppPath = appPath ?? (app?.getAppPath ? app.getAppPath() : process.cwd());
+      const resolvedIsPackaged = app?.isPackaged ?? isPackaged;
+      const child = spawn(
+        process.execPath,
+        computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
+        {
+          detached: true,
+          stdio: "ignore",
+        }
+      );
       child.unref();
     });
 
@@ -743,6 +774,7 @@ export async function runEarlyMcp({
     connect: wrappedConnect,
     startApp: doStartApp,
     clock: wrappedClock,
+    approvalGraceMs,
   });
 }
 
@@ -761,6 +793,7 @@ export function createAppAgents({
   platform = process.platform,
   openRendererTab,
   grants: injectedGrants,
+  userGrants,
   clock = realClock,
   fs = defaultFs,
   execFile = defaultExecFile,
@@ -821,6 +854,7 @@ export function createAppAgents({
   let activity = null;
   let enrollment = null;
   let store = null;
+  let reconciledReviewManager = null;
   let stopped = false;
 
   async function start() {
@@ -926,12 +960,14 @@ export function createAppAgents({
       fs,
       now: clock.now,
       resolveGrant: (t) => {
+        const userEntry = userGrants?.get?.(t);
+        if (userEntry) return userEntry;
         const scope = tokenScopeMap.get(t);
         return scope ? grants.get(t, scope) : undefined;
       },
     });
 
-    const reconciledReviewManager = createReconciledReviewManager({ host, localManager: localReviewManager });
+    reconciledReviewManager = createReconciledReviewManager({ host, localManager: localReviewManager });
     await registerReviewIpc({
       ipcMain,
       fromApp,
@@ -958,6 +994,11 @@ export function createAppAgents({
     }
 
     if (app?.on) {
+      installShutdownDismiss({
+        app,
+        manager: reconciledReviewManager,
+        timeoutMs: 3000,
+      });
       app.on("will-quit", () => {
         void stop();
       });
@@ -996,6 +1037,12 @@ export function createAppAgents({
     },
     get grants() {
       return grants;
+    },
+    get userGrants() {
+      return userGrants;
+    },
+    get reviewManager() {
+      return reconciledReviewManager;
     },
     get uiManager() {
       return uiManager;

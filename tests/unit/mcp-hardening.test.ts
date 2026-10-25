@@ -106,6 +106,7 @@ describe("MCP local deadlines", () => {
     let closes = 0;
     const s = startServer({
       clock,
+      approvalGraceMs: 30_000,
       connect: async () => {
         connects++;
         return { request: () => new Promise(() => {}), close: async () => void closes++ };
@@ -135,6 +136,7 @@ describe("MCP local deadlines", () => {
     let stuck = true;
     const s = startServer({
       clock,
+      approvalGraceMs: 30_000,
       connect: async () => {
         connects++;
         return {

@@ -4,6 +4,9 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 const listeners = new Set();
 const queued = [];
 const shareListeners = new Set();
+const viewListeners = new Set();
+const reviewListeners = new Set();
+const closeTabListeners = new Set();
 
 ipcRenderer.on("open-files", (_e, files) => {
   if (!Array.isArray(files)) return;
@@ -15,9 +18,23 @@ ipcRenderer.on("share:changed", (_e, state) => {
   for (const cb of shareListeners) cb(state);
 });
 
+ipcRenderer.on("agent:show-view", (_e, item) => {
+  for (const cb of viewListeners) cb(item);
+});
+
+ipcRenderer.on("agent:show-review", (_e, item) => {
+  for (const cb of reviewListeners) cb(item);
+});
+
+ipcRenderer.on("agent:close-tab", (_e, scopeId) => {
+  for (const cb of closeTabListeners) cb(scopeId);
+});
+
 contextBridge.exposeInMainWorld("uniview", {
   pickFiles: () => ipcRenderer.invoke("uniview:pick"),
   openPath: (path) => ipcRenderer.invoke("uniview:open-path", String(path)),
+  reopenAgent: (scopeId, token) =>
+    ipcRenderer.invoke("uniview:reopen-agent", String(scopeId), String(token)),
   readRange: (token, start, end, scopeId) =>
     ipcRenderer.invoke(
       "uniview:read",
@@ -42,6 +59,21 @@ contextBridge.exposeInMainWorld("uniview", {
     listeners.add(cb);
     for (const files of queued.splice(0)) cb(files);
     return () => listeners.delete(cb);
+  },
+  onAgentShowView: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    viewListeners.add(cb);
+    return () => viewListeners.delete(cb);
+  },
+  onAgentShowReview: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    reviewListeners.add(cb);
+    return () => reviewListeners.delete(cb);
+  },
+  onAgentCloseTab: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    closeTabListeners.add(cb);
+    return () => closeTabListeners.delete(cb);
   },
   ready: () => ipcRenderer.send("uniview:ready"),
 

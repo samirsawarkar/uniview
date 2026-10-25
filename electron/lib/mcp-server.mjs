@@ -358,6 +358,7 @@ export function runMcp({
   startApp,
   clientInfo = { name: "UniView", version: "0.0.0" },
   clock = { now: Date.now, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout },
+  approvalGraceMs = 125_000,
   maxQueuedOutputBytes = MCP_LIMITS.MAX_QUEUED_OUTPUT_BYTES,
   maxQueuedInputLines = MCP_LIMITS.MAX_QUEUED_INPUT_LINES,
   maxQueuedInputBytes = MCP_LIMITS.MAX_QUEUED_INPUT_BYTES,
@@ -370,6 +371,7 @@ export function runMcp({
   let closed = false;
   let bridge = null;
   let connecting = null;
+  let sessionApproved = false;
   const inflight = new Map();
   /** Complete lines read from stdin but not yet handled (held back while stdout is not draining). */
   const queue = [];
@@ -537,7 +539,10 @@ export function runMcp({
       throw new ToolFailure("app_unavailable");
     }
     try {
-      await b.request("mcp.hello", { client: agent, protocolVersion: revision });
+      const helloRes = await b.request("mcp.hello", { client: agent, protocolVersion: revision });
+      if (helloRes?.result?.enrolled) {
+        sessionApproved = true;
+      }
     } catch (err) {
       b.close().catch(() => {});
       throw toolFailureFrom(err);
@@ -576,21 +581,24 @@ export function runMcp({
 
   async function call(method, params, body, { wait = false } = {}) {
     const b = await getBridge();
+    const timeoutMs = !sessionApproved ? approvalGraceMs : MCP_LIMITS.REQUEST_DEADLINE_MS;
     try {
       const pending = Promise.resolve().then(() => b.request(method, params, body));
       // A review wait has its own guard (waitSeconds + grace); everything else is answered within the deadline,
       // or the stuck connection is dropped so the next call starts a new one.
       const res = wait
         ? await pending
-        : await withDeadline(pending, MCP_LIMITS.REQUEST_DEADLINE_MS, () => {
+        : await withDeadline(pending, timeoutMs, () => {
             if (bridge === b) bridge = null;
             b.close().catch(() => {});
           });
+      sessionApproved = true;
       return isPlainObject(res?.result) ? res.result : {};
     } catch (err) {
       if (err?.code === "closed" && bridge === b) {
         // The session is gone (app closed or restarted); the next call opens a new one.
         bridge = null;
+        sessionApproved = false;
         b.close().catch(() => {});
       }
       throw toolFailureFrom(err);

@@ -48,7 +48,7 @@ if (early.isMcp) {
     fromApp,
     getWindow: () => win,
     userDataDir: app.getPath("userData"),
-    grants,
+    userGrants: grants,
   });
 
   const startRes = await appAgents.start();
@@ -118,12 +118,16 @@ async function serveApp(request) {
 async function serveFile(request) {
   const url = new URL(request.url);
   const token = url.hostname;
-  const agentEntry = appAgents?.getGrant(token, url.searchParams.get("scope"));
-  if (agentEntry) {
-    return appAgents.serveAgentFile(agentEntry, request);
+  const scope = url.searchParams.get("scope");
+  if (scope) {
+    const agentEntry = appAgents?.getGrant(token, scope);
+    if (agentEntry && agentEntry.handle) {
+      return appAgents.serveAgentFile(agentEntry, request);
+    }
+    return new Response("Forbidden", { status: 403 });
   }
   const entry = grants.get(token);
-  if (!entry) return new Response("Forbidden", { status: 403 });
+  if (!entry || entry.handle) return new Response("Forbidden", { status: 403 });
   let size;
   try {
     size = (await stat(entry.path)).size;
@@ -173,12 +177,15 @@ function registerIpc() {
     return grantFile(expanded);
   }));
   ipcMain.handle("uniview:read", guard(async (_e, token, start, end, scopeId) => {
-    const agentEntry = appAgents?.getGrant(token, scopeId);
-    if (agentEntry) {
-      return appAgents.readAgentHandle(agentEntry, start, end, MAX_READ);
+    if (scopeId) {
+      const agentEntry = appAgents?.getGrant(token, scopeId);
+      if (agentEntry && agentEntry.handle) {
+        return appAgents.readAgentHandle(agentEntry, start, end, MAX_READ);
+      }
+      throw new Error("This file is no longer available. Open it again.");
     }
     const entry = grants.get(token);
-    if (!entry) throw new Error("This file is no longer available. Open it again.");
+    if (!entry || entry.handle) throw new Error("This file is no longer available. Open it again.");
     const s = await stat(entry.path);
     const problem = checkReadArgs(start, end, s.size, MAX_READ);
     if (problem) throw new Error(problem);
@@ -197,18 +204,42 @@ function registerIpc() {
       await fh.close();
     }
   }));
+  ipcMain.handle("uniview:reopen-agent", guard(async (_e, scopeId, token) => {
+    if (typeof scopeId !== "string" || typeof token !== "string") {
+      throw new Error("Invalid arguments");
+    }
+    const agentEntry = appAgents?.getGrant(token, scopeId);
+    if (!agentEntry || !agentEntry.handle) {
+      throw new Error("This file is no longer available. Open it again.");
+    }
+    let size = agentEntry.size;
+    try {
+      const s = await agentEntry.handle.stat();
+      size = Number(s.size);
+    } catch {}
+    return {
+      token,
+      name: basename(agentEntry.canonical),
+      path: agentEntry.canonical,
+      size,
+      scopeId,
+    };
+  }));
   ipcMain.on("uniview:reveal", (e, token) => {
     if (!fromApp(e)) return;
     const entry = grants.get(token);
     if (entry) shell.showItemInFolder(entry.path);
   });
-  ipcMain.handle("uniview:thumb", guard(async (_e, token, size) => {
-    const agentEntry = appAgents?.getGrant(token);
-    if (agentEntry) {
-      return appAgents.thumbnail(agentEntry, Math.max(32, Math.min(512, Number(size) || 256)), nativeImage);
+  ipcMain.handle("uniview:thumb", guard(async (_e, token, size, scopeId) => {
+    if (scopeId) {
+      const agentEntry = appAgents?.getGrant(token, scopeId);
+      if (agentEntry && agentEntry.handle) {
+        return appAgents.thumbnail(agentEntry, Math.max(32, Math.min(512, Number(size) || 256)), nativeImage);
+      }
+      return null;
     }
     const entry = grants.get(token);
-    if (!entry) return null;
+    if (!entry || entry.handle) return null;
     return thumbnailPng(entry.path, Math.max(32, Math.min(512, Number(size) || 256)));
   }));
   ipcMain.on("uniview:ready", (e) => {

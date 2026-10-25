@@ -1,13 +1,20 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import path from "node:path";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import { makeTempDir } from "./agent-helpers";
+import { receiptJson } from "./agent-host-helpers";
 // @ts-expect-error plain ESM module without types
-import { createAppAgents, createAskDialog, createUiManager, detectEarlyArgv, createMcpClock, serveAgentFile, readAgentHandle } from "../../electron/lib/app-agents.mjs";
+import { createAppAgents, createAskDialog, createUiManager, detectEarlyArgv, createMcpClock, serveAgentFile, readAgentHandle, computeAppSpawnArgs } from "../../electron/lib/app-agents.mjs";
 // @ts-expect-error plain ESM module without types
 import { AgentGrantStore } from "../../electron/lib/agent-paths.mjs";
 // @ts-expect-error plain ESM module without types
+import { GrantStore } from "../../electron/lib/core.mjs";
+// @ts-expect-error plain ESM module without types
+import { installShutdownDismiss } from "../../electron/lib/review-ipc.mjs";
+// @ts-expect-error plain ESM module without types
 import { MCP_LIMITS } from "../../electron/lib/mcp-server.mjs";
+import { toSource } from "../../src/shells/electron";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -323,5 +330,286 @@ describe("Packet P17c: app-agents wiring factory", () => {
 
     // Cleanup scope
     await grantStore.closeScope(scopeId);
+  });
+
+  it("production wiring: AgentGrantStore is used for agent scopes, user GrantStore for user files, reader chooses by grant type", async () => {
+    // Mutation: injecting ordinary GrantStore into agent host or confusing agent/user grant tokens
+    const tempDir = await makeTempDir("uv-wiring-test");
+    const fakeApp = {
+      requestSingleInstanceLock: vi.fn(() => true),
+      on: vi.fn(),
+      setPath: vi.fn(),
+      getPath: vi.fn(() => tempDir),
+    };
+    const userGrants = new GrantStore();
+    const agents = createAppAgents({
+      app: fakeApp,
+      dialog: { showMessageBox: vi.fn() },
+      ipcMain: { handle: vi.fn(), on: vi.fn() },
+      fromApp: () => true,
+      getWindow: () => null,
+      userDataDir: tempDir,
+      userGrants,
+    });
+    cleanups.push(() => agents.stop());
+    const res = await agents.start();
+    expect(res.ok).toBe(true);
+
+    // Host grants must be an AgentGrantStore with scope methods
+    expect(agents.host.grants).toBeInstanceOf(AgentGrantStore);
+    expect(typeof agents.host.grants.openScope).toBe("function");
+    expect(typeof agents.host.grants.closeScope).toBe("function");
+    expect(typeof agents.host.grants.closeAll).toBe("function");
+
+    // An agent grant carries a handle
+    const scopeId = agents.host.grants.openScope();
+    const filePath = path.join(tempDir, "agent-test.txt");
+    await fs.writeFile(filePath, "AGENT_HANDLE_DATA");
+    const handle = await fs.open(filePath, "r");
+    cleanups.push(() => handle.close());
+
+    const agentToken = agents.host.grants.grant(scopeId, {
+      handle,
+      canonical: filePath,
+      size: 17,
+    });
+    const agentEntry = agents.getGrant(agentToken, scopeId);
+    expect(agentEntry).toBeDefined();
+    expect(agentEntry.handle).toBe(handle);
+
+    // User grant carries path/size, NOT handle
+    const userFilePath = path.join(tempDir, "user-test.txt");
+    await fs.writeFile(userFilePath, "USER_DATA");
+    const userToken = userGrants.grant(userFilePath, 9);
+    const userEntry = userGrants.get(userToken);
+    expect(userEntry).toBeDefined();
+    expect(userEntry.handle).toBeUndefined();
+
+    // User token can never be resolved as an agent grant
+    expect(agents.getGrant(userToken, scopeId)).toBeUndefined();
+    // Agent token is never present in user grants
+    expect(userGrants.get(agentToken)).toBeUndefined();
+  });
+
+  it("local review token resolution accepts tokens from user GrantStore unchanged", async () => {
+    // Mutation: local review resolver only checking tokenScopeMap, returning not_granted for user-opened receipts
+    const tempDir = await makeTempDir("uv-local-review");
+    const fakeApp = {
+      requestSingleInstanceLock: vi.fn(() => true),
+      on: vi.fn(),
+      setPath: vi.fn(),
+    };
+    const userGrants = new GrantStore();
+    const ipcHandlers: Record<string, Function> = {};
+    const fakeIpcMain = {
+      handle: vi.fn((channel, fn) => {
+        ipcHandlers[channel] = fn;
+      }),
+      on: vi.fn(),
+    };
+
+    const targetFile = path.join(tempDir, "target.txt");
+    await fs.writeFile(targetFile, "TARGET_DATA");
+    const targetHash = crypto.createHash("sha256").update("TARGET_DATA").digest("hex");
+
+    const receiptContent = receiptJson([{ path: targetFile, sha256: targetHash }], {
+      agent: { name: "test-agent" },
+    });
+    const receiptPath = path.join(tempDir, "test.receipt.json");
+    await fs.writeFile(receiptPath, receiptContent);
+
+    // Open .receipt.json via user grant path
+    const userToken = userGrants.grant(receiptPath, Buffer.byteLength(receiptContent));
+
+    const agents = createAppAgents({
+      app: fakeApp,
+      dialog: { showMessageBox: vi.fn() },
+      ipcMain: fakeIpcMain,
+      fromApp: () => true,
+      getWindow: () => null,
+      userDataDir: tempDir,
+      userGrants,
+    });
+    cleanups.push(() => agents.stop());
+    await agents.start();
+
+    // review:open with userToken must resolve the grant from userGrants and open the review
+    const openHandler = ipcHandlers["review:open"];
+    expect(openHandler).toBeDefined();
+    const result = await openHandler!({ senderFrame: {} }, { receiptToken: userToken });
+    expect(result.ok).toBe(true);
+    expect(result.reviewId).toBeDefined();
+  });
+
+  it("toSource().reopen() for agent-scoped source calls reopenAgent and never openPath", async () => {
+    // Mutation: toSource().reopen() unconditionally calling openPath(f.path) for agent-scoped sources
+    const fakeApi = {
+      openPath: vi.fn(async (p: string) => ({ token: "user-token", name: "user.txt", path: p, size: 10 })),
+      reopenAgent: vi.fn(async (scopeId: string, token: string) => ({
+        token,
+        name: "agent.txt",
+        path: "/agent.txt",
+        size: 20,
+        scopeId,
+      })),
+      readRange: vi.fn(async () => new ArrayBuffer(0)),
+    };
+    (globalThis as any).window = { uniview: fakeApi };
+
+    // 1. Agent-scoped source
+    const agentFile = { token: "tok-1", name: "agent.txt", path: "/agent.txt", size: 20, scopeId: "scope-1" };
+    const agentSource = toSource(agentFile);
+    expect(agentSource.reopen).toBeDefined();
+    const reopenedAgent = await agentSource.reopen!();
+    expect(fakeApi.reopenAgent).toHaveBeenCalledWith("scope-1", "tok-1");
+    expect(fakeApi.openPath).not.toHaveBeenCalled();
+    expect(reopenedAgent.name).toBe("agent.txt");
+
+    // 2. User source without scopeId
+    fakeApi.openPath.mockClear();
+    fakeApi.reopenAgent.mockClear();
+    const userFile = { token: "user-tok", name: "user.txt", path: "/user.txt", size: 10 };
+    const userSource = toSource(userFile);
+    await userSource.reopen!();
+    expect(fakeApi.openPath).toHaveBeenCalledWith("/user.txt");
+    expect(fakeApi.reopenAgent).not.toHaveBeenCalled();
+  });
+
+  it("shutdown dismissal: quit with undecided local and agent review records dismissed for both and quits after 3s even if dismissal hangs", async () => {
+    // Mutation: will-quit only starting async stop() without awaiting dismissal, or hanging forever on stuck dismiss
+    const tempDir = await makeTempDir("uv-shutdown-test");
+    let beforeQuitHandler: ((event: any) => void) | null = null;
+    let quitCount = 0;
+    const fakeApp = {
+      requestSingleInstanceLock: vi.fn(() => true),
+      on: vi.fn((event, handler) => {
+        if (event === "before-quit") beforeQuitHandler = handler;
+      }),
+      quit: vi.fn(() => {
+        quitCount++;
+      }),
+      setPath: vi.fn(),
+    };
+
+    const userGrants = new GrantStore();
+    const ipcHandlers: Record<string, Function> = {};
+    const fakeIpcMain = {
+      handle: vi.fn((channel, fn) => {
+        ipcHandlers[channel] = fn;
+      }),
+      on: vi.fn(),
+    };
+
+    const agents = createAppAgents({
+      app: fakeApp,
+      dialog: { showMessageBox: vi.fn() },
+      ipcMain: fakeIpcMain,
+      fromApp: () => true,
+      getWindow: () => null,
+      userDataDir: tempDir,
+      userGrants,
+    });
+    cleanups.push(() => agents.stop());
+    await agents.start();
+
+    expect(beforeQuitHandler).toBeDefined();
+
+    // 1. Create an undecided local review
+    const targetFile = path.join(tempDir, "local-target.txt");
+    await fs.writeFile(targetFile, "LOCAL_TARGET");
+    const hash = crypto.createHash("sha256").update("LOCAL_TARGET").digest("hex");
+    const receiptContent = receiptJson([{ path: targetFile, sha256: hash }], {
+      agent: { name: "local-agent" },
+    });
+    const receiptPath = path.join(tempDir, "local.receipt.json");
+    await fs.writeFile(receiptPath, receiptContent);
+    const localToken = userGrants.grant(receiptPath, Buffer.byteLength(receiptContent));
+    const openRes = await ipcHandlers["review:open"]!({ senderFrame: {} }, { receiptToken: localToken });
+    expect(openRes.ok).toBe(true);
+    const localReviewId = openRes.reviewId;
+
+    // 2. Create an undecided agent review
+    const s = { sessionId: "a".repeat(32), clientNonce: Buffer.alloc(32), serverNonce: Buffer.alloc(32) };
+    await agents.host.onRequest(s, { t: "req", id: 0, method: "cli.hello", params: { version: "1" } });
+    const agentFile = path.join(tempDir, "agent-target.txt");
+    await fs.writeFile(agentFile, "AGENT_TARGET");
+    const agentHash = crypto.createHash("sha256").update("AGENT_TARGET").digest("hex");
+    const agentReceipt = receiptJson([{ path: agentFile, sha256: agentHash }], {
+      agent: { name: "cli-agent" },
+    });
+    const agentOpenRes = await agents.host.onRequest(s, { t: "req", id: 1, method: "review.open", params: { inline: true } }, Buffer.from(agentReceipt));
+    const agentReviewId = agentOpenRes.result.reviewId;
+    expect(agentReviewId).toBeDefined();
+
+    // Both reviews are undecided
+    expect(agents.reviewManager.hasUndecided()).toBe(true);
+
+    // Trigger before-quit
+    let defaultPrevented = false;
+    const fakeEvent = {
+      preventDefault: () => {
+        defaultPrevented = true;
+      },
+    };
+    beforeQuitHandler!(fakeEvent);
+    expect(defaultPrevented).toBe(true);
+
+    // Wait for dismissal promises to settle and app.quit() to be called
+    for (let i = 0; i < 50 && quitCount === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(quitCount).toBe(1);
+
+    // Verify both reviews were persisted as dismissed
+    const decisionFile = `${receiptPath}.decision.json`;
+    const localDecisionRaw = await fs.readFile(decisionFile, "utf8");
+    const localDecision = JSON.parse(localDecisionRaw);
+    expect(localDecision.decision).toBe("dismissed");
+
+    const agentReviewRecord = agents.host.getReview(agentReviewId);
+    expect(agentReviewRecord?.decision?.decision).toBe("dismissed");
+
+    // Test timeout: if dismissal hangs, it still quits after timeout (3s)
+    let timeoutQuitCount = 0;
+    const fakeAppTimeout = {
+      requestSingleInstanceLock: vi.fn(() => true),
+      on: vi.fn(),
+      quit: vi.fn(() => {
+        timeoutQuitCount++;
+      }),
+      setPath: vi.fn(),
+    };
+    const hangingManager = {
+      hasUndecided: () => true,
+      dismissAll: () => new Promise(() => {}), // never resolves
+    };
+    let timeoutBeforeQuitHandler: Function = () => {};
+    fakeAppTimeout.on.mockImplementation((event: string, handler: Function) => {
+      if (event === "before-quit") timeoutBeforeQuitHandler = handler;
+    });
+
+    installShutdownDismiss({
+      app: fakeAppTimeout as any,
+      manager: hangingManager as any,
+      timeoutMs: 100, // fast timeout for test
+    });
+
+    let timeoutDefaultPrevented = false;
+    timeoutBeforeQuitHandler({
+      preventDefault: () => {
+        timeoutDefaultPrevented = true;
+      },
+    });
+    expect(timeoutDefaultPrevented).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(timeoutQuitCount).toBe(1);
+  });
+
+  it("computeAppSpawnArgs: packaged mode returns [], unpackaged mode returns [appPath]", () => {
+    // Mutation: running process.execPath with [] in unpackaged mode
+    expect(computeAppSpawnArgs({ isPackaged: true, appPath: "/path/to/app" })).toEqual([]);
+    expect(computeAppSpawnArgs({ isPackaged: false, appPath: "/path/to/app" })).toEqual(["/path/to/app"]);
+    expect(computeAppSpawnArgs({ isPackaged: false, appPath: "" })).toEqual([process.cwd()]);
   });
 });

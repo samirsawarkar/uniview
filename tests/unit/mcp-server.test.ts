@@ -372,4 +372,40 @@ describe("MCP bridge connection", () => {
     await server.close();
     await fs.rm(testDir, { recursive: true, force: true });
   }, 60000);
+
+  it("approval grace deadline: first tools/call timer is 125000 and hello timer is 30000; later calls 30000", async () => {
+    // Mutation: applying approval grace to hello instead of tools/call, or to subsequent calls
+    const armedTimeouts: number[] = [];
+    const fakeClock = {
+      now: () => 1000,
+      setTimeout: (_fn: any, ms: number) => {
+        armedTimeouts.push(ms);
+        return { ms };
+      },
+      clearTimeout: () => {},
+    };
+
+    const s = startServer({ clock: fakeClock, approvalGraceMs: 125_000 });
+    await s.initialize();
+
+    // First call: tools/call triggers connect + hello (30000) then tool call (125000)
+    s.send(toolCall(1, "open_files", { paths: ["C:\\work\\a.txt"] }));
+    await s.nextJson();
+
+    expect(armedTimeouts).toContain(30000);
+    expect(armedTimeouts).toContain(125000);
+    const helloTimerIdx = armedTimeouts.indexOf(30000);
+    const firstCallTimerIdx = armedTimeouts.indexOf(125000);
+    expect(helloTimerIdx).toBeLessThan(firstCallTimerIdx);
+
+    // Second call: later tools/call must use normal 30000 deadline
+    armedTimeouts.length = 0;
+    s.send(toolCall(2, "open_files", { paths: ["C:\\work\\b.txt"] }));
+    await s.nextJson();
+
+    expect(armedTimeouts).toContain(30000);
+    expect(armedTimeouts).not.toContain(125000);
+
+    await s.end();
+  });
 });

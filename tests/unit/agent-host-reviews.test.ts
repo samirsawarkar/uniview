@@ -547,4 +547,70 @@ describe("agent host: deciding, dismissing and closing", () => {
     t.host.onSessionClosed(s.sessionId);
     expect(specJson()).toBeTruthy();
   });
+
+  it("uncommitted reservation rollback race: finalize of uncommitted reservation must not decrement pendingTotal below actual count", async () => {
+    // Mutation: decrementing pendingTotal / pendingReviews when finalizing an uncommitted review reservation,
+    // leaving pendingReviews/pendingTotal decremented once too often (allowing 33 pending reviews vs limit 32).
+    const t = await makeHost();
+    const s1 = newSession();
+    // 1. Open one pending review
+    const { reviewId: r1 } = await openOne(t, s1, "review-1");
+    expect(r1).toBeDefined();
+
+    // 2. Pause a second review's showReview
+    const s2 = newSession();
+    let resolveGate: () => void = () => {};
+    t.ui.gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+
+    let capturedScopeId = "";
+    const origShowReview = t.ui.showReview;
+    t.ui.showReview = async (p: any) => {
+      capturedScopeId = p.scopeId;
+      return origShowReview(p);
+    };
+
+    t.fakeFs.set("/w/f2.txt", "v2");
+    const text2 = receiptJson([{ path: "/w/f2.txt", sha256: sha256("v2") }]);
+    const p2 = t.call(s2, "review.open", { inline: true }, Buffer.from(text2));
+    await flush();
+
+    expect(capturedScopeId).toMatch(/^[0-9a-f]{32}$/);
+
+    // 3. Disconnect its session
+    t.host.onSessionClosed(s2.sessionId);
+
+    // 4. tabClosed for that review
+    await t.host.tabClosed(capturedScopeId);
+
+    // 5. Resolve showReview -> the request rejects not_found
+    resolveGate();
+    await expect(p2).rejects.toMatchObject({ code: "not_found" });
+
+    // Review 1 is still pending. Now test the aggregate limit (HOST_LIMITS.pendingReviewsTotal = 32).
+    // Exactly 31 more pending reviews should be allowed, and the 32nd more (total 33) must reject with "busy".
+    t.ui.gate = null;
+    let openedCount = 0;
+    for (let sessIdx = 0; sessIdx < 4; sessIdx++) {
+      const sess = newSession();
+      const countForThisSess = Math.min(8, 31 - openedCount);
+      for (let i = 0; i < countForThisSess; i++) {
+        const file = `/w/bulk-${sessIdx}-${i}.txt`;
+        t.fakeFs.set(file, `bulk-${sessIdx}-${i}`);
+        const text = receiptJson([{ path: file, sha256: sha256(`bulk-${sessIdx}-${i}`) }]);
+        const res = await t.call(sess, "review.open", { inline: true }, Buffer.from(text));
+        expect(res.reviewId).toBeDefined();
+        openedCount++;
+      }
+    }
+    expect(openedCount).toBe(31);
+
+    // Now 1 + 31 = 32 pending reviews exist (reaching HOST_LIMITS.pendingReviewsTotal = 32).
+    // The next one MUST fail with busy!
+    const sExtra = newSession();
+    t.fakeFs.set("/w/bulk-extra.txt", "bulk-extra");
+    const textExtra = receiptJson([{ path: "/w/bulk-extra.txt", sha256: sha256("bulk-extra") }]);
+    await expect(t.call(sExtra, "review.open", { inline: true }, Buffer.from(textExtra))).rejects.toMatchObject({ code: "busy" });
+  });
 });

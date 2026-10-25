@@ -496,6 +496,7 @@ export function createAgentHost(deps) {
     }
     const scopeId = grants.openScope();
     let view = null;
+    let record = null;
     const tab = { kind: "review", sessionId: state.sessionId, reviewId: review.reviewId, declared: new Set(), granted: new Map() };
     tabs.set(scopeId, tab);
     slots.placed();
@@ -506,7 +507,7 @@ export function createAgentHost(deps) {
         if (view.spec) tab.declared = declaredPaths(view.spec);
       }
       if (!isSessionLive(state, epoch)) throw err("not_found");
-      const record = {
+      record = {
         reviewId: review.reviewId,
         ownerSessionId: state.sessionId,
         scopeId,
@@ -514,6 +515,8 @@ export function createAgentHost(deps) {
         shown: null,
         decision: null,
         finalized: false,
+        committed: false,
+        reservation: slot,
         verifyControllers: new Set(),
         waiters: new Set(),
       };
@@ -528,10 +531,15 @@ export function createAgentHost(deps) {
         sessionId: state.sessionId,
         agent: agentLabel(state),
       });
-      if (!isSessionLive(state, epoch)) throw err("not_found");
+      if (!isSessionLive(state, epoch) || record.finalized) throw err("not_found");
     } catch (e) {
       reviews.delete(review.reviewId);
-      slot.rollback();
+      if (record?.reservation) {
+        record.reservation.rollback();
+        record.reservation = null;
+      } else if (!record) {
+        slot.rollback();
+      }
       slots.rollback();
       await dropTab(scopeId);
       try {
@@ -539,6 +547,8 @@ export function createAgentHost(deps) {
       } catch {}
       throw e;
     }
+    record.committed = true;
+    record.reservation = null;
     slot.commit();
     slots.commit();
     log("review.open", state);
@@ -724,22 +734,51 @@ export function createAgentHost(deps) {
     cancelVerifications(record);
     if (decision) record.decision = decision;
     const owner = sessions.get(record.ownerSessionId);
-    if (owner) {
-      if (owner.pendingReviews > 0) owner.pendingReviews--;
-      if (record.decision) {
-        const kept = decidedBySession.get(owner.sessionId) ?? [];
-        kept.push(record.reviewId);
-        while (kept.length > L.decidedKeptPerSession) reviews.delete(kept.shift());
-        decidedBySession.set(owner.sessionId, kept);
+    if (record.committed) {
+      if (owner) {
+        if (owner.pendingReviews > 0) owner.pendingReviews--;
+        if (record.decision) {
+          const kept = decidedBySession.get(owner.sessionId) ?? [];
+          kept.push(record.reviewId);
+          while (kept.length > L.decidedKeptPerSession) reviews.delete(kept.shift());
+          decidedBySession.set(owner.sessionId, kept);
+        } else {
+          reviews.delete(record.reviewId);
+        }
       } else {
         reviews.delete(record.reviewId);
       }
+      if (pendingTotal > 0) pendingTotal--;
     } else {
+      if (record.reservation) {
+        record.reservation.rollback();
+        record.reservation = null;
+      }
       reviews.delete(record.reviewId);
     }
-    if (pendingTotal > 0) pendingTotal--;
     for (const waiter of [...record.waiters]) waiter.finish();
     if (decision) log("review_decided", owner, decision.decision);
+  }
+
+  function hasUndecided() {
+    for (const record of reviews.values()) {
+      if (!record.finalized && !record.decision) return true;
+    }
+    return false;
+  }
+
+  async function dismissUndecided() {
+    const undecided = [];
+    for (const record of reviews.values()) {
+      if (!record.finalized && !record.decision) {
+        undecided.push(record.reviewId);
+      }
+    }
+    await Promise.all(
+      undecided.map((id) =>
+        decideReview({ reviewId: id, decision: "dismissed" }).catch(() => null)
+      )
+    );
   }
 
   function recordOf(reviewId) {
@@ -918,6 +957,8 @@ export function createAgentHost(deps) {
         sessionId: record.ownerSessionId,
       };
     },
+    hasUndecided,
+    dismissUndecided,
     listSessions,
     listClients: () => enrollment.list(),
     listActivity: () => activity.list(),

@@ -17,6 +17,7 @@ import { reopenRemoteRecent } from "../remote/reopen-recent";
 import type { HostRecord } from "../../shared/remote-client.mjs";
 import logoUrl from "./assets/logo.png";
 import { getTheme, setTheme, type Theme } from "./theme";
+import ReviewTab from "../viewers/ReviewTab";
 
 type Page = { kind: "sharing" } | { kind: "agents" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
@@ -25,6 +26,8 @@ interface Tab {
   source: FileSource | null; // null = home tab (or a page)
   detection?: Detection;
   page?: Page;
+  scopeId?: string;
+  agentReview?: any;
 }
 
 const homeTab = (): Tab => ({ id: `home-${Math.random().toString(36).slice(2)}`, source: null });
@@ -153,8 +156,119 @@ export function App() {
     }
   }, [bridge, hosts, openFiles, openPath]);
 
+  const reloadActiveTab = useCallback(async () => {
+    if (!active.source?.reopen) return;
+    try {
+      const fresh = await active.source.reopen();
+      setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, source: fresh } : t)));
+    } catch {}
+  }, [active, activeId]);
+
+  useEffect(() => {
+    (window as any).__univiewReloadActiveTab = reloadActiveTab;
+  }, [reloadActiveTab]);
+
   // Files from the OS: file associations, second instance, share/VIEW intents.
   useEffect(() => bridge.onExternalOpen((files) => openFiles(files)), [bridge, openFiles]);
+
+  // Agent subscriptions for view, review, and close-tab events
+  useEffect(() => {
+    const electron = (window as any).uniview;
+    if (!electron) return;
+
+    const unsubView = electron.onAgentShowView?.((item: any) => {
+      if (!item?.scopeId) return;
+      const specBytes =
+        item.specBytes instanceof Uint8Array
+          ? item.specBytes
+          : new Uint8Array(item.specBytes?.data ?? item.specBytes ?? []);
+      const source: FileSource = {
+        id: `agent-view-${item.scopeId}`,
+        name: item.spec?.title || "Agent View",
+        size: specBytes.byteLength,
+        path: undefined,
+        readAll: async () => specBytes.buffer.slice(specBytes.byteOffset, specBytes.byteOffset + specBytes.byteLength),
+        readRange: async (start, end) => specBytes.subarray(start, end).buffer.slice(0),
+        url: async () => "",
+        release: () => {
+          electron.tabClosed?.(item.scopeId);
+        },
+      };
+      const newTab: Tab = {
+        id: `tab-${item.scopeId}`,
+        source,
+        detection: { kind: "viewspec", label: "View Spec", ext: ".viewspec.json", by: "container" },
+        scopeId: item.scopeId,
+      };
+      setTabs((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((t) => t.id === activeId);
+        if (idx >= 0 && next[idx]!.source === null && !next[idx]!.page) {
+          next.splice(idx, 1, newTab);
+        } else {
+          next.push(newTab);
+        }
+        return next;
+      });
+      setActiveId(newTab.id);
+    });
+
+    const unsubReview = electron.onAgentShowReview?.((item: any) => {
+      if (!item?.scopeId) return;
+      const receiptBytes =
+        item.receiptBytes instanceof Uint8Array
+          ? item.receiptBytes
+          : new Uint8Array(item.receiptBytes?.data ?? item.receiptBytes ?? []);
+      const source: FileSource = {
+        id: `agent-review-${item.scopeId}`,
+        name: `${item.receipt?.agent?.name || "agent"}.receipt.json`,
+        size: receiptBytes.byteLength,
+        path: undefined,
+        readAll: async () => receiptBytes.buffer.slice(receiptBytes.byteOffset, receiptBytes.byteOffset + receiptBytes.byteLength),
+        readRange: async (start, end) => receiptBytes.subarray(start, end).buffer.slice(0),
+        url: async () => "",
+        release: () => {
+          electron.tabClosed?.(item.scopeId);
+        },
+      };
+      const newTab: Tab = {
+        id: `tab-${item.scopeId}`,
+        source,
+        detection: { kind: "receipt", label: "Review receipt", ext: ".receipt.json", by: "container" },
+        scopeId: item.scopeId,
+        agentReview: item,
+      };
+      setTabs((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((t) => t.id === activeId);
+        if (idx >= 0 && next[idx]!.source === null && !next[idx]!.page) {
+          next.splice(idx, 1, newTab);
+        } else {
+          next.push(newTab);
+        }
+        return next;
+      });
+      setActiveId(newTab.id);
+    });
+
+    const unsubClose = electron.onAgentCloseTab?.((scopeId: string) => {
+      if (!scopeId) return;
+      setTabs((prev) => {
+        const tab = prev.find((t) => t.scopeId === scopeId || t.id === `tab-${scopeId}`);
+        if (!tab) return prev;
+        const next = prev.filter((t) => t.id !== tab.id);
+        if (!next.length) next.push(homeTab());
+        if (tab.id === activeId) setActiveId(next[0]!.id);
+        return next;
+      });
+    });
+
+    return () => {
+      unsubView?.();
+      unsubReview?.();
+      unsubClose?.();
+    };
+  }, [activeId]);
 
   // External open errors from the OS (e.g. unreadable shared files).
   useEffect(() => bridge.onExternalOpenError?.((err) => setNotice(err)), [bridge]);
@@ -168,6 +282,7 @@ export function App() {
       if (k === "o") { e.preventDefault(); void pick(); }
       else if (k === "t") { e.preventDefault(); newTab(); }
       else if (k === "w") { e.preventDefault(); closeTab(activeId); }
+      else if (k === "r") { e.preventDefault(); void reloadActiveTab(); }
       else if (k === "l") { e.preventDefault(); document.getElementById("omnibox")?.focus(); }
       else if (e.key === "Tab") {
         e.preventDefault();
@@ -310,7 +425,14 @@ export function App() {
       <main className="content">
         {tabs.map((t) => (
           <div key={t.id} className="tab-panel" hidden={t.id !== activeId} role="tabpanel">
-            {t.source ? (
+            {t.agentReview && t.source ? (
+              <ReviewTab
+                source={t.source}
+                active={t.id === activeId}
+                initialReview={t.agentReview}
+                onOpen={(f) => openFiles(f, false)}
+              />
+            ) : t.source ? (
               <TabView source={t.source} onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} active={t.id === activeId} />
             ) : t.page?.kind === "sharing" && bridge.share ? (
               <SharingPanel share={bridge.share} />

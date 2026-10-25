@@ -40,6 +40,17 @@ export interface ReviewTabProps {
   onReady?: () => void;
   onOpen?: (files: FileSource[]) => void;
   onFallback?: (format: FormatKind) => void;
+  initialReview?: {
+    scopeId?: string;
+    reviewId: string;
+    receiptDigest?: string;
+    receipt: Receipt;
+    receiptBytes?: Uint8Array;
+    view?: any;
+    sessionId?: string;
+    agent?: string;
+    files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>;
+  };
 }
 
 interface LoadFailure {
@@ -87,6 +98,7 @@ export default function ReviewTab({
   active = true,
   onReady,
   onFallback,
+  initialReview,
 }: ReviewTabProps): React.ReactElement {
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -172,6 +184,25 @@ export default function ReviewTab({
     setChangeWarning(null);
     setLoading(true);
     setLoadError(null);
+
+    if (initialReview) {
+      reviewIdRef.current = initialReview.reviewId;
+      setReviewId(initialReview.reviewId);
+      setReceipt(initialReview.receipt);
+      setFiles(filesFromResults(initialReview.receipt, initialReview.files));
+      setLoading(false);
+      const a = apiRef.current;
+      if (a) {
+        void a.refresh(initialReview.reviewId).then((refreshed) => {
+          if (mountedRef.current && !cancelled && refreshed?.ok && refreshed.files) {
+            setFiles(filesFromResults(initialReview.receipt, refreshed.files));
+          }
+        });
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
 
     void (async () => {
       const a = apiRef.current;
