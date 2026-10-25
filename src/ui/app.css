@@ -1245,6 +1245,12 @@ h5.vs-heading { font-size: 0.9rem; }
   padding: 8px 0;
 }
 
+.agents-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding-top: 12px;
+}
+
 @media (max-width: 600px) {
   .agents-inner {
     padding: 16px 12px 40px;

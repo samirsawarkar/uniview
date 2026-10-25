@@ -845,15 +845,22 @@ export function createAgentHost(deps) {
   // ---- Agents panel ---------------------------------------------------------------------------------------
 
   function listSessions() {
-    return [...sessions.values()].map((s) => ({
-      sessionId: s.sessionId,
-      kind: s.kind,
-      client: { ...s.client },
-      approval: s.kind === "cli" ? "not_required" : approval.status(s.sessionId),
-      clientId: approval.clientIdOf(s.sessionId) ?? null,
-      openedAt: s.openedAt,
-      pendingReviews: s.pendingReviews,
-    }));
+    return [...sessions.values()].map((s) => {
+      let openTabs = 0;
+      for (const tab of tabs.values()) {
+        if (tab.sessionId === s.sessionId) openTabs++;
+      }
+      return {
+        sessionId: s.sessionId,
+        kind: s.kind,
+        client: { ...s.client },
+        approval: s.kind === "cli" ? "not_required" : approval.status(s.sessionId),
+        clientId: approval.clientIdOf(s.sessionId) ?? null,
+        openedAt: s.openedAt,
+        openTabs,
+        pendingReviews: s.pendingReviews,
+      };
+    });
   }
 
   async function revokeClient(clientId) {

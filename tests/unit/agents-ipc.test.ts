@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { makeHost } from "./agent-host-helpers";
 
 // @ts-expect-error plain ESM module without types
 import { handleAgentsList, handleAgentsRevoke, handleAgentsActivity, registerAgentsIpc } from "../../electron/lib/agents-ipc.mjs";
@@ -118,6 +119,33 @@ describe("agents-ipc: handler argument validation and hostile values", () => {
     }
   });
 
+  // Mutation caught: handleAgentsRevoke accepts invalid clientId patterns like __proto__, constructor, undefined, ZZZZ
+  it("agents:revoke rejects invalid clientId patterns (__proto__, constructor, undefined, ZZZZ, non-32 hex) as bad_args without calling host.revokeClient", async () => {
+    const host = makeFakeHost();
+
+    const rejectedIds = [
+      "__proto__",
+      "constructor",
+      "undefined",
+      "ZZZZ",
+      "0123456789ABCDEF0123456789ABCDEF", // uppercase hex rejected
+      "0123456789abcdef0123456789abcde", // 31 chars
+      "0123456789abcdef0123456789abcdef0", // 33 chars
+      "0123456789abcdef0123456789abcde-", // hyphen
+      " 0123456789abcdef0123456789abcdef ", // spaces
+      "client-1",
+      "null",
+    ];
+
+    for (const clientId of rejectedIds) {
+      const res = await handleAgentsRevoke(host, { clientId });
+      expect(res.ok).toBe(false);
+      expect(res.code).toBe("bad_args");
+    }
+
+    expect(host.revokeClient).not.toHaveBeenCalled();
+  });
+
   // Mutation caught: handleAgentsActivity accepts limit > 500 or limit < 1 or non-integers
   it("agents:activity enforces exact 1..500 bounds (limit 500 OK, limit+1 501 rejected)", async () => {
     const manyEntries = Array.from({ length: 600 }, (_, i) => ({
@@ -194,6 +222,34 @@ describe("agents-ipc: handler argument validation and hostile values", () => {
     // Should be the last (most recent) 100 entries: from index 150 to 249
     expect(res.activity[0].sessionId).toBe("s-150");
     expect(res.activity[99].sessionId).toBe("s-249");
+  });
+
+  // Mutation caught: host.listSessions does not report openTabs or agents:list drops openTabs
+  it("agents:list returns openTabs and pendingReviews from a host that has tabs", async () => {
+    const t = await makeHost();
+    t.fakeFs.set("/file1.txt", "content 1");
+    t.fakeFs.set("/file2.txt", "content 2");
+    const s = await t.cli();
+    await t.open(s, ["/file1.txt", "/file2.txt"]);
+
+    const sessions = t.host.listSessions();
+    expect(sessions[0].openTabs).toBe(2);
+    expect(sessions[0].pendingReviews).toBe(0);
+
+    const res = await handleAgentsList(t.host);
+    expect(res.ok).toBe(true);
+    expect(res.sessions).toHaveLength(1);
+    expect(res.sessions[0].openTabs).toBe(2);
+    expect(res.sessions[0].pendingReviews).toBe(0);
+  });
+
+  // Mutation caught: agents:list returns duplicate enrolledClients field
+  it("agents:list does not return duplicate enrolledClients field", async () => {
+    const host = makeFakeHost();
+    const res = await handleAgentsList(host);
+    expect(res.ok).toBe(true);
+    expect(res.clients).toBeDefined();
+    expect(res).not.toHaveProperty("enrolledClients");
   });
 });
 

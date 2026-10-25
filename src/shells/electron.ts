@@ -1,7 +1,33 @@
-import type { FileSource, RemoteTransport, ShareApi, ShellBridge } from "../core/types";
+import type {
+  FileSource,
+  RemoteTransport,
+  ShareApi,
+  ShellBridge,
+  AgentSessionInfo,
+  EnrolledClientInfo,
+  AgentActivityEntry,
+  AgentsListResult,
+  AgentsRevokeParams,
+  AgentsRevokeResult,
+  AgentsActivityParams,
+  AgentsActivityResult,
+  AgentsApi,
+} from "../core/types";
 import type { Receipt, Decision, FileState } from "../../shared/receipt.d.mts";
 import { AccessDeniedError } from "../core/errors";
 import { nextId } from "./sources";
+
+export type {
+  AgentSessionInfo,
+  EnrolledClientInfo,
+  AgentActivityEntry,
+  AgentsListResult,
+  AgentsRevokeParams,
+  AgentsRevokeResult,
+  AgentsActivityParams,
+  AgentsActivityResult,
+  AgentsApi,
+};
 
 /**
  * A receipt is named by the opaque grant token of a file the person opened (see grantTokenOf); main resolves
@@ -53,70 +79,6 @@ export interface ReviewApi {
   decide(params: ReviewDecideParams): Promise<ReviewDecideResult>;
   dismiss(reviewId: string): Promise<{ ok: boolean; dismissed?: boolean; error?: string }>;
   refresh(reviewId: string): Promise<{ ok: boolean; files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>; verifiedAt?: string; error?: string }>;
-}
-
-export interface AgentSessionInfo {
-  sessionId: string;
-  kind: string;
-  client: { name: string; version: string };
-  approval: string;
-  clientId: string | null;
-  openedAt: string;
-  pendingReviews: number;
-  openTabs?: number;
-}
-
-export interface EnrolledClientInfo {
-  clientId: string;
-  name: string;
-  enrolledAt: string;
-}
-
-export interface AgentActivityEntry {
-  at: string;
-  type: string;
-  sessionId?: string;
-  client?: string;
-  detail?: string;
-}
-
-export interface AgentsListResult {
-  ok: boolean;
-  sessions?: AgentSessionInfo[];
-  clients?: EnrolledClientInfo[];
-  enrolledClients?: EnrolledClientInfo[];
-  activity?: AgentActivityEntry[];
-  error?: string;
-  code?: string;
-}
-
-export interface AgentsRevokeParams {
-  clientId: string;
-}
-
-export interface AgentsRevokeResult {
-  ok: boolean;
-  removed?: boolean;
-  sessionsClosed?: number;
-  error?: string;
-  code?: string;
-}
-
-export interface AgentsActivityParams {
-  limit?: number;
-}
-
-export interface AgentsActivityResult {
-  ok: boolean;
-  activity?: AgentActivityEntry[];
-  error?: string;
-  code?: string;
-}
-
-export interface AgentsApi {
-  list(): Promise<AgentsListResult>;
-  revoke(params: string | AgentsRevokeParams): Promise<AgentsRevokeResult>;
-  activity(params?: number | AgentsActivityParams): Promise<AgentsActivityResult>;
 }
 
 /** What electron/preload.cjs exposes on window.uniview. Keep in sync with the preload. */

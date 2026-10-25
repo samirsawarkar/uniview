@@ -39,7 +39,7 @@ export interface ShellBridge {
   /** Sharing this computer with paired devices (desktop only). */
   share?: ShareApi;
   /** Agents panel API (desktop only). */
-  agents?: any;
+  agents?: AgentsApi;
   /** Whether a camera can be used to scan pairing QR codes. */
   canScanQr?: boolean;
 }
@@ -99,6 +99,69 @@ export interface ShareApi {
   offer(): Promise<{ text: string; expiresAt: number }>;
   cancelOffer(): Promise<ShareState>;
   onChanged(cb: (state: ShareState) => void): () => void;
+}
+
+export interface AgentSessionInfo {
+  sessionId: string;
+  kind: string;
+  client: { name: string; version: string };
+  approval: string;
+  clientId: string | null;
+  openedAt: string;
+  pendingReviews: number;
+  openTabs?: number;
+}
+
+export interface EnrolledClientInfo {
+  clientId: string;
+  name: string;
+  enrolledAt: string;
+}
+
+export interface AgentActivityEntry {
+  at: string;
+  type: string;
+  sessionId?: string;
+  client?: string;
+  detail?: string;
+}
+
+export interface AgentsListResult {
+  ok: boolean;
+  sessions?: AgentSessionInfo[];
+  clients?: EnrolledClientInfo[];
+  activity?: AgentActivityEntry[];
+  error?: string;
+  code?: string;
+}
+
+export interface AgentsRevokeParams {
+  clientId: string;
+}
+
+export interface AgentsRevokeResult {
+  ok: boolean;
+  removed?: boolean;
+  sessionsClosed?: number;
+  error?: string;
+  code?: string;
+}
+
+export interface AgentsActivityParams {
+  limit?: number;
+}
+
+export interface AgentsActivityResult {
+  ok: boolean;
+  activity?: AgentActivityEntry[];
+  error?: string;
+  code?: string;
+}
+
+export interface AgentsApi {
+  list(): Promise<AgentsListResult>;
+  revoke(params: string | AgentsRevokeParams): Promise<AgentsRevokeResult>;
+  activity(params?: number | AgentsActivityParams): Promise<AgentsActivityResult>;
 }
 
 export type FormatKind =

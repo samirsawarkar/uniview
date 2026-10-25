@@ -120,7 +120,6 @@ export async function handleAgentsList(host, args) {
       ok: true,
       sessions,
       clients,
-      enrolledClients: clients,
       activity,
     };
   } catch {
@@ -130,7 +129,7 @@ export async function handleAgentsList(host, args) {
 
 /**
  * Pure handler for agents:revoke.
- * Validates args { clientId: string (1..64 alphanumeric/underscore/hyphen) }.
+ * Validates args { clientId: string (exactly 32 hex characters) }.
  */
 export async function handleAgentsRevoke(host, args) {
   if (!isPlainObject(args)) return fail("bad_args");
@@ -140,9 +139,7 @@ export async function handleAgentsRevoke(host, args) {
   const { clientId } = args;
   if (
     typeof clientId !== "string" ||
-    clientId.length < 1 ||
-    clientId.length > AGENTS_IPC_LIMITS.maxClientId ||
-    !/^[0-9a-zA-Z_-]{1,64}$/.test(clientId)
+    !/^[0-9a-f]{32}$/.test(clientId)
   ) {
     return fail("bad_args");
   }
