@@ -1,97 +1,109 @@
+# UniView CI. Runs on Windows only, because the shipped desktop app targets Windows and the Electron tests
+# need a real Windows desktop session (named pipes, DPAPI, icacls). No secrets are used anywhere in this file.
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/**"]
   pull_request:
+    branches: [main, "feat/**"]
+  workflow_dispatch:
 
+# Read-only token. Nothing here writes to the repository.
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  verify:
+    name: Typecheck, unit tests, build, end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # package.json has no "engines" field, so Node comes from the README (Node 22+, tested on 24.x).
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
-      - run: npm run fixtures
-      - run: npx playwright install --with-deps chromium
-      - name: End-to-end (web, mobile viewport)
-        run: npx playwright test --project=web --project=mobile
-      - name: End-to-end (Electron)
-        if: runner.os != 'Linux'
-        run: npx playwright test --project=electron
-      - name: End-to-end (Electron, virtual display)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a npx playwright test --project=electron
 
-  package-desktop:
-    needs: test
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+      - name: Install dependencies
+        run: npm ci
+
+      # pdf.js data and licence files are copied into public/ (git-ignored) by the "prebuild" npm hook.
+      # Plain `npx vite build` does not run npm hooks, so run the same script first.
+      - name: Copy pdf.js assets and licence files
+        run: node scripts/copy-assets.mjs
+
+      # fixtures/generated/ is git-ignored; the end-to-end tests open these generated documents.
+      - name: Generate test documents
+        run: npm run fixtures
+
+      - name: Type check
+        run: npx tsc --noEmit -p .
+
+      - name: Unit and integration tests
+        run: npx vitest run
+
+      - name: Production build
+        run: npx vite build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: End-to-end (web and phone-size viewport)
+        run: npx playwright test --project=web --project=mobile
+
+      # The Electron tests drive the real desktop window and the built dist/ folder. Windows runners
+      # have an interactive desktop, so no virtual display (xvfb) is needed.
+      - name: End-to-end (Electron)
+        run: npx playwright test --project=electron
+
+  # Manual only: Actions tab, "CI", "Run workflow". Builds the UNSIGNED Windows installer and portable exe.
+  installer-unsigned:
+    name: Build unsigned Windows installer
+    if: github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 45
     env:
+      # Never look for a certificate on the runner; the output is deliberately unsigned.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx electron-builder --config electron-builder.json --publish never
-      - uses: actions/upload-artifact@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Copy pdf.js assets and licence files
+        run: node scripts/copy-assets.mjs
+
+      - name: Production build
+        run: npx vite build
+
+      - name: Package with electron-builder (no publishing)
+        run: npx electron-builder --win --config electron-builder.json --publish never
+
+      - name: Upload the unsigned installers
+        uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.os }}
+          name: uniview-windows-unsigned
           path: |
-            release/*.exe
-            release/*.dmg
-
-  android:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - run: npm ci
-      - run: npm run build
-      - run: npx cap sync android
-      - run: cd android && ./gradlew assembleDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-
-  ios:
-    needs: test
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx cap sync ios
-      - name: Build for the simulator (unsigned)
-        run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+            release/UniView-Setup-*.exe
+            release/UniView-Portable-*.exe
+          if-no-files-found: error
+          retention-days: 14

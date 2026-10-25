@@ -23,3 +23,13 @@ demo/demo-review.receipt.json.decision.json
 demo/status.uview.json
 release-candidate/
 release-test/
+
+# secrets: never commit signing keys, certificates or environment files
+*.jks
+*.keystore
+keystore.properties
+*.pfx
+*.p12
+*.pem
+.env
+.env.*
