@@ -104,7 +104,7 @@ UniView is free of ads and has nothing to sell you. Questions or feedback: [CONT
 
 | Asset | Requirement | Source in this repo | Status |
 |---|---|---|---|
-| App icon | 512 x 512, 32-bit PNG with alpha, at most 1024 KB | `assets/branding/play-store-512.png` (512 x 512, RGBA PNG, 8,538 bytes) | Exists. It is the placeholder logo; replace after the CEO sends the final logo (`assets/branding/README.md` explains regeneration). |
+| App icon | 512 x 512, 32-bit PNG with alpha, at most 1024 KB | `assets/branding/play-store-512.png` (512 x 512, opaque RGB PNG, 83,406 bytes) | Exists. It is the CEO-supplied logo (opaque, PNG colour type 2); `assets/branding/README.md` explains regeneration. |
 | Feature graphic | 1024 x 500, PNG or JPEG, at most 15 MB | none | **Missing.** Create one (logo, name "UniView", tagline "Open any file. Offline, private, instant."). |
 | Phone screenshots | 2 to 8; JPEG or 24-bit PNG; each side 320 to 3840 px; Hermes brief says 16:9 or 9:16 | none yet | **Missing**, see the checklist below. |
 | 7-inch and 10-inch tablet screenshots | optional | none | Optional. |
