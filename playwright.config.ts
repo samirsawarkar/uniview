@@ -19,7 +19,7 @@ export default defineConfig({
       testMatch: /web\.spec\.ts/,
       use: { baseURL: "http://localhost:4173", ...devices["Pixel 7"] },
     },
-    { name: "electron", testMatch: /(electron|remote|agents)\.spec\.ts/ },
+    { name: "electron", testMatch: /(electron|remote|agents|agents-reload)\.spec\.ts/ },
   ],
   webServer: {
     command: "npm run preview",

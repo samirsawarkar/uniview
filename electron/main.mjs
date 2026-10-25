@@ -35,10 +35,21 @@ if (!app.isPackaged && process.env.UNIVIEW_USER_DATA) app.setPath("userData", pr
 // 8. Early CLI and MCP detection: runs before single-instance lock without creating a window.
 const early = detectEarlyArgv(process.argv, app.isPackaged);
 if (early.isMcp) {
-  const code = await runEarlyMcp({ userDataDir: app.getPath("userData") });
+  const code = await runEarlyMcp({
+    userDataDir: app.getPath("userData"),
+    app,
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+  });
   app.exit(typeof code === "number" ? code : 0);
 } else if (early.isCli) {
-  const code = await runEarlyCli({ argv: early.cliArgv, userDataDir: app.getPath("userData") });
+  const code = await runEarlyCli({
+    argv: early.cliArgv,
+    userDataDir: app.getPath("userData"),
+    app,
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+  });
   app.exit(typeof code === "number" ? code : 0);
 } else {
   appAgents = createAppAgents({

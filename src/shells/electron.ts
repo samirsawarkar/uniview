@@ -90,7 +90,7 @@ export interface ElectronApi {
   onOpenFiles(cb: (files: GrantedFile[]) => void): () => void;
   ready(): void;
   tabClosed?(scopeId: string): void;
-  thumbnail(token: string, size: number): Promise<Uint8Array | null>;
+  thumbnail(token: string, size: number, scopeId?: string): Promise<Uint8Array | null>;
   share: ShareApi;
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
   review?: ReviewApi;
@@ -118,10 +118,16 @@ function api(): ElectronApi {
 }
 
 const tokens = new WeakMap<FileSource, string>();
+const scopes = new WeakMap<FileSource, string>();
 
 /** The grant token of a file the person opened on this computer; undefined for any other source. */
 export function grantTokenOf(source: FileSource): string | undefined {
   return tokens.get(source);
+}
+
+/** The scopeId of an agent file opened on this computer; undefined for any other source. */
+export function scopeIdOf(source: FileSource): string | undefined {
+  return scopes.get(source) ?? (source as any).scopeId;
 }
 
 /** Associates a grant token with a file source (e.g. in tests or when creating from a granted file). */
@@ -129,7 +135,7 @@ export function attachGrantToken(source: FileSource, token: string): void {
   tokens.set(source, token);
 }
 
-export function toSource(f: GrantedFile): FileSource {
+export function toSource(f: GrantedFile, ownsScope = true): FileSource {
   const read = async (start: number, end: number, signal?: AbortSignal) => {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     try {
@@ -143,7 +149,18 @@ export function toSource(f: GrantedFile): FileSource {
     name: f.name,
     size: f.size,
     path: f.path,
-    readAll: (signal) => read(0, f.size, signal),
+    readAll: async (signal) => {
+      if (f.scopeId && typeof fetch === "function") {
+        try {
+          const u = await source.url();
+          const res = await fetch(u, { signal });
+          if (res.ok) {
+            return await res.arrayBuffer();
+          }
+        } catch {}
+      }
+      return read(0, f.size, signal);
+    },
     readRange: read,
     // Served by the main process with HTTP range support, so media streams instead of loading whole.
     url: async () =>
@@ -151,7 +168,7 @@ export function toSource(f: GrantedFile): FileSource {
         ? `uniview-file://${f.token}/${encodeURIComponent(f.name)}?scope=${encodeURIComponent(f.scopeId)}`
         : `uniview-file://${f.token}/${encodeURIComponent(f.name)}`,
     release() {
-      if (f.scopeId && hasElectronApi()) {
+      if (ownsScope && f.scopeId && hasElectronApi()) {
         try {
           api().tabClosed?.(f.scopeId);
         } catch {}
@@ -160,14 +177,18 @@ export function toSource(f: GrantedFile): FileSource {
     reopen: async () => {
       if (f.scopeId) {
         if (api().reopenAgent) {
-          return toSource(await api().reopenAgent!(f.scopeId, f.token));
+          return toSource(await api().reopenAgent!(f.scopeId, f.token), false);
         }
-        return toSource(f);
+        return toSource(f, false);
       }
       return toSource(await api().openPath(f.path));
     },
   };
   tokens.set(source, f.token);
+  if (f.scopeId) {
+    scopes.set(source, f.scopeId);
+    (source as any).scopeId = f.scopeId;
+  }
   return source;
 }
 
@@ -182,12 +203,13 @@ export function createElectronBridge(): ShellBridge {
     thumbnail: async (source, size) => {
       const token = tokens.get(source);
       if (!token) return null;
-      const png = await api().thumbnail(token, size).catch(() => null);
+      const scopeId = scopeIdOf(source);
+      const png = await api().thumbnail(token, size, scopeId).catch(() => null);
       return png ? new Blob([png as BlobPart], { type: "image/png" }) : null;
     },
-    pickFiles: async () => (await api().pickFiles()).map(toSource),
+    pickFiles: async () => (await api().pickFiles()).map((f) => toSource(f)),
     openPath: async (path) => toSource(await api().openPath(path)),
-    onExternalOpen: (cb) => api().onOpenFiles((files) => cb(files.map(toSource))),
+    onExternalOpen: (cb) => api().onOpenFiles((files) => cb(files.map((f) => toSource(f)))),
     revealInFolder: (source) => {
       const token = tokens.get(source);
       if (token) api().reveal(token);

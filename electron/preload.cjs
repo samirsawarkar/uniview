@@ -43,7 +43,13 @@ contextBridge.exposeInMainWorld("uniview", {
       Number(end),
       scopeId ? String(scopeId) : undefined
     ),
-  thumbnail: (token, size) => ipcRenderer.invoke("uniview:thumb", String(token), Number(size)),
+  thumbnail: (token, size, scopeId) =>
+    ipcRenderer.invoke(
+      "uniview:thumb",
+      String(token),
+      Number(size),
+      scopeId ? String(scopeId) : undefined
+    ),
   reveal: (token) => ipcRenderer.send("uniview:reveal", String(token)),
   tabClosed: (scopeId) => ipcRenderer.send("uniview:tab-closed", String(scopeId)),
   /** Absolute path of a dropped File, so desktop drops stream from disk and appear in recents. */

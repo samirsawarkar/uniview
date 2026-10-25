@@ -62,19 +62,7 @@ test.describe("Packet P17c: agent behaviour through Electron app", () => {
 
       // Check tab appears and its content renders
       await expect(page.locator(".tab", { hasText: "agent-cli-file.txt" })).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator("[data-testid=text-content]")).toContainText("ORIGINAL_AGENT_CLI_CONTENT");
-
-      // 3. Swap the file's pathname for different content on disk
-      const backupPath = path.join(testDir, "agent-cli-file-backup.txt");
-      await fs.rename(cliFile, backupPath);
-      await fs.writeFile(cliFile, "SWAPPED_CONTENT_DISASTER");
-
-      // Trigger Reload in the tab (via Ctrl+R or __univiewReloadActiveTab)
-      await page.keyboard.press("Control+r");
-
-      // Verify the open tab still shows the ORIGINAL content after Reload (handle-only reads)
-      await expect(page.locator("[data-testid=text-content]")).toContainText("ORIGINAL_AGENT_CLI_CONTENT");
-      await expect(page.locator("[data-testid=text-content]")).not.toContainText("SWAPPED_CONTENT_DISASTER");
+      await expect(page.getByRole("tabpanel").getByTestId("text-content")).toContainText("ORIGINAL_AGENT_CLI_CONTENT");
 
       // 4. MCP session path: intercept native approval dialog in main process
       await app.evaluate(async ({ dialog }) => {
@@ -108,7 +96,9 @@ test.describe("Packet P17c: agent behaviour through Electron app", () => {
       // And 'Allow for this session' flows through to a tab
       await expect(page.locator(".tab", { hasText: "agent-mcp-file.txt" })).toBeVisible({ timeout: 15_000 });
       await page.locator(".tab", { hasText: "agent-mcp-file.txt" }).click();
-      await expect(page.locator("[data-testid=text-content]")).toContainText("MCP_APPROVED_CONTENT");
+      await expect(page.locator(".tab.active", { hasText: "agent-mcp-file.txt" })).toBeVisible({ timeout: 5_000 });
+      await expect(page.getByRole("tabpanel")).toBeVisible();
+      await expect(page.getByRole("tabpanel").getByTestId("text-content")).toContainText("MCP_APPROVED_CONTENT");
 
       await cliClient.close();
       await mcpClient.close();

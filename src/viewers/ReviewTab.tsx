@@ -1,12 +1,64 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import type { FileSource, FormatKind } from "../core/types";
+import type { FileSource, FormatKind, Detection } from "../core/types";
 import type { Receipt, FileState, Decision } from "../../shared/receipt.d.mts";
 import type { ReviewApi, ReviewValidationError } from "../shells/electron";
-import { hasElectronApi, grantTokenOf } from "../shells/electron";
+import { hasElectronApi, grantTokenOf, toSource } from "../shells/electron";
 import { sanitizeLabel, AgentMarkdown } from "./agent-markdown";
+import ViewSpecViewer from "./ViewSpecViewer";
+import { ViewReferenceContext, type ViewReferenceResolver } from "./viewspec-nodes";
 
 const MAX_COMMENT_BYTES = 8192; // 8 KiB UTF-8 byte limit
 const ARMING_DELAY_MS = 500;
+const VIEW_SPEC_DETECTION: Detection = {
+  kind: "viewspec",
+  label: "View Spec",
+  ext: ".viewspec.json",
+  by: "container",
+};
+
+function createViewSourceFromSnapshot(view: any, scopeId?: string): FileSource | null {
+  if (!view) return null;
+  let bytes: Uint8Array | null = null;
+  if (view instanceof Uint8Array) {
+    bytes = view;
+  } else if (view.specBytes instanceof Uint8Array) {
+    bytes = view.specBytes;
+  } else if (view.specBytes?.data) {
+    bytes = new Uint8Array(view.specBytes.data);
+  } else if (view.bytes instanceof Uint8Array) {
+    bytes = view.bytes;
+  } else if (view.bytes?.data) {
+    bytes = new Uint8Array(view.bytes.data);
+  } else if (view.spec && typeof view.spec === "object") {
+    bytes = new TextEncoder().encode(JSON.stringify(view.spec));
+  } else if (typeof view === "object" && (view.body || view.title || view.version || view.nodes)) {
+    bytes = new TextEncoder().encode(JSON.stringify(view));
+  } else if (typeof view === "string" && view.trim().startsWith("{")) {
+    bytes = new TextEncoder().encode(view);
+  }
+  if (!bytes) return null;
+  const buf = new Uint8Array(bytes.byteLength);
+  buf.set(bytes);
+  const ab: ArrayBuffer = buf.buffer;
+  return {
+    id: `agent-review-view-${scopeId || "view"}`,
+    name: "view.uview.json",
+    size: ab.byteLength,
+    readAll: async (): Promise<ArrayBuffer> => {
+      const copy = new Uint8Array(buf.byteLength);
+      copy.set(buf);
+      return copy.buffer;
+    },
+    readRange: async (start, end): Promise<ArrayBuffer> => {
+      const sub = buf.subarray(start, end);
+      const copy = new Uint8Array(sub.byteLength);
+      copy.set(sub);
+      return copy.buffer;
+    },
+    url: async () => "",
+    release: () => {},
+  };
+}
 
 function utf8ByteCount(str: string): number {
   return new TextEncoder().encode(str).byteLength;
@@ -99,10 +151,12 @@ export default function ReviewTab({
   onReady,
   onFallback,
   initialReview,
+  onOpen,
 }: ReviewTabProps): React.ReactElement {
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [files, setFiles] = useState<ReviewTabFile[]>([]);
+  const [viewSource, setViewSource] = useState<FileSource | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<LoadFailure | null>(null);
 
@@ -190,6 +244,11 @@ export default function ReviewTab({
       setReviewId(initialReview.reviewId);
       setReceipt(initialReview.receipt);
       setFiles(filesFromResults(initialReview.receipt, initialReview.files));
+      if (initialReview.view) {
+        setViewSource(createViewSourceFromSnapshot(initialReview.view, initialReview.scopeId));
+      } else {
+        setViewSource(null);
+      }
       setLoading(false);
       const a = apiRef.current;
       if (a) {
@@ -363,6 +422,34 @@ export default function ReviewTab({
     e.preventDefault();
     e.stopPropagation();
   };
+
+  const referenceResolver = useMemo<ViewReferenceResolver>(() => {
+    return {
+      async resolve(ref) {
+        const scopeId = initialReview?.scopeId;
+        const grants = (initialReview as any)?.grants;
+        const grant = grants?.[ref.path] || (Array.isArray(grants) ? grants.find((g: any) => g.path === ref.path) : undefined);
+        if (grant) {
+          return {
+            status: "found",
+            open: () => onOpen?.([toSource(grant, false)]),
+          };
+        }
+        if (scopeId && typeof (window as any).uniview?.viewGrant === "function") {
+          try {
+            const g = await (window as any).uniview.viewGrant(scopeId, ref.path);
+            if (g?.token) {
+              return {
+                status: "found",
+                open: () => onOpen?.([toSource(g, false)]),
+              };
+            }
+          } catch {}
+        }
+        return { status: "missing" };
+      },
+    };
+  }, [initialReview, onOpen]);
 
   if (loading) {
     return <div className="receipt-loading">Loading review receipt…</div>;
@@ -607,12 +694,24 @@ export default function ReviewTab({
         )}
 
         {/* The receipt's view (if present) */}
-        {receipt.view && (
+        {(receipt.view || viewSource) && (
           <div className="receipt-section receipt-view-section">
             <h2 className="receipt-section-heading">View</h2>
-            <div className="receipt-view-note">
-              {receipt.viewRelPath || receipt.view}
-            </div>
+            {viewSource ? (
+              <ViewReferenceContext.Provider value={referenceResolver}>
+                <ViewSpecViewer
+                  source={viewSource}
+                  detection={VIEW_SPEC_DETECTION}
+                  onReady={onReady || (() => {})}
+                  onOpen={onOpen || (() => {})}
+                  onFallback={onFallback}
+                />
+              </ViewReferenceContext.Provider>
+            ) : (
+              <div className="receipt-view-note">
+                {receipt.viewRelPath || receipt.view}
+              </div>
+            )}
           </div>
         )}
       </section>

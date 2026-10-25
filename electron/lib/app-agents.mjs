@@ -765,15 +765,13 @@ export async function runEarlyMcp({
       child.unref();
     });
 
-  const wrappedClock = createMcpClock({ approvalGraceMs, clock });
-
   return runMcp({
     stdin,
     stdout,
     stderr,
     connect: wrappedConnect,
     startApp: doStartApp,
-    clock: wrappedClock,
+    clock,
     approvalGraceMs,
   });
 }

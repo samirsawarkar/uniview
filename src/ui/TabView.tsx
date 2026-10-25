@@ -8,6 +8,7 @@ import { Loading } from "../viewers/common";
 
 export interface TabViewProps {
   source: FileSource;
+  detection?: Detection;
   onDetected: (d: Detection) => void;
   onReady: (ms: number) => void;
   onOpen: (files: FileSource[]) => void;
@@ -15,13 +16,20 @@ export interface TabViewProps {
 }
 
 /** Reads the head of a file, picks a viewer, and guarantees something readable is shown. */
-export function TabView({ source, onDetected, onReady, onOpen, active = true }: TabViewProps) {
-  const [detection, setDetection] = useState<Detection | null>(null);
+export function TabView({ source, detection: propDetection, onDetected, onReady, onOpen, active = true }: TabViewProps) {
+  const [detection, setDetection] = useState<Detection | null>(() => propDetection ?? null);
   const [override, setOverride] = useState<FormatKind | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [started] = useState(() => performance.now());
 
   useEffect(() => {
+    if (propDetection) {
+      setDetection(propDetection);
+      setOverride(null);
+      setError(null);
+      onDetected(propDetection);
+      return;
+    }
     const ctrl = new AbortController();
     setDetection(null);
     setOverride(null);
@@ -50,7 +58,7 @@ export function TabView({ source, onDetected, onReady, onOpen, active = true }: 
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  }, [source, propDetection]);
 
   // A fallback the user chose must work even when detection itself failed (e.g. a truncated ZIP).
   if (error && !override) return <ErrorPanel source={source} error={error} onFallback={setOverride} />;

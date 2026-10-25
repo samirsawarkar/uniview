@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { makeTempDir } from "./agent-helpers";
 import { receiptJson } from "./agent-host-helpers";
 // @ts-expect-error plain ESM module without types
-import { createAppAgents, createAskDialog, createUiManager, detectEarlyArgv, createMcpClock, serveAgentFile, readAgentHandle, computeAppSpawnArgs } from "../../electron/lib/app-agents.mjs";
+import { createAppAgents, createAskDialog, createUiManager, detectEarlyArgv, createMcpClock, serveAgentFile, readAgentHandle, computeAppSpawnArgs, runEarlyCli, runEarlyMcp } from "../../electron/lib/app-agents.mjs";
 // @ts-expect-error plain ESM module without types
 import { AgentGrantStore } from "../../electron/lib/agent-paths.mjs";
 // @ts-expect-error plain ESM module without types
@@ -611,5 +611,117 @@ describe("Packet P17c: app-agents wiring factory", () => {
     expect(computeAppSpawnArgs({ isPackaged: true, appPath: "/path/to/app" })).toEqual([]);
     expect(computeAppSpawnArgs({ isPackaged: false, appPath: "/path/to/app" })).toEqual(["/path/to/app"]);
     expect(computeAppSpawnArgs({ isPackaged: false, appPath: "" })).toEqual([process.cwd()]);
+  });
+
+  it("Finding 4: production cold-start callers computed launch command (packaged: exe only without cwd arg; unpackaged: electron + absolute app path)", async () => {
+    const packagedArgs = computeAppSpawnArgs({ isPackaged: true, appPath: "/Applications/UniView.app" });
+    expect(packagedArgs).toEqual([]);
+
+    const unpackagedArgs = computeAppSpawnArgs({ isPackaged: false, appPath: "/Users/dev/uniview" });
+    expect(unpackagedArgs).toEqual(["/Users/dev/uniview"]);
+
+    const fakeSpawnApp = vi.fn(async () => {});
+    const tempDir = await makeTempDir("uv-coldstart-test");
+    cleanups.push(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    const fakeAppPackaged = {
+      isPackaged: true,
+      getAppPath: () => "/Applications/UniView.app",
+      getPath: () => tempDir,
+    };
+
+    let connectCount = 0;
+    await runEarlyCli({
+      argv: ["open", "file.txt"],
+      userDataDir: tempDir,
+      app: fakeAppPackaged,
+      isPackaged: fakeAppPackaged.isPackaged,
+      appPath: fakeAppPackaged.getAppPath(),
+      connect: async () => {
+        connectCount++;
+        if (connectCount === 1) throw new Error("first connect failed");
+        return {
+          request: async () => ({ opened: 1 }),
+          close: async () => {},
+        };
+      },
+      spawnApp: fakeSpawnApp,
+      sleep: (_ms: number, signal?: AbortSignal) =>
+        new Promise<void>((resolve) => {
+          if (signal?.aborted) return resolve();
+          const t = setTimeout(resolve, 5);
+          signal?.addEventListener("abort", () => {
+            clearTimeout(t);
+            resolve();
+          }, { once: true });
+        }),
+    }).catch(() => {});
+
+    expect(fakeSpawnApp).toHaveBeenCalled();
+  });
+
+  it("Finding 6: runEarlyMcp production deadlines are [30000, 125000, 30000] (hello 30000, first tools/call 125000, next 30000)", async () => {
+    const tempDir = await makeTempDir("uv-mcp-clock-test");
+    cleanups.push(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    const scheduledTimeouts: number[] = [];
+    const mockClock = {
+      now: () => 1000,
+      setTimeout: (fn: Function, ms: number) => {
+        scheduledTimeouts.push(ms);
+        return setTimeout(fn, ms);
+      },
+      clearTimeout: (h: any) => clearTimeout(h),
+    };
+
+    const { PassThrough } = await import("node:stream");
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+
+    const fakeClient = {
+      sessionId: "b".repeat(32),
+      serverNonce: Buffer.alloc(32),
+      clientNonce: Buffer.alloc(32),
+      request: vi.fn(async (method: string) => {
+        if (method === "mcp.hello") return { result: { version: "2024-11-05" } };
+        return { result: { opened: 1 } };
+      }),
+      close: vi.fn(async () => {}),
+    };
+
+    const mcpPromise = runEarlyMcp({
+      stdin,
+      stdout,
+      stderr: new PassThrough(),
+      userDataDir: tempDir,
+      connect: async () => fakeClient,
+      clock: mockClock,
+      approvalGraceMs: 125_000,
+    });
+
+    // 1. Send initialize
+    stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", clientInfo: { name: "agent-1", version: "1.0" } } }) + "\n");
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 2. Send initialized notification
+    stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 3. Send first tools/call (triggers getBridge 30000, then call with approvalGraceMs = 125000)
+    stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "open_files", arguments: { paths: ["/a.txt"] } } }) + "\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 4. Send second tools/call (triggers call which uses REQUEST_DEADLINE_MS = 30000)
+    stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "open_files", arguments: { paths: ["/b.txt"] } } }) + "\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    stdin.end();
+    await mcpPromise;
+
+    expect(scheduledTimeouts).toEqual([30000, 125000, 30000]);
   });
 });

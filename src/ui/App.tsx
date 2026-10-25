@@ -18,6 +18,7 @@ import type { HostRecord } from "../../shared/remote-client.mjs";
 import logoUrl from "./assets/logo.png";
 import { getTheme, setTheme, type Theme } from "./theme";
 import ReviewTab from "../viewers/ReviewTab";
+import { scopeIdOf, hasElectronApi } from "../shells/electron";
 
 type Page = { kind: "sharing" } | { kind: "agents" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
@@ -54,7 +55,11 @@ export function App() {
     if (!files.length) return;
     setTabs((prev) => {
       const next = [...prev];
-      const created = files.map((f) => ({ id: f.id, source: f }));
+      const created = files.map((f) => ({
+        id: f.id,
+        source: f,
+        scopeId: (f as any).scopeId ?? scopeIdOf(f),
+      }));
       const idx = next.findIndex((t) => t.id === activeId);
       // Opening from the home tab replaces it, like typing a URL into Chrome's new tab page.
       if (replaceHome && idx >= 0 && next[idx]!.source === null) next.splice(idx, 1, ...created);
@@ -75,7 +80,13 @@ export function App() {
     setTabs((prev) => {
       const i = prev.findIndex((t) => t.id === id);
       if (i < 0) return prev;
-      prev[i]!.source?.release();
+      const tab = prev[i]!;
+      tab.source?.release();
+      if (tab.scopeId && hasElectronApi()) {
+        try {
+          (window as any).uniview?.tabClosed?.(tab.scopeId);
+        } catch {}
+      }
       const next = prev.filter((t) => t.id !== id);
       if (!next.length) next.push(homeTab());
       if (id === activeId) setActiveId(next[Math.min(i, next.length - 1)]!.id);
@@ -254,11 +265,15 @@ export function App() {
     const unsubClose = electron.onAgentCloseTab?.((scopeId: string) => {
       if (!scopeId) return;
       setTabs((prev) => {
-        const tab = prev.find((t) => t.scopeId === scopeId || t.id === `tab-${scopeId}`);
+        const tab = prev.find(
+          (t) => t.scopeId === scopeId || t.id === `tab-${scopeId}` || (t.source as any)?.scopeId === scopeId
+        );
         if (!tab) return prev;
+        tab.source?.release();
         const next = prev.filter((t) => t.id !== tab.id);
         if (!next.length) next.push(homeTab());
-        if (tab.id === activeId) setActiveId(next[0]!.id);
+        const idx = prev.indexOf(tab);
+        if (tab.id === activeId) setActiveId(next[Math.min(idx, next.length - 1)]!.id);
         return next;
       });
     });
@@ -377,7 +392,7 @@ export function App() {
 
   const hostFor = (hostId: string) => hosts.find((h) => h.hostId === hostId);
 
-  const onDetected = useCallback((id: string, d: Detection) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, detection: d } : t))), []);
+  const onDetected = useCallback((id: string, d: Detection) => setTabs((prev) => prev.map((t) => (t.id === id ? (t.detection === d ? t : { ...t, detection: d }) : t))), []);
   const onReady = useCallback((tab: Tab, ms: number) => {
     (window.__univiewMetrics ??= []).push({ name: tab.source?.name ?? "", kind: tab.detection?.kind, ms: Math.round(ms) });
   }, []);
@@ -433,7 +448,14 @@ export function App() {
                 onOpen={(f) => openFiles(f, false)}
               />
             ) : t.source ? (
-              <TabView source={t.source} onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }} onReady={(ms) => onReady(t, ms)} onOpen={(f) => openFiles(f, false)} active={t.id === activeId} />
+              <TabView
+                source={t.source}
+                detection={t.detection}
+                onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }}
+                onReady={(ms) => onReady(t, ms)}
+                onOpen={(f) => openFiles(f, false)}
+                active={t.id === activeId}
+              />
             ) : t.page?.kind === "sharing" && bridge.share ? (
               <SharingPanel share={bridge.share} />
             ) : t.page?.kind === "agents" ? (
