@@ -152,4 +152,81 @@ describe("review-sidecar-conflict", () => {
     expect(ok2).toBe(false);
     expect(outcome2.note).toBe("sidecar_conflict");
   });
+
+  // Regression test: identical except persisted:false -> conflict (persisted:false result, note sidecar_conflict, file untouched)
+  it("identical except persisted:false -> conflict (persisted:false result, note sidecar_conflict, file untouched)", async () => {
+    const store = createDecisionStore({ dir: storeDir, fs });
+    const receiptPath = path.join(testDir, "task-persisted-mismatch.receipt.json");
+    await fs.writeFile(receiptPath, JSON.stringify({ uniview: "receipt/1" }));
+
+    const targetSidecar = `${receiptPath}.decision.json`;
+    const reviewId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const receiptDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const SHA = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const fixedTime = "2026-10-25T12:00:00.000Z";
+
+    const existingExceptPersistedFalse = {
+      uniview: "decision/1",
+      reviewId,
+      receiptDigest,
+      decision: "changes_requested",
+      comment: "identical comment",
+      decidedAt: fixedTime,
+      verifiedAt: fixedTime,
+      persisted: false,
+      files: [{ path: "C:\\test\\f.txt", expectedSha256: SHA, observedSha256: null, state: "missing" }],
+    };
+    await fs.writeFile(targetSidecar, JSON.stringify(existingExceptPersistedFalse, null, 2), "utf8");
+
+    const review = {
+      reviewId,
+      receiptDigest,
+      receipt: {
+        uniview: "receipt/1",
+        createdAt: "2026-10-25T10:00:00.000Z",
+        agent: { name: "Agent" },
+        task: "task",
+        summary: "summary",
+        files: [{ path: "C:\\test\\f.txt", sha256: SHA, role: "modified" }],
+      },
+      receiptPath,
+    };
+
+    const shown = {
+      results: [{ path: "C:\\test\\f.txt", expectedSha256: SHA, observedSha256: null, state: "missing", identity: null }],
+      verifiedAt: fixedTime,
+    };
+
+    const fixedTimeMs = new Date(fixedTime).getTime();
+    const verifier = createVerifier({
+      openAgentPath: async () => ({ ok: false, code: "not_found" }),
+      now: () => fixedTimeMs,
+    });
+
+    const result = await decide({
+      review,
+      shown,
+      decision: "changes_requested",
+      comment: "identical comment",
+      store,
+      verifier,
+      writeNextToReceipt: true,
+      now: () => new Date(fixedTime).getTime(),
+    });
+
+    expect(result.ok).toBe(true);
+    // Persisted MUST be false due to sidecar conflict (persisted:false on disk vs candidate with persisted:true)
+    expect(result.decision.persisted).toBe(false);
+    expect(result.note).toBe("sidecar_conflict");
+
+    // Sidecar on disk must remain UNTOUCHED (persisted still false)
+    const sidecarOnDisk = JSON.parse(await fs.readFile(targetSidecar, "utf8"));
+    expect(sidecarOnDisk.persisted).toBe(false);
+    expect(sidecarOnDisk.comment).toBe("identical comment");
+
+    // Store record copy must agree with returned decision: persisted: false
+    const storeCopy = await store.load(reviewId);
+    expect(storeCopy).not.toBeNull();
+    expect(storeCopy.persisted).toBe(false);
+  });
 });

@@ -375,6 +375,7 @@ export async function startBridgeServer({
 
     let queuedOutboundBytes = 0;
     let isPaused = false;
+    let isTerminating = false;
     let drainTimer = null;
     let loggedBackpressure = false;
     const pausedFrames = [];
@@ -395,8 +396,16 @@ export async function startBridgeServer({
       } catch {}
     };
 
-    const writeResponse = (frameBuf) => {
-      if (!socket.writable || socket.destroyed) return false;
+    const writeFrame = (frameBuf, { terminal = false } = {}) => {
+      if (!socket.writable || socket.destroyed || isTerminating) return false;
+      if (terminal) {
+        isTerminating = true;
+        isPaused = true;
+        try {
+          if (typeof socket.pause === "function") socket.pause();
+        } catch {}
+      }
+
       const len = frameBuf.byteLength ?? frameBuf.length ?? 0;
       queuedOutboundBytes += len;
 
@@ -412,6 +421,15 @@ export async function startBridgeServer({
           if (queuedOutboundBytes === 0 && drainTimer) {
             clearTimeout(drainTimer);
             drainTimer = null;
+          }
+          if (terminal) {
+            try {
+              socket.end();
+            } catch {
+              try {
+                socket.destroy();
+              } catch {}
+            }
           }
         });
       } catch {
@@ -439,10 +457,15 @@ export async function startBridgeServer({
       return writtenOk;
     };
 
+    const writeResponse = (frameBuf) => writeFrame(frameBuf, { terminal: false });
+
     socket.on("drain", () => {
       if (drainTimer) {
         clearTimeout(drainTimer);
         drainTimer = null;
+      }
+      if (isTerminating) {
+        return;
       }
       if (isPaused) {
         isPaused = false;
@@ -466,6 +489,7 @@ export async function startBridgeServer({
     });
 
     const dispatchFrame = (f) => {
+      if (isTerminating) return;
       if (isPaused) {
         pausedFrames.push(f);
       } else {
@@ -495,20 +519,12 @@ export async function startBridgeServer({
         header.t !== "req" ||
         !isValidRequestId(header.id)
       ) {
-        try {
-          socket.end(encodeFrame({ t: "error", code: "bad_frame" }));
-        } catch {
-          socket.destroy();
-        }
+        writeFrame(encodeFrame({ t: "error", code: "bad_frame" }), { terminal: true });
         return;
       }
 
       if (body && body.length > 2 * 1024 * 1024) {
-        try {
-          socket.end(encodeFrame({ t: "error", code: "too_large" }));
-        } catch {
-          socket.destroy();
-        }
+        writeFrame(encodeFrame({ t: "error", code: "too_large" }), { terminal: true });
         return;
       }
 
@@ -587,15 +603,12 @@ export async function startBridgeServer({
     } catch (err) {
       const code =
         err instanceof BridgeError && err.code ? err.code : "bad_frame";
-      try {
-        socket.end(encodeFrame({ t: "error", code }));
-      } catch {
-        socket.destroy();
-      }
+      writeFrame(encodeFrame({ t: "error", code }), { terminal: true });
       return;
     }
 
     socket.on("data", (chunk) => {
+      if (isTerminating) return;
       try {
         const frames = decoder.push(chunk);
         for (const f of frames) {
@@ -604,11 +617,7 @@ export async function startBridgeServer({
       } catch (err) {
         const code =
           err instanceof BridgeError && err.code ? err.code : "bad_frame";
-        try {
-          socket.end(encodeFrame({ t: "error", code }));
-        } catch {
-          socket.destroy();
-        }
+        writeFrame(encodeFrame({ t: "error", code }), { terminal: true });
       }
     });
   });

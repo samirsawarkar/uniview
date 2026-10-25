@@ -211,4 +211,296 @@ describe("bridge backpressure and outbound byte bounding", () => {
     expect(receivedResponses).toHaveLength(5);
     expect(backpressureSpy).not.toHaveBeenCalled();
   });
+
+  // Mutation caught: terminal error branches bypassing bounded writer and drain deadline
+  it("terminal error from invalid request header routes through bounded writer and destroys non-draining client within deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      mockServer = createMockServer();
+      const backpressureSpy = vi.fn();
+
+      bridge = await startBridgeServer({
+        endpoint: "test-pipe-invalid-header-drain-timeout",
+        key,
+        createServer: () => mockServer,
+        onRequest: async () => ({ result: { ok: true } }),
+        onBackpressure: backpressureSpy,
+      });
+
+      const [serverSocket, clientSocket] = createDuplexPair();
+      mockServer.emit("connection", serverSocket);
+      await clientHandshake(clientSocket, { key });
+
+      let writtenBytes = 0;
+      serverSocket.write = vi.fn((chunk: any, _cb?: any) => {
+        writtenBytes += chunk?.length ?? chunk?.byteLength ?? 0;
+        // Non-draining client: write returns false and callback never fires
+        return false;
+      }) as any;
+
+      // Send frame with invalid header: header.t is not "req"
+      clientSocket.write(encodeFrame({ t: "not_a_req" as any }));
+      await vi.advanceTimersByTimeAsync(50);
+
+      // Verify serverSocket.write was called through the bounded writer with the error frame
+      expect(serverSocket.write).toHaveBeenCalled();
+      expect(writtenBytes).toBeGreaterThan(0);
+      expect(serverSocket.destroyed).toBe(false);
+
+      // Advance to 9.9s: still alive within deadline
+      await vi.advanceTimersByTimeAsync(9900);
+      expect(serverSocket.destroyed).toBe(false);
+
+      // Advance past 10s: deadline exceeded, destroyed with drain_timeout
+      await vi.advanceTimersByTimeAsync(100);
+      expect(serverSocket.destroyed).toBe(true);
+      expect(backpressureSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "drain_timeout" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Mutation caught (a): not decrementing queuedOutboundBytes when write callback completes
+  it("(a) partial progress: the queued byte counter decrements when callbacks fire", async () => {
+    mockServer = createMockServer();
+    const backpressureSpy = vi.fn();
+
+    bridge = await startBridgeServer({
+      endpoint: "test-pipe-partial-progress",
+      key,
+      createServer: () => mockServer,
+      onRequest: async (_session: any, header: any) => {
+        return {
+          result: { id: header.id },
+          body: Buffer.alloc(1024 * 1024, 0xbb),
+        };
+      },
+      onBackpressure: backpressureSpy,
+    });
+
+    const [serverSocket, clientSocket] = createDuplexPair();
+    mockServer.emit("connection", serverSocket);
+    await clientHandshake(clientSocket, { key });
+
+    const pendingCallbacks: Array<() => void> = [];
+    serverSocket.write = vi.fn((_chunk: any, cb?: any) => {
+      if (typeof cb === "function") {
+        pendingCallbacks.push(cb);
+      }
+      return false; // Backpressure
+    }) as any;
+
+    // Send 3 requests (each > 1 MiB, total ~3 MiB < 4 MiB maxQueuedBytes)
+    for (let id = 1; id <= 3; id++) {
+      clientSocket.write(encodeFrame({ t: "req", id, method: "test.data" }));
+    }
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(serverSocket.destroyed).toBe(false);
+    expect(pendingCallbacks).toHaveLength(3);
+
+    // Fire first 2 callbacks (partial progress: frees ~2 MiB from queued bytes counter).
+    const cb1 = pendingCallbacks.shift()!;
+    const cb2 = pendingCallbacks.shift()!;
+    cb1();
+    cb2();
+
+    // Now send 2 more 1 MiB requests. Total sent across test is ~5 MiB,
+    // but current queued is ~3 MiB <= 4 MiB because counter decremented.
+    for (let id = 4; id <= 5; id++) {
+      clientSocket.write(encodeFrame({ t: "req", id, method: "test.data" }));
+    }
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Must NOT be destroyed
+    expect(serverSocket.destroyed).toBe(false);
+    expect(backpressureSpy).not.toHaveBeenCalled();
+  });
+
+  // Mutation caught (b): omitting socket.pause() on false return or socket.resume() on drain
+  it("(b) pause reading when write returns false and resume on 'drain', repeated drain cycles keep the connection alive", async () => {
+    mockServer = createMockServer();
+    const backpressureSpy = vi.fn();
+    let handledCount = 0;
+
+    bridge = await startBridgeServer({
+      endpoint: "test-pipe-pause-resume",
+      key,
+      createServer: () => mockServer,
+      onRequest: async (_session: any, header: any) => {
+        handledCount++;
+        return { result: { echo: header.id } };
+      },
+      onBackpressure: backpressureSpy,
+    });
+
+    const [serverSocket, clientSocket] = createDuplexPair();
+    mockServer.emit("connection", serverSocket);
+    await clientHandshake(clientSocket, { key });
+
+    const pauseSpy = vi.spyOn(serverSocket, "pause");
+    const resumeSpy = vi.spyOn(serverSocket, "resume");
+
+    let writeCb: (() => void) | null = null;
+    serverSocket.write = vi.fn((_chunk: any, cb?: any) => {
+      writeCb = cb;
+      return false;
+    }) as any;
+
+    // Cycle 1: send request 1 -> write returns false -> pause() called
+    clientSocket.write(encodeFrame({ t: "req", id: 1, method: "test.pause" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+    expect(handledCount).toBe(1);
+
+    // While paused, send request 2: must be queued into pausedFrames and not handled yet
+    clientSocket.write(encodeFrame({ t: "req", id: 2, method: "test.pause" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(handledCount).toBe(1);
+
+    // Drain cycle 1: fire callback and emit drain
+    if (writeCb) (writeCb as () => void)();
+    serverSocket.emit("drain");
+
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 50));
+    // Request 2 should now have been processed
+    expect(handledCount).toBe(2);
+
+    // Cycle 2: request 2 write returned false -> pause() called again
+    expect(pauseSpy).toHaveBeenCalledTimes(2);
+
+    // Drain cycle 2: fire callback and emit drain
+    if (writeCb) (writeCb as () => void)();
+    serverSocket.emit("drain");
+    expect(resumeSpy).toHaveBeenCalledTimes(2);
+
+    // Connection remains alive across repeated drain cycles
+    expect(serverSocket.destroyed).toBe(false);
+    expect(backpressureSpy).not.toHaveBeenCalled();
+  });
+
+  // Mutation caught (c): omitting clearTimeout(drainTimer) on drain or close
+  it("(c) the 10 s no-drain deadline timer is cancelled on drain and on close (use fake timers; assert no timer remains)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockServer = createMockServer();
+
+      bridge = await startBridgeServer({
+        endpoint: "test-pipe-timer-cancel",
+        key,
+        createServer: () => mockServer,
+        onRequest: async () => ({ result: { ok: true } }),
+      });
+
+      const [serverSocket, clientSocket] = createDuplexPair();
+      mockServer.emit("connection", serverSocket);
+      await clientHandshake(clientSocket, { key });
+
+      serverSocket.write = vi.fn((_chunk: any, _cb?: any) => false) as any;
+
+      // Part 1: drain cancels deadline timer
+      clientSocket.write(encodeFrame({ t: "req", id: 1, method: "test.timer" }));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      serverSocket.emit("drain");
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Part 2: close cancels deadline timer
+      clientSocket.write(encodeFrame({ t: "req", id: 2, method: "test.timer" }));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      serverSocket.emit("close");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Mutation caught (d): accumulating drain timers across requests instead of resetting
+  it("(d) a slow-but-draining client is never destroyed", async () => {
+    vi.useFakeTimers();
+    try {
+      mockServer = createMockServer();
+      const backpressureSpy = vi.fn();
+
+      bridge = await startBridgeServer({
+        endpoint: "test-pipe-slow-client",
+        key,
+        createServer: () => mockServer,
+        onRequest: async (_session: any, header: any) => ({ result: { id: header.id } }),
+        onBackpressure: backpressureSpy,
+      });
+
+      const [serverSocket, clientSocket] = createDuplexPair();
+      mockServer.emit("connection", serverSocket);
+      await clientHandshake(clientSocket, { key });
+
+      let currentCb: (() => void) | null = null;
+      serverSocket.write = vi.fn((_chunk: any, cb?: any) => {
+        currentCb = cb;
+        return false;
+      }) as any;
+
+      // 4 cycles of 6 seconds each = 24 seconds total elapsed time
+      for (let i = 1; i <= 4; i++) {
+        clientSocket.write(encodeFrame({ t: "req", id: i, method: "test.slow" }));
+        await vi.advanceTimersByTimeAsync(50);
+
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(serverSocket.destroyed).toBe(false);
+
+        if (currentCb) (currentCb as () => void)();
+        serverSocket.emit("drain");
+      }
+
+      expect(serverSocket.destroyed).toBe(false);
+      expect(backpressureSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Mutation caught (e): omitting maxQueuedBytes check
+  it("(e) exceeding the 4 MiB bound destroys", async () => {
+    mockServer = createMockServer();
+    const backpressureSpy = vi.fn();
+
+    bridge = await startBridgeServer({
+      endpoint: "test-pipe-4mib-bound",
+      key,
+      maxQueuedBytes: 4 * 1024 * 1024,
+      createServer: () => mockServer,
+      onRequest: async (_session: any, header: any) => {
+        return {
+          result: { id: header.id },
+          body: Buffer.alloc(1024 * 1024, 0xcc),
+        };
+      },
+      onBackpressure: backpressureSpy,
+    });
+
+    const [serverSocket, clientSocket] = createDuplexPair();
+    mockServer.emit("connection", serverSocket);
+    await clientHandshake(clientSocket, { key });
+
+    serverSocket.write = vi.fn((_chunk: any, _cb?: any) => false) as any;
+
+    // Send 5 requests (each > 1 MiB, total > 5 MiB > 4 MiB)
+    for (let id = 1; id <= 5; id++) {
+      clientSocket.write(encodeFrame({ t: "req", id, method: "test.overflow" }));
+    }
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(serverSocket.destroyed).toBe(true);
+    expect(backpressureSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "buffer_overflow" })
+    );
+  });
 });

@@ -258,29 +258,20 @@ async function placementStillValid(fs, dir, targetPath) {
   }
 }
 
-function isDecisionEqual(a, b) {
-  if (!a || !b) return false;
-  if (a.reviewId !== b.reviewId) return false;
-  if (a.receiptDigest !== b.receiptDigest) return false;
-  if (a.decision !== b.decision) return false;
-  if ((a.comment ?? "") !== (b.comment ?? "")) return false;
-  if (a.decidedAt !== b.decidedAt) return false;
-  if (a.verifiedAt !== b.verifiedAt) return false;
-
-  if (!Array.isArray(a.files) || !Array.isArray(b.files)) return false;
-  if (a.files.length !== b.files.length) return false;
-
-  for (let i = 0; i < a.files.length; i++) {
-    const af = a.files[i];
-    const bf = b.files[i];
-    if (!af || !bf) return false;
-    if (af.path !== bf.path) return false;
-    if (af.expectedSha256 !== bf.expectedSha256) return false;
-    if ((af.observedSha256 ?? null) !== (bf.observedSha256 ?? null)) return false;
-    if (af.state !== bf.state) return false;
+export function canonicalJson(obj) {
+  if (obj === null || typeof obj !== "object") {
+    return JSON.stringify(obj);
   }
+  if (Array.isArray(obj)) {
+    return "[" + obj.map((x) => canonicalJson(x === undefined ? null : x)).join(",") + "]";
+  }
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+}
 
-  return true;
+export function isDecisionEqual(a, b) {
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  return canonicalJson(a) === canonicalJson(b);
 }
 
 /**
@@ -346,22 +337,18 @@ export async function writeDecisionNextToReceipt(receiptPath, decision, { fs = d
       return false;
     }
 
-    if (outcomeOut) {
-      const validation = await validateDecision(existing);
-      if (!validation.ok) {
-        outcomeOut.note = "sidecar_conflict";
-        return false;
-      }
-
-      if (!isDecisionEqual(validation.decision, decision)) {
-        outcomeOut.note = "sidecar_conflict";
-        return false;
-      }
-
-      return true;
+    const validation = await validateDecision(existing);
+    if (!validation.ok) {
+      if (outcomeOut) outcomeOut.note = "sidecar_conflict";
+      return false;
     }
 
-    return Boolean(existing) && existing.reviewId === decision.reviewId;
+    if (!isDecisionEqual(validation.decision, decision)) {
+      if (outcomeOut) outcomeOut.note = "sidecar_conflict";
+      return false;
+    }
+
+    return true;
   } catch {
     return false;
   }

@@ -220,8 +220,12 @@ describe("review hardening (P14b-1b)", () => {
     it("reports done when the same review's decision already won the race", async () => {
       const receiptPath = await receiptIn(testDir);
       const target = `${receiptPath}.decision.json`;
-      const same = makeDecision("cccccccccccccccccccccccccccccccc", { comment: "first writer" });
-      const ok = await writeDecisionNextToReceipt(receiptPath, makeDecision("cccccccccccccccccccccccccccccccc", { comment: "second" }), {
+      const SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const same = {
+        ...makeDecision("cccccccccccccccccccccccccccccccc", { comment: "first writer" }),
+        files: [{ path: path.join(testDir, "a.txt"), expectedSha256: SHA, observedSha256: SHA, state: "unchanged" }],
+      };
+      const ok = await writeDecisionNextToReceipt(receiptPath, same, {
         fs: racingFs(target, same),
       });
       expect(ok).toBe(true);
