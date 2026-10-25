@@ -1,7 +1,8 @@
 // UniView icon pipeline.
 //
-// The ONLY source artwork is assets/branding/uniview-logo-source.png (the CEO-supplied logo, kept byte-identical).
-// Nothing is redrawn or restyled: every output is a resampled copy of that image, placed on a canvas.
+// The ONLY source artwork is assets/branding/uniview-logo.png: the CEO-supplied logo with its flattened black frame
+// removed by scripts/clean-logo.mjs (the untouched original is kept as uniview-logo-source.png). Nothing is redrawn or
+// restyled: every output is a resampled copy of that image, placed on a canvas.
 //
 // Resampling is done by headless Chromium (Playwright, no browser download: the cache is read from
 // PLAYWRIGHT_BROWSERS_PATH, default I:\AES\Data\ms-playwright). If Chromium cannot be launched, the same
@@ -21,7 +22,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT = resolve(__dirname, "..");
 
-export const MASTER_PATH = "assets/branding/uniview-logo-source.png";
+export const SOURCE_PATH = "assets/branding/uniview-logo-source.png";
+export const MASTER_PATH = "assets/branding/uniview-logo.png";
 export const DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "I:\\AES\\Data\\ms-playwright";
 
 const RES = "android/app/src/main/res";
@@ -160,7 +162,7 @@ export function buildPlan() {
   addSquare("public/favicon.png", 64);
   addSquare("src/ui/assets/logo.png", 256);
 
-  // Store icons: opaque (PNG colour type 2), logo composited on white.
+  // Store icons: opaque (PNG colour type 2). The (white) logo fills the whole square, composited on white: full-bleed.
   addSquare("assets/branding/play-store-512.png", 512, { opaque: true, white: true });
   addSquare("ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png", 1024, { opaque: true, white: true });
 
@@ -265,7 +267,7 @@ export async function renderInPage(masterB64, job) {
 // ---------------------------------------------------------------------------------------------
 
 async function renderWithPlaywright(master, jobs) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH ||= DEFAULT_PLAYWRIGHT_BROWSERS_PATH;
+  if (!process.env.PLAYWRIGHT_BROWSERS_PATH || !existsSync(process.env.PLAYWRIGHT_BROWSERS_PATH)) process.env.PLAYWRIGHT_BROWSERS_PATH = DEFAULT_PLAYWRIGHT_BROWSERS_PATH;
   const { chromium } = await import("@playwright/test");
   const browser = await chromium.launch({ headless: true });
   try {
@@ -342,7 +344,7 @@ function writeAsset(relPath, buffer) {
 
 export async function generateAll() {
   const masterFile = join(ROOT, MASTER_PATH);
-  if (!existsSync(masterFile)) throw new Error(`Master logo missing: ${MASTER_PATH}`);
+  if (!existsSync(masterFile)) throw new Error(`Clean master logo missing: ${MASTER_PATH} (run node scripts/clean-logo.mjs)`);
   const master = readFileSync(masterFile);
   console.log(`Generating UniView brand assets from ${MASTER_PATH} ...`);
 

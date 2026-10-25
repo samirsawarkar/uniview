@@ -14,6 +14,7 @@ export interface IconPlan {
   ico: { path: string; jobs: string[] };
 }
 
+export declare const SOURCE_PATH: string;
 export declare const MASTER_PATH: string;
 export declare const DEFAULT_PLAYWRIGHT_BROWSERS_PATH: string;
 export declare const ICO_SIZES: number[];

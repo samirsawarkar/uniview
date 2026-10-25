@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { cleanLogo, decodePng } from "../../scripts/clean-logo.mjs";
+import { encodePng } from "../../scripts/generate-icons.mjs";
 
 // Always-on tests only READ the committed assets. Regeneration lives in branding-generate.test.ts
 // (UNIVIEW_GENERATE_ICONS=1) or `node scripts/generate-icons.mjs`.
 
 const ROOT = resolve(".");
-const MASTER_REL = "assets/branding/uniview-logo-source.png";
-const MASTER_SHA256 = "10eb69956383c4bc78cf00eb4dda95710a7cf1a7417f201ff4fdca1bb6203e3a";
+const SOURCE_REL = "assets/branding/uniview-logo-source.png";
+const MASTER_REL = "assets/branding/uniview-logo.png";
+const SOURCE_SHA256 = "10eb69956383c4bc78cf00eb4dda95710a7cf1a7417f201ff4fdca1bb6203e3a";
+const MASTER_SHA256 = "99686e77198e499ac09cf92d30b076629038d4fb4778ad20f47cd3e4fcd1165e";
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const RES = "android/app/src/main/res";
 
@@ -91,6 +95,9 @@ function collectImages(dir: string): string[] {
   return results;
 }
 
+const corners = (w: number, h: number): Array<[number, number]> => [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]];
+const byteAt = (b: Buffer, i: number): number => b[i] ?? 0;
+
 const sq = (n: number) => ({ width: n, height: n });
 
 const REQUIRED_PNG_DIMENSIONS: Record<string, { width: number; height: number }> = {
@@ -135,18 +142,36 @@ const REQUIRED_PNG_DIMENSIONS: Record<string, { width: number; height: number }>
 const OPAQUE_PNGS = ["assets/branding/play-store-512.png", "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"];
 
 describe("UniView logo: the CEO-supplied image is the only logo", () => {
-  it("the master logo exists, is a 135x133 PNG, and its hash equals the one recorded in the README", () => {
-    const full = join(ROOT, MASTER_REL);
-    expect(existsSync(full)).toBe(true);
-    const buf = readFileSync(full);
+  it("the original supplied logo is kept byte-identical and its hash equals the one recorded in the README", () => {
+    const buf = readFileSync(join(ROOT, SOURCE_REL));
     expect(readPngDimensions(buf)).toEqual({ width: 135, height: 133 });
+    const recorded = readFileSync(join(ROOT, "assets/branding/README.md"), "utf8").match(/Source SHA-256:\s*`([0-9a-f]{64})`/);
+    expect(recorded, "README must record the source SHA-256").not.toBeNull();
+    expect(sha256(buf)).toBe(recorded![1]);
+    expect(sha256(buf)).toBe(SOURCE_SHA256);
+  });
+
+  it("the clean master is a square RGBA PNG whose hash equals the README, with a transparent background", () => {
+    const buf = readFileSync(join(ROOT, MASTER_REL));
+    const header = readPngHeader(buf);
+    expect(header.width).toBe(header.height);
+    expect(header.colorType).toBe(6);
     const recorded = readFileSync(join(ROOT, "assets/branding/README.md"), "utf8").match(/Master SHA-256:\s*`([0-9a-f]{64})`/);
     expect(recorded, "README must record the master SHA-256").not.toBeNull();
     expect(sha256(buf)).toBe(recorded![1]);
     expect(sha256(buf)).toBe(MASTER_SHA256);
+    const img = decodePng(buf);
+    for (const [x, y] of corners(img.width, img.height)) {
+      expect(byteAt(img.rgba, (y * img.width + x) * 4 + 3), `corner ${x},${y} alpha`).toBe(0);
+    }
   });
 
-  it("assets/branding contains only the master, README, ledgers and the generated Play Store icon", () => {
+  it("the clean master is exactly what scripts/clean-logo.mjs derives from the original (reproducible)", () => {
+    const clean = cleanLogo(decodePng(readFileSync(join(ROOT, SOURCE_REL))));
+    expect(sha256(encodePng(clean.width, clean.height, clean.rgba, 6))).toBe(MASTER_SHA256);
+  });
+
+  it("assets/branding contains only the two masters, README, ledgers and the generated Play Store icon", () => {
     expect(readdirSync(join(ROOT, "assets/branding")).sort()).toEqual(
       [
         "README.md",
@@ -154,6 +179,7 @@ describe("UniView logo: the CEO-supplied image is the only logo", () => {
         "removed-capacitor-assets.txt",
         "removed-placeholder-assets.txt",
         "uniview-logo-source.png",
+        "uniview-logo.png",
       ].sort()
     );
   });
@@ -246,6 +272,64 @@ describe("UniView logo: the CEO-supplied image is the only logo", () => {
       if (capacitor.has(h)) violations.push({ file: imgPath, ledger: "capacitor" });
     }
     expect(violations).toEqual([]);
+  });
+
+  it("transparent-capable outputs have transparent corners and no dark opaque pixel within 3 px of any edge (no flattened black frame)", () => {
+    const transparentOutputs = [
+      "build/icon.png",
+      "build/icon-1024.png",
+      "public/icon.png",
+      "public/favicon.png",
+      "src/ui/assets/logo.png",
+      ...Object.keys(REQUIRED_PNG_DIMENSIONS).filter((p) => /ic_launcher/.test(p)),
+    ];
+    expect(transparentOutputs.length).toBe(20);
+    for (const rel of transparentOutputs) {
+      const img = decodePng(readFileSync(join(ROOT, rel)));
+      const { width: w, height: h, rgba } = img;
+      const a = (x: number, y: number) => byteAt(rgba, (y * w + x) * 4 + 3);
+      for (const [x, y] of corners(w, h)) {
+        // alpha 0 up to resampling noise (an anti-aliased corner of a small icon can land on alpha 1..8: invisible)
+        expect(a(x, y), `${rel} corner ${x},${y} must be transparent`).toBeLessThanOrEqual(8);
+      }
+      const dark: string[] = [];
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (x >= 3 && y >= 3 && x < w - 3 && y < h - 3) continue;
+          const i = (y * w + x) * 4;
+          const lum = 0.299 * byteAt(rgba, i) + 0.587 * byteAt(rgba, i + 1) + 0.114 * byteAt(rgba, i + 2);
+          if (lum < 60 && byteAt(rgba, i + 3) > 200) dark.push(`${x},${y}`);
+        }
+      }
+      expect(dark.slice(0, 5), `${rel} has dark opaque pixels near its edges`).toEqual([]);
+    }
+  });
+
+  it("opaque store icons (iOS 1024, Play 512) are full-bleed white at all four corners, not black", () => {
+    for (const rel of OPAQUE_PNGS) {
+      const { width: w, height: h, rgba } = decodePng(readFileSync(join(ROOT, rel)));
+      for (const [x, y] of corners(w, h)) {
+        const i = (y * w + x) * 4;
+        expect([byteAt(rgba, i), byteAt(rgba, i + 1), byteAt(rgba, i + 2)], `${rel} corner ${x},${y}`).toEqual([255, 255, 255]);
+      }
+    }
+  });
+
+  it("splash images are plain white at the corners and the logo (blue bars) sits in the centre", () => {
+    for (const rel of Object.keys(REQUIRED_PNG_DIMENSIONS).filter((p) => /splash/.test(p))) {
+      const { width: w, height: h, rgba } = decodePng(readFileSync(join(ROOT, rel)));
+      const px = (x: number, y: number): number[] => [byteAt(rgba, (y * w + x) * 4), byteAt(rgba, (y * w + x) * 4 + 1), byteAt(rgba, (y * w + x) * 4 + 2)];
+      expect(px(0, 0), rel).toEqual([255, 255, 255]);
+      expect(px(w - 1, h - 1), rel).toEqual([255, 255, 255]);
+      let blue = 0;
+      for (let y = Math.floor(h / 2) - 40; y < Math.floor(h / 2) + 40; y++) {
+        for (let x = Math.floor(w / 2) - 40; x < Math.floor(w / 2) + 40; x++) {
+          const [r = 0, , b = 0] = px(x, y);
+          if (b > 200 && r < 160) blue++;
+        }
+      }
+      expect(blue, `${rel} should show the blue bars at its centre`).toBeGreaterThan(50);
+    }
   });
 
   it("the in-app logo is a 256 px resampled copy of the master, not the old placeholder", () => {
