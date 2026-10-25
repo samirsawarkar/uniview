@@ -374,6 +374,10 @@ export async function startBridgeServer({
     socket.once("close", fireSessionClosed);
 
     let queuedOutboundBytes = 0;
+    Object.defineProperty(socket, "queuedOutboundBytes", {
+      get: () => queuedOutboundBytes,
+      configurable: true,
+    });
     let isPaused = false;
     let isTerminating = false;
     let drainTimer = null;

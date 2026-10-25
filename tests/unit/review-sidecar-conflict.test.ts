@@ -229,4 +229,38 @@ describe("review-sidecar-conflict", () => {
     expect(storeCopy).not.toBeNull();
     expect(storeCopy.persisted).toBe(false);
   });
+
+  // Mutation caught: comparing candidate directly against canonicalJson without JSON serialization roundtrip
+  it("candidate with undefined/function/symbol properties matching serialized sidecar does not false-conflict; real difference conflicts", async () => {
+    const receiptPath = path.join(testDir, "sidecar-undefined-check.receipt.json");
+    await fs.writeFile(receiptPath, "{}");
+    const targetPath = `${receiptPath}.decision.json`;
+
+    const realDecision = makeDecision("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "approved");
+    await fs.writeFile(targetPath, JSON.stringify(realDecision, null, 2), "utf8");
+
+    // Candidate has unused: undefined and function/symbol properties
+    const candidateWithExtras = {
+      ...realDecision,
+      unused: undefined,
+      method: () => {},
+      [Symbol("ignore")]: 42,
+    };
+
+    // Direction 1: candidate has extra undefined/functions/symbols vs clean on-disk sidecar -> matches
+    const outcome1: { note?: string } = {};
+    const ok1 = await writeDecisionNextToReceipt(receiptPath, candidateWithExtras, { fs, outcome: outcome1 });
+    expect(ok1).toBe(true);
+    expect(outcome1.note).toBeUndefined();
+
+    // Direction 2: real difference (e.g. comment or decision) still conflicts
+    const conflictingCandidate = {
+      ...candidateWithExtras,
+      comment: "different comment",
+    };
+    const outcome2: { note?: string } = {};
+    const ok2 = await writeDecisionNextToReceipt(receiptPath, conflictingCandidate, { fs, outcome: outcome2 });
+    expect(ok2).toBe(false);
+    expect(outcome2.note).toBe("sidecar_conflict");
+  });
 });

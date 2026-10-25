@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 
 // @ts-expect-error plain ESM module without types
-import { writeDecisionNextToReceipt } from "../../electron/lib/review-store.mjs";
+import { writeDecisionNextToReceipt, isDecisionEqual } from "../../electron/lib/review-store.mjs";
 
 function getTempBaseDir(): string {
   if (process.platform === "win32") {
@@ -82,5 +82,73 @@ describe("review-store writeDecisionNextToReceipt exported helper without outcom
     // Call writeDecisionNextToReceipt WITHOUT outcome
     const result = await writeDecisionNextToReceipt(receiptPath, candidate, { fs });
     expect(result).toBe(true);
+  });
+
+  // Mutation caught: skipping unconditional schema validation while keeping equality checks
+  // when outcome is omitted (accepting identical but schema-invalid sidecar files).
+  it("rejects identical but schema-invalid existing sidecar when outcome is omitted", async () => {
+    const receiptPath = path.join(testDir, "schema-invalid.receipt.json");
+    await fs.writeFile(receiptPath, "{}");
+    const targetSidecar = `${receiptPath}.decision.json`;
+
+    // Existing sidecar and candidate are IDENTICAL, parseable JSON, but schema-INVALID (wrong decision value)
+    const invalidDecision = makeDecision({
+      decision: "invalid_decision_enum_value",
+    });
+    await fs.writeFile(targetSidecar, JSON.stringify(invalidDecision, null, 2), "utf8");
+
+    // Call writeDecisionNextToReceipt WITHOUT outcome
+    const result = await writeDecisionNextToReceipt(receiptPath, invalidDecision, { fs });
+    expect(result).toBe(false);
+  });
+
+  // Mutation caught: comparing raw candidate object with canonicalJson without roundtripping
+  // through JSON.parse(JSON.stringify(...)), causing undefined/function/symbol properties to falsely conflict.
+  it("accepts candidate with undefined, function, or symbol properties matching serialized sidecar without outcome", async () => {
+    const receiptPath = path.join(testDir, "serialized-equality.receipt.json");
+    await fs.writeFile(receiptPath, "{}");
+    const targetSidecar = `${receiptPath}.decision.json`;
+
+    const baseDecision = makeDecision();
+    await fs.writeFile(targetSidecar, JSON.stringify(baseDecision, null, 2), "utf8");
+
+    // Candidate has extra properties that serialize away in JSON (undefined, function, symbol)
+    const candidateWithExtras = {
+      ...baseDecision,
+      unused: undefined,
+      extraHelper: () => "ignored",
+      [Symbol("meta")]: "hidden",
+    };
+
+    // Must return true because serialized representation matches exactly
+    const result = await writeDecisionNextToReceipt(receiptPath, candidateWithExtras, { fs });
+    expect(result).toBe(true);
+  });
+
+  it("isDecisionEqual tests both directions for undefined/function/symbol properties and real field differences", () => {
+    const base = makeDecision();
+    const withExtras = {
+      ...base,
+      unused: undefined,
+      fn: () => 123,
+      [Symbol("test")]: "val",
+    };
+
+    // Both directions must consider withExtras and base equal (no false conflict)
+    expect(isDecisionEqual(withExtras, base)).toBe(true);
+    expect(isDecisionEqual(base, withExtras)).toBe(true);
+
+    // Key order difference in both directions must be equal
+    const keysReversed = Object.keys(base).reverse().reduce((acc: any, k) => {
+      acc[k] = (base as any)[k];
+      return acc;
+    }, {});
+    expect(isDecisionEqual(keysReversed, base)).toBe(true);
+    expect(isDecisionEqual(base, keysReversed)).toBe(true);
+
+    // Real field differences must conflict in both directions
+    const withDiff = { ...base, comment: "different comment" };
+    expect(isDecisionEqual(withDiff, base)).toBe(false);
+    expect(isDecisionEqual(base, withDiff)).toBe(false);
   });
 });

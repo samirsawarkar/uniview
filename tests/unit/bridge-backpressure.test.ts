@@ -262,6 +262,61 @@ describe("bridge backpressure and outbound byte bounding", () => {
     }
   });
 
+  // Mutation caught: terminal error from decoder exception (malformed frame / bad lengths)
+  // reverting catch branch to socket.end(errorFrame) instead of writeFrame({ terminal: true }),
+  // bypassing bounded writer and drain deadline.
+  it("terminal error from decoder exception routes through bounded writer and destroys non-draining client within deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      mockServer = createMockServer();
+      const backpressureSpy = vi.fn();
+
+      bridge = await startBridgeServer({
+        endpoint: "test-pipe-decoder-exception-drain-timeout",
+        key,
+        createServer: () => mockServer,
+        onRequest: async () => ({ result: { ok: true } }),
+        onBackpressure: backpressureSpy,
+      });
+
+      const [serverSocket, clientSocket] = createDuplexPair();
+      mockServer.emit("connection", serverSocket);
+      await clientHandshake(clientSocket, { key });
+
+      let writtenBytes = 0;
+      serverSocket.write = vi.fn((chunk: any, _cb?: any) => {
+        writtenBytes += chunk?.length ?? chunk?.byteLength ?? 0;
+        // Non-draining client: write returns false and callback never fires
+        return false;
+      }) as any;
+
+      // Send malformed frame header that causes decoder exception (bad JSON)
+      const malformedHeader = Buffer.from("not-valid-json");
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(malformedHeader.length, 0);
+      clientSocket.write(Buffer.concat([lenBuf, malformedHeader]));
+      await vi.advanceTimersByTimeAsync(50);
+
+      // Verify serverSocket.write was called through the bounded writer with the error frame
+      expect(serverSocket.write).toHaveBeenCalled();
+      expect(writtenBytes).toBeGreaterThan(0);
+      expect(serverSocket.destroyed).toBe(false);
+
+      // Advance to 9.9s: still alive within deadline
+      await vi.advanceTimersByTimeAsync(9900);
+      expect(serverSocket.destroyed).toBe(false);
+
+      // Advance past 10s: deadline exceeded, destroyed with drain_timeout
+      await vi.advanceTimersByTimeAsync(100);
+      expect(serverSocket.destroyed).toBe(true);
+      expect(backpressureSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "drain_timeout" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Mutation caught (a): not decrementing queuedOutboundBytes when write callback completes
   it("(a) partial progress: the queued byte counter decrements when callbacks fire", async () => {
     mockServer = createMockServer();
@@ -307,16 +362,38 @@ describe("bridge backpressure and outbound byte bounding", () => {
     cb1();
     cb2();
 
-    // Now send 2 more 1 MiB requests. Total sent across test is ~5 MiB,
-    // but current queued is ~3 MiB <= 4 MiB because counter decremented.
+    // Now send 2 more 1 MiB requests.
+    // While reading is paused, these are buffered in pausedFrames.
     for (let id = 4; id <= 5; id++) {
       clientSocket.write(encodeFrame({ t: "req", id, method: "test.data" }));
     }
+    await new Promise((r) => setTimeout(r, 50));
+
+    // While paused, requests 4-5 have not been processed yet; pendingCallbacks still has only cb3
+    expect(pendingCallbacks).toHaveLength(1);
+
+    // Emit 'drain' to resume reading: reclaimed capacity allows requests 4-5 to be processed
+    serverSocket.emit("drain");
     await new Promise((r) => setTimeout(r, 80));
 
-    // Must NOT be destroyed
+    // Assert the remaining requests 4-5 ARE processed and their responses written (reclaimed capacity).
+    // In mutant (no decrement), queuing responses 4 and 5 pushes queuedOutboundBytes over 4 MiB,
+    // triggering buffer_overflow and destroying serverSocket.
     expect(serverSocket.destroyed).toBe(false);
+    expect(serverSocket.write).toHaveBeenCalledTimes(5);
+    // pendingCallbacks now has cb3 plus the write callbacks for responses 4 and 5
+    expect(pendingCallbacks).toHaveLength(3);
     expect(backpressureSpy).not.toHaveBeenCalled();
+
+    // Complete all remaining write callbacks (cb3, cb4, cb5)
+    while (pendingCallbacks.length > 0) {
+      const cb = pendingCallbacks.shift()!;
+      cb();
+    }
+
+    // Queued-byte counter returns to 0
+    expect((serverSocket as any).queuedOutboundBytes).toBe(0);
+    expect(serverSocket.destroyed).toBe(false);
   });
 
   // Mutation caught (b): omitting socket.pause() on false return or socket.resume() on drain

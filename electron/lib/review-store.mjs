@@ -271,7 +271,13 @@ export function canonicalJson(obj) {
 
 export function isDecisionEqual(a, b) {
   if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
-  return canonicalJson(a) === canonicalJson(b);
+  try {
+    const cleanA = JSON.parse(JSON.stringify(a));
+    const cleanB = JSON.parse(JSON.stringify(b));
+    return canonicalJson(cleanA) === canonicalJson(cleanB);
+  } catch {
+    return false;
+  }
 }
 
 /**
