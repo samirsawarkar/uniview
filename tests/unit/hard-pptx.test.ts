@@ -102,7 +102,7 @@ describe("parsePptx on hard.pptx fixture", () => {
     expect(deep!.fill?.color).toBe("#8B5CF6");
   });
 
-  it("reads chart placeholder graphic frame", () => {
+  it("reads chart placeholder graphic frame (fallback for deferred engine)", () => {
     const chart = s1!.elements.find((e): e is PlaceholderEl => e.type === "placeholder" && e.label === "Chart");
     expect(chart).toBeDefined();
     expect(chart!.x).toBeCloseTo(504);

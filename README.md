@@ -87,13 +87,14 @@ Recorded in Obsidian (`uniview`) and in `.aes/`:
 
 - Shell: Electron + Capacitor behind a ShellBridge, accepted by the CEO (triage `dec-67e7d1c9` TYPE 1, debate `dec-9a21f812` unanimous). **Gate before code signing:** a 3-day Tauri v2 prototype against the same benchmark; migrate only if p50 time-to-first-view improves ≥25% or installer size drops ≥50% with no format regression.
 - Reuse-first scout: `.aes/scout/scout-080e764a.md` (with CTO verification and licence exceptions).
+- Licensing: CEO decision (2026-10-25) confirms V1 ships purely permissive (native OOXML renderer + `emf-converter`); the optional second PowerPoint engine (@aiden0z/pptx-renderer) is deferred to V1.1 as an isolated chunk.
 - Independent reviews: Codex (GPT) and pi (Gemini); the author was Claude.
 
 ## Known limits (V1)
 
 - No editing or annotation; view only.
 - HEIC images are not supported (every permissive decoder bundles LGPL libheif). Old binary .doc/.ppt show recovered text only.
-- Charts in PowerPoint show a labeled placeholder. EMF/WMF pictures use a bounded, offline PNG converter; unsupported or oversized metafiles keep a placeholder.
+- Charts and equations in PowerPoint show a labeled placeholder (the optional second PowerPoint engine is deferred to V1.1 as an isolated chunk). EMF/WMF pictures use a bounded, offline PNG converter; unsupported or oversized metafiles keep a placeholder.
 - Spreadsheet output is limited to 500,000 grid slots across all sheets and 32 Mi UTF-16 code units of text; larger workbooks offer the fallback view.
 - Password-protected PDFs are not supported yet.
 - Android and iOS runtime behavior has not been verified on a device or emulator yet (the APK was inspected statically; iOS needs a Mac or CI).

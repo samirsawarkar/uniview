@@ -545,6 +545,15 @@ function readTextBody(txBody: Element | undefined, ctx: Ctx, levels: ListStyle[]
         });
       } else if (r.localName === "br") {
         runs.push({ text: "\n", isBreak: true, sizePt: (style.sizePt ?? 18) * fontScale });
+      } else if (r.localName === "oMath" || r.localName === "oMathPara") {
+        const mathText = descendants(r, "t").map((t) => t.textContent ?? "").join("");
+        if (mathText) {
+          runs.push({
+            text: mathText,
+            sizePt: (style.sizePt ?? 18) * fontScale,
+            bold: style.bold, italic: style.italic ?? true, color: style.color, font: style.font ?? "Cambria Math",
+          });
+        }
       }
     }
     const endProps = merge(style, readRunProps(kid(p, "endParaRPr"), ctx));
@@ -834,7 +843,14 @@ function readGraphicFrame(frame: Element, scope: SlideScope, t: Transform, out: 
   if (uri.includes("ole")) {
     const fallbackPic = descendants(frame, "pic")[0];
     if (fallbackPic) return readPicture(fallbackPic, scope, t, out);
-    return void out.push({ type: "placeholder", ...box, label: "Embedded object" });
+    const oleObj = descendants(frame, "oleObj")[0];
+    const progId = attr(oleObj, "progId") ?? "";
+    const name = attr(kid(kid(frame, "nvGraphicFramePr"), "cNvPr"), "name") ?? "";
+    const isEquation = /equation|mathtype/i.test(progId) || /equation|mathtype/i.test(name);
+    return void out.push({ type: "placeholder", ...box, label: isEquation ? "Equation" : "Embedded object" });
+  }
+  if (uri.includes("math") || uri.includes("equation")) {
+    return void out.push({ type: "placeholder", ...box, label: "Equation" });
   }
   out.push({ type: "placeholder", ...box, label: "Object" });
 }

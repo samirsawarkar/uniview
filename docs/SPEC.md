@@ -65,7 +65,7 @@ Order: magic bytes, then container inspection (ZIP: `[Content_Types].xml` parts 
 | video / audio | ftyp, EBML, OGG, RIFF WAVE, ID3, fLaC, extension | HTML5 media (OS decoders); clear message if a codec is unsupported |
 | docx | ZIP + `word/document.xml` | docx-preview (Apache-2.0) |
 | xlsx / xls / ods / csv | ZIP + `xl/workbook.xml`, CFB + Workbook stream, `.csv`/`.tsv` | SheetJS CE 0.20.3, virtualized grid, sheet tabs |
-| pptx | ZIP + `ppt/presentation.xml` | UniView's own OOXML renderer (shapes, text, images, tables, groups, placeholders inherited from layout and master), embedded thumbnail first |
+| pptx | ZIP + `ppt/presentation.xml` | UniView's own OOXML renderer (shapes, text, images, tables, groups, placeholders inherited from layout and master), embedded thumbnail first. Pure permissive; the optional second PowerPoint engine is deferred to V1.1 as an isolated chunk. |
 | epub | ZIP + `mimetype` = `application/epub+zip` | UniView's own reader: spine, TOC, sanitized chapters in a script-less sandboxed iframe |
 | zip | ZIP otherwise | entry list; any entry opens in a new tab |
 | markdown | `.md` family | marked + DOMPurify |

@@ -26,6 +26,6 @@ UniView bundles the following open-source software. All are under permissive lic
 
 UniView elects the permissive option for each dual-licensed component as recorded above.
 
-The distributed `licenses/emf-converter/` directory contains the converter's Apache-2.0 licence and its complete bundled third-party notices, including jpeg-js (BSD), gifuct-js, js-binary-schema-parser, UTIF and pako (MIT), and the Independent JPEG Group notices. The optional second PPTX engine is not installed; its bundled MPL-2.0 dependency is awaiting a separate licence-policy decision.
+The distributed `licenses/emf-converter/` directory contains the converter's Apache-2.0 licence and its complete bundled third-party notices, including jpeg-js (BSD), gifuct-js, js-binary-schema-parser, UTIF and pako (MIT), and the Independent JPEG Group notices. The optional second PowerPoint engine (@aiden0z/pptx-renderer, which bundles the MPL-2.0 component mtx-decompressor) is NOT bundled in V1; per CEO decision (2026-10-25), it is deferred to V1.1 as an isolated chunk. No copyleft or MPL-2.0 software is bundled in the shipped V1 build.
 
 Development-only tools (not shipped): Vite, Vitest, Playwright, TypeScript, jsdom, electron-builder, @types packages. All MIT or Apache-2.0; see `.aes/scout/scout-080e764a.md` for the verification table.
