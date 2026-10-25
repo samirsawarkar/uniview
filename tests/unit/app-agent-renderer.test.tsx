@@ -9,6 +9,13 @@ import type { Detection, FileSource } from "../../src/core/types";
 import type { Receipt } from "../../shared/receipt.d.mts";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+if (typeof (globalThis as any).ResizeObserver === "undefined") {
+  (globalThis as any).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
 
 function makeViewSpecSource(name: string, title: string, headingText: string): FileSource {
   const spec = {
@@ -363,6 +370,236 @@ describe("Packet P17c-3: App wiring and agent renderer findings", () => {
       const tabTitleAfter = container?.querySelector(".tab-title")?.textContent;
       expect(tabTitleAfter).toBe("New tab");
       expect(fakeElectron.tabClosed).toHaveBeenCalledWith("scope-close-target");
+    } finally {
+      if (prevUniview) {
+        (window as any).uniview = prevUniview;
+      } else {
+        delete (window as any).uniview;
+      }
+    }
+  });
+
+  // Finding 1: user file text -> png after Reload shows the image viewer; agent-supplied detection still honoured
+  it("Finding 1: user file text -> png after Reload shows the image viewer; agent-supplied detection still honoured", async () => {
+    // Mutation: App.tsx reloadActiveTab preserving t.detection for user files, or TabView treating non-agent propDetection as authoritative
+    let openFilesCb: ((files: any[]) => void) | null = null;
+    let isPng = false;
+
+    const textContent = new TextEncoder().encode("Hello extensionless plain text");
+    const pngHeader = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+    ]);
+
+    const fakeElectron = {
+      onOpenFiles: vi.fn((cb) => {
+        openFilesCb = cb;
+        return () => {};
+      }),
+      openPath: vi.fn(async (p: string) => ({
+        token: isPng ? "tok-png" : "tok-text",
+        name: "extensionless_note",
+        path: p,
+        size: isPng ? pngHeader.byteLength : textContent.byteLength,
+      })),
+      readRange: vi.fn(async (token: string, start: number, end: number) => {
+        const bytes = token === "tok-png" || isPng ? pngHeader : textContent;
+        return bytes.subarray(start, end).buffer.slice(0);
+      }),
+      tabClosed: vi.fn(),
+    };
+
+    const prevUniview = (window as any).uniview;
+    (window as any).uniview = fakeElectron;
+
+    try {
+      await act(async () => {
+        root!.render(<App />);
+      });
+
+      // 1. Open extensionless text file
+      await act(async () => {
+        openFilesCb?.([
+          {
+            token: "tok-text",
+            name: "extensionless_note",
+            path: "/path/to/extensionless_note",
+            size: textContent.byteLength,
+          },
+        ]);
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      // Initially renders text viewer
+      expect(container?.querySelector(".text-viewer")).not.toBeNull();
+      expect(container?.querySelector(".image-viewer")).toBeNull();
+
+      // 2. Now replace file content with PNG bytes and trigger reload
+      isPng = true;
+      await act(async () => {
+        await (window as any).__univiewReloadActiveTab?.();
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 80));
+      });
+
+      // After reload, detection re-runs on fresh source and renders image viewer!
+      expect(container?.querySelector(".image-viewer")).not.toBeNull();
+      expect(container?.querySelector(".text-viewer")).toBeNull();
+
+      // 3. Verify agent-supplied detection is still honoured across reloads when content kind hasn't changed
+      const specSource = makeViewSpecSource("Quarterly report", "Quarterly report", "Q3 Performance");
+      const agentDetection: Detection = {
+        kind: "viewspec",
+        label: "View Spec",
+        ext: ".viewspec.json",
+        by: "container",
+      };
+
+      await act(async () => {
+        root!.render(
+          <TabView
+            source={specSource}
+            detection={agentDetection}
+            onDetected={() => {}}
+            onReady={() => {}}
+            onOpen={() => {}}
+          />
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      expect(container?.querySelector(".agent-content")).not.toBeNull();
+      expect(container?.querySelector(".vs-title")?.textContent).toBe("Quarterly report");
+      expect(container?.querySelector(".json-viewer")).toBeNull();
+    } finally {
+      if (prevUniview) {
+        (window as any).uniview = prevUniview;
+      } else {
+        delete (window as any).uniview;
+      }
+    }
+  });
+
+  // Finding 2: agent review fileRefs resolve via window.uniview.viewGrant: declared file becomes openable; undeclared refused
+  it("Finding 2: ReviewTab fileRef to declared file becomes openable via window.uniview.viewGrant; undeclared path is refused", async () => {
+    // Mutation: missing window.uniview.viewGrant wiring in ReviewTab or resolver leaving declared file disconnected ('missing')
+    const openedSources: FileSource[] = [];
+    const mockViewGrant = vi.fn(async (scopeId: string, filePath: string) => {
+      if (scopeId === "scope-review-declared" && filePath === "/workspace/declared.txt") {
+        return {
+          token: "tok-grant-declared",
+          name: "declared.txt",
+          path: "/workspace/declared.txt",
+          size: 42,
+          scopeId,
+        };
+      }
+      throw new Error("bad_path");
+    });
+
+    const mockUniview = {
+      viewGrant: mockViewGrant,
+      readRange: vi.fn(async () => new ArrayBuffer(42)),
+      tabClosed: vi.fn(),
+    };
+    const prevUniview = (window as any).uniview;
+    (window as any).uniview = mockUniview;
+
+    try {
+      const sampleReceipt: Receipt = {
+        uniview: "receipt/1",
+        createdAt: "2026-10-25T12:00:00Z",
+        agent: { name: "AuditAgent", model: "audit-v1" },
+        task: "Check file reference resolution",
+        summary: "Completed review.",
+        files: [
+          {
+            path: "/workspace/declared.txt",
+            relPath: "declared.txt",
+            sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+            role: "modified",
+          },
+        ],
+        view: "/workspace/view.uview.json",
+      };
+
+      const initialReview = {
+        scopeId: "scope-review-declared",
+        reviewId: "rev-101",
+        receipt: sampleReceipt,
+        files: [],
+        view: {
+          spec: {
+            uniview: "view/1",
+            title: "Declared File Ref View",
+            body: [
+              { type: "fileRef", path: "/workspace/declared.txt", label: "declared.txt" },
+              { type: "fileRef", path: "/workspace/undeclared.txt", label: "undeclared.txt" },
+            ],
+          },
+        },
+      };
+
+      const receiptJsonBytes = new TextEncoder().encode(JSON.stringify(sampleReceipt));
+      const source: FileSource = {
+        id: "review-tab-test",
+        name: "AuditAgent.receipt.json",
+        size: receiptJsonBytes.byteLength,
+        readAll: async () => receiptJsonBytes.buffer.slice(0),
+        readRange: async (start, end) => receiptJsonBytes.buffer.slice(start, end),
+        url: async () => "",
+        release: () => {},
+      };
+
+      await act(async () => {
+        root!.render(
+          <ReviewTab
+            source={source}
+            active={true}
+            initialReview={initialReview}
+            onOpen={(files) => {
+              openedSources.push(...files);
+            }}
+          />
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 80));
+      });
+
+      // Two fileRef buttons in the view section
+      const fileRefButtons = container?.querySelectorAll(".vs-fileref-placeholder .vs-fileref-btn");
+      expect(fileRefButtons?.length).toBe(2);
+
+      const buttons = Array.from(fileRefButtons!) as HTMLButtonElement[];
+      const declaredBtn = buttons[0]!;
+      const undeclaredBtn = buttons[1]!;
+
+      // Declared file reference must be openable (not disabled)
+      expect(declaredBtn.disabled).toBe(false);
+      expect(declaredBtn.classList.contains("disabled")).toBe(false);
+
+      // Clicking Open calls onOpen with the granted source
+      await act(async () => {
+        declaredBtn.click();
+      });
+      expect(openedSources).toHaveLength(1);
+      expect(openedSources[0]!.name).toBe("declared.txt");
+      expect(openedSources[0]!.size).toBe(42);
+
+      // Undeclared path must be refused ('missing') and Open stays disabled
+      expect(undeclaredBtn.disabled).toBe(true);
+      expect(undeclaredBtn.getAttribute("aria-disabled")).toBe("true");
     } finally {
       if (prevUniview) {
         (window as any).uniview = prevUniview;

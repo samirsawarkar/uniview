@@ -17,21 +17,16 @@ export interface TabViewProps {
 
 /** Reads the head of a file, picks a viewer, and guarantees something readable is shown. */
 export function TabView({ source, detection: propDetection, onDetected, onReady, onOpen, active = true }: TabViewProps) {
-  const [detection, setDetection] = useState<Detection | null>(() => propDetection ?? null);
+  const isAgentProp = Boolean(propDetection && (propDetection.kind === "viewspec" || propDetection.kind === "receipt"));
+  const [detection, setDetection] = useState<Detection | null>(() => (isAgentProp ? propDetection! : null));
   const [override, setOverride] = useState<FormatKind | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [started] = useState(() => performance.now());
 
   useEffect(() => {
-    if (propDetection) {
-      setDetection(propDetection);
-      setOverride(null);
-      setError(null);
-      onDetected(propDetection);
-      return;
-    }
+    const isAgent = Boolean(propDetection && (propDetection.kind === "viewspec" || propDetection.kind === "receipt"));
     const ctrl = new AbortController();
-    setDetection(null);
+    setDetection(isAgent ? propDetection! : null);
     setOverride(null);
     setError(null);
     void (async () => {
@@ -50,6 +45,10 @@ export function TabView({ source, detection: propDetection, onDetected, onReady,
           if (kind) d = { ...d, kind, label: kind === "docx" ? "Word document" : kind === "pptx" ? "PowerPoint presentation" : kind === "sheet" ? "Spreadsheet" : "EPUB book", by: "container" };
         }
         if (ctrl.signal.aborted) return;
+        // Only agent-supplied detection (viewspec/receipt shown by an agent) may be authoritative and only until the content kind changes
+        if (isAgent && propDetection && (d.kind === propDetection.kind || d.kind === "json" || d.kind === "text")) {
+          d = propDetection;
+        }
         setDetection(d);
         onDetected(d);
       } catch (err) {

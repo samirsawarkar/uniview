@@ -628,6 +628,22 @@ export function computeAppSpawnArgs({ isPackaged = false, appPath = "" } = {}) {
 }
 
 /**
+ * Builds the launch options required for runEarlyCli and runEarlyMcp from app and process metadata.
+ */
+export function buildEarlyLaunchOptions({ app, process: proc = process } = {}) {
+  if (!app) throw new Error("app is required");
+  const isPackaged = Boolean(app.isPackaged);
+  const appPath = typeof app.getAppPath === "function" ? app.getAppPath() : (proc?.cwd ? proc.cwd() : process.cwd());
+  const userDataDir = typeof app.getPath === "function" ? app.getPath("userData") : "";
+  return {
+    userDataDir,
+    app,
+    isPackaged,
+    appPath,
+  };
+}
+
+/**
  * Runs the CLI client early before the single-instance lock.
  */
 export async function runEarlyCli({
@@ -972,6 +988,35 @@ export function createAppAgents({
       grants,
       manager: reconciledReviewManager,
     });
+
+    if (ipcMain?.handle) {
+      ipcMain.handle("agent:view-grant", async (event, args) => {
+        if (typeof fromApp === "function" && !fromApp(event)) {
+          throw new Error("Request refused: unknown sender");
+        }
+        if (!args || typeof args !== "object") {
+          throw new Error("Invalid arguments");
+        }
+        const { scopeId, path: requestedPath } = args;
+        if (typeof scopeId !== "string" || !scopeId || typeof requestedPath !== "string" || !requestedPath) {
+          throw new Error("Invalid arguments");
+        }
+        if (!host) {
+          throw new Error("Agent host not available");
+        }
+        const grant = await host.viewGrant(scopeId, requestedPath);
+        if (grant?.token) {
+          tokenScopeMap.set(grant.token, scopeId);
+        }
+        return {
+          token: grant.token,
+          name: grant.name,
+          path: grant.canonical,
+          size: grant.size,
+          scopeId,
+        };
+      });
+    }
 
     // Route renderer 'tab closed' and 'ready'
     if (ipcMain?.on) {

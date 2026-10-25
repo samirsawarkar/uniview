@@ -10,7 +10,7 @@ import { readBridgeKey, bridgeEndpoint, windowsUserSid, ensureInstallId } from "
 const tmpBase = process.platform === "win32" ? "I:\\AES\\tmp" : "/tmp";
 
 test.describe("Packet P17c: agent behaviour through Electron app", () => {
-  test("CLI session opens file via bridge, renders tab, preserves original content after reload despite file swap; MCP session requests approval then opens tab", async () => {
+  test("CLI session opens file; MCP session approval then tab", async () => {
     // Mutation: opening files via path instead of grant handle on reload, or failing to request/flow approval for MCP
     const testDir = path.join(tmpBase, `agent-e2e-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`);
     const userDataDir = path.join(testDir, "userData");

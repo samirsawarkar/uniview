@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import type { FileSource, FormatKind, Detection } from "../core/types";
 import type { Receipt, FileState, Decision } from "../../shared/receipt.d.mts";
 import type { ReviewApi, ReviewValidationError } from "../shells/electron";
-import { hasElectronApi, grantTokenOf, toSource } from "../shells/electron";
+import { hasElectronApi, grantTokenOf, toSource, type GrantedFile } from "../shells/electron";
 import { sanitizeLabel, AgentMarkdown } from "./agent-markdown";
 import ViewSpecViewer from "./ViewSpecViewer";
 import { ViewReferenceContext, type ViewReferenceResolver } from "./viewspec-nodes";
@@ -439,9 +439,16 @@ export default function ReviewTab({
           try {
             const g = await (window as any).uniview.viewGrant(scopeId, ref.path);
             if (g?.token) {
+              const granted: GrantedFile = {
+                token: String(g.token),
+                name: String(g.name || ref.path.split(/[/\\]/).pop() || ref.path),
+                path: String(g.path || g.canonical || ref.path),
+                size: Number(g.size ?? 0),
+                scopeId: String(g.scopeId || scopeId),
+              };
               return {
                 status: "found",
-                open: () => onOpen?.([toSource(g, false)]),
+                open: () => onOpen?.([toSource(granted, false)]),
               };
             }
           } catch {}

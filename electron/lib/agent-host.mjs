@@ -501,11 +501,22 @@ export function createAgentHost(deps) {
     tabs.set(scopeId, tab);
     slots.placed();
     try {
-      if (typeof review.receipt.view === "string") {
+      const declared = new Set();
+      if (Array.isArray(review.receipt?.files)) {
+        for (const f of review.receipt.files) {
+          if (typeof f?.path === "string") declared.add(f.path);
+        }
+      }
+      if (typeof review.receipt?.view === "string") {
         view = await loadReceiptView(review.receipt.view);
         if (!isSessionLive(state, epoch)) throw err("not_found");
-        if (view.spec) tab.declared = declaredPaths(view.spec);
+        if (view?.spec) {
+          for (const p of declaredPaths(view.spec)) declared.add(p);
+        }
+      } else if (review.receipt?.view?.spec) {
+        for (const p of declaredPaths(review.receipt.view.spec)) declared.add(p);
       }
+      tab.declared = declared;
       if (!isSessionLive(state, epoch)) throw err("not_found");
       record = {
         reviewId: review.reviewId,

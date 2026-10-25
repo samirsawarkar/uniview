@@ -29,6 +29,7 @@ interface Tab {
   page?: Page;
   scopeId?: string;
   agentReview?: any;
+  agentSupplied?: boolean;
 }
 
 const homeTab = (): Tab => ({ id: `home-${Math.random().toString(36).slice(2)}`, source: null });
@@ -171,7 +172,20 @@ export function App() {
     if (!active.source?.reopen) return;
     try {
       const fresh = await active.source.reopen();
-      setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, source: fresh } : t)));
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== activeId) return t;
+          const isAgent = Boolean(
+            t.agentSupplied &&
+              (t.detection?.kind === "viewspec" || t.detection?.kind === "receipt")
+          );
+          return {
+            ...t,
+            source: fresh,
+            detection: isAgent ? t.detection : undefined,
+          };
+        })
+      );
     } catch {}
   }, [active, activeId]);
 
@@ -210,6 +224,7 @@ export function App() {
         source,
         detection: { kind: "viewspec", label: "View Spec", ext: ".viewspec.json", by: "container" },
         scopeId: item.scopeId,
+        agentSupplied: true,
       };
       setTabs((prev) => {
         const next = [...prev];
@@ -248,6 +263,7 @@ export function App() {
         detection: { kind: "receipt", label: "Review receipt", ext: ".receipt.json", by: "container" },
         scopeId: item.scopeId,
         agentReview: item,
+        agentSupplied: true,
       };
       setTabs((prev) => {
         const next = [...prev];
@@ -450,7 +466,7 @@ export function App() {
             ) : t.source ? (
               <TabView
                 source={t.source}
-                detection={t.detection}
+                detection={t.agentSupplied ? t.detection : undefined}
                 onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }}
                 onReady={(ms) => onReady(t, ms)}
                 onOpen={(f) => openFiles(f, false)}

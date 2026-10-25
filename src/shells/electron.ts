@@ -99,6 +99,7 @@ export interface ElectronApi {
   onAgentShowReview?(cb: (item: any) => void): () => void;
   onAgentCloseTab?(cb: (scopeId: string) => void): () => void;
   reopenAgent?(scopeId: string, token: string): Promise<GrantedFile>;
+  viewGrant?(scopeId: string, path: string): Promise<GrantedFile>;
 }
 
 export interface GrantedFile {

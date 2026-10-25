@@ -7,7 +7,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setupRemote, thumbnailPng } from "./lib/remote-main.mjs";
 import { installShutdownDismiss } from "./lib/review-ipc.mjs";
-import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp } from "./lib/app-agents.mjs";
+import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp, buildEarlyLaunchOptions } from "./lib/app-agents.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,19 +36,13 @@ if (!app.isPackaged && process.env.UNIVIEW_USER_DATA) app.setPath("userData", pr
 const early = detectEarlyArgv(process.argv, app.isPackaged);
 if (early.isMcp) {
   const code = await runEarlyMcp({
-    userDataDir: app.getPath("userData"),
-    app,
-    isPackaged: app.isPackaged,
-    appPath: app.getAppPath(),
+    ...buildEarlyLaunchOptions({ app, process }),
   });
   app.exit(typeof code === "number" ? code : 0);
 } else if (early.isCli) {
   const code = await runEarlyCli({
     argv: early.cliArgv,
-    userDataDir: app.getPath("userData"),
-    app,
-    isPackaged: app.isPackaged,
-    appPath: app.getAppPath(),
+    ...buildEarlyLaunchOptions({ app, process }),
   });
   app.exit(typeof code === "number" ? code : 0);
 } else {

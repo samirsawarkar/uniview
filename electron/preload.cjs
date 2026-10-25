@@ -35,6 +35,20 @@ contextBridge.exposeInMainWorld("uniview", {
   openPath: (path) => ipcRenderer.invoke("uniview:open-path", String(path)),
   reopenAgent: (scopeId, token) =>
     ipcRenderer.invoke("uniview:reopen-agent", String(scopeId), String(token)),
+  viewGrant: (scopeIdOrArgs, maybePath) => {
+    let scopeId, p;
+    if (scopeIdOrArgs && typeof scopeIdOrArgs === "object") {
+      scopeId = scopeIdOrArgs.scopeId;
+      p = scopeIdOrArgs.path;
+    } else {
+      scopeId = scopeIdOrArgs;
+      p = maybePath;
+    }
+    return ipcRenderer.invoke("agent:view-grant", {
+      scopeId: String(scopeId ?? ""),
+      path: String(p ?? ""),
+    });
+  },
   readRange: (token, start, end, scopeId) =>
     ipcRenderer.invoke(
       "uniview:read",

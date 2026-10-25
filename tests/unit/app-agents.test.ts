@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { makeTempDir } from "./agent-helpers";
 import { receiptJson } from "./agent-host-helpers";
 // @ts-expect-error plain ESM module without types
-import { createAppAgents, createAskDialog, createUiManager, detectEarlyArgv, createMcpClock, serveAgentFile, readAgentHandle, computeAppSpawnArgs, runEarlyCli, runEarlyMcp } from "../../electron/lib/app-agents.mjs";
+import { createAppAgents, createAskDialog, createUiManager, detectEarlyArgv, createMcpClock, serveAgentFile, readAgentHandle, computeAppSpawnArgs, runEarlyCli, runEarlyMcp, buildEarlyLaunchOptions } from "../../electron/lib/app-agents.mjs";
 // @ts-expect-error plain ESM module without types
 import { AgentGrantStore } from "../../electron/lib/agent-paths.mjs";
 // @ts-expect-error plain ESM module without types
@@ -635,10 +635,7 @@ describe("Packet P17c: app-agents wiring factory", () => {
     let connectCount = 0;
     await runEarlyCli({
       argv: ["open", "file.txt"],
-      userDataDir: tempDir,
-      app: fakeAppPackaged,
-      isPackaged: fakeAppPackaged.isPackaged,
-      appPath: fakeAppPackaged.getAppPath(),
+      ...buildEarlyLaunchOptions({ app: fakeAppPackaged as any }),
       connect: async () => {
         connectCount++;
         if (connectCount === 1) throw new Error("first connect failed");
@@ -723,5 +720,178 @@ describe("Packet P17c: app-agents wiring factory", () => {
     await mcpPromise;
 
     expect(scheduledTimeouts).toEqual([30000, 125000, 30000]);
+  });
+
+  it("Finding 2: agent:view-grant IPC route validates args, enforces fromApp, resolves declared path via host.viewGrant, and refuses undeclared path or wrong scope", async () => {
+    // Mutation: missing agent:view-grant IPC route, missing fromApp check, or allowing undeclared paths / wrong scopeId
+    const tempDir = await makeTempDir("uv-view-grant-ipc");
+    const fakeApp = {
+      requestSingleInstanceLock: vi.fn(() => true),
+      on: vi.fn(),
+      setPath: vi.fn(),
+      getPath: vi.fn(() => tempDir),
+    };
+    const ipcHandlers: Record<string, Function> = {};
+    const fakeIpcMain = {
+      handle: vi.fn((channel, fn) => {
+        ipcHandlers[channel] = fn;
+      }),
+      on: vi.fn(),
+    };
+
+    let allowFromApp = true;
+    const fromApp = vi.fn((_event: any) => allowFromApp);
+
+    const targetFile = path.join(tempDir, "declared-file.txt");
+    await fs.writeFile(targetFile, "DECLARED_FILE_CONTENT");
+
+    const undeclaredFile = path.join(tempDir, "undeclared-file.txt");
+    await fs.writeFile(undeclaredFile, "UNDECLARED_FILE_CONTENT");
+
+    const fakeOpenAgentPath = vi.fn(async (p: string) => {
+      if (p === targetFile) {
+        const handle = await fs.open(targetFile, "r");
+        cleanups.push(() => handle.close());
+        const s = await fs.stat(targetFile);
+        return { ok: true, handle, canonical: targetFile, size: s.size };
+      }
+      return { ok: false, code: "bad_path" };
+    });
+
+    const agents = createAppAgents({
+      app: fakeApp,
+      dialog: { showMessageBox: vi.fn() },
+      ipcMain: fakeIpcMain,
+      fromApp,
+      getWindow: () => null,
+      userDataDir: tempDir,
+      openAgentPath: fakeOpenAgentPath,
+    });
+    cleanups.push(() => agents.stop());
+    await agents.start();
+
+    // Verify agent:view-grant handler is registered
+    const viewGrantHandler = ipcHandlers["agent:view-grant"];
+    expect(viewGrantHandler).toBeDefined();
+
+    // Set up a review scope in host with declared file
+    const client = { name: "test-agent", version: "1.0" };
+    const sessRes = await agents.host.onRequest(
+      { sessionId: "s".repeat(32) },
+      {
+        method: "cli.hello",
+        params: { version: "1.0" },
+      }
+    );
+    expect(sessRes.result).toBeDefined();
+
+    // Write a receipt declaring targetFile
+    const targetHash = crypto.createHash("sha256").update("DECLARED_FILE_CONTENT").digest("hex");
+    const receiptContent = receiptJson([{ path: targetFile, sha256: targetHash }], {
+      agent: { name: "test-agent" },
+    });
+    const receiptPath = path.join(tempDir, "audit.receipt.json");
+    await fs.writeFile(receiptPath, receiptContent);
+
+    // Open review via bridge request
+    let capturedScopeId: string | undefined;
+    const origUiShowReview = agents.uiManager.ui.showReview;
+    agents.uiManager.ui.showReview = async (params: any) => {
+      capturedScopeId = params.scopeId;
+      return origUiShowReview(params);
+    };
+
+    const reviewRes = await agents.host.onRequest(
+      { sessionId: "s".repeat(32) },
+      {
+        method: "review.open",
+        params: { inline: true },
+      },
+      Buffer.from(receiptContent, "utf8")
+    );
+    expect(reviewRes.result?.reviewId).toBeDefined();
+    expect(capturedScopeId).toBeDefined();
+    const scopeId = capturedScopeId!;
+
+    // 1. Valid declared path -> succeeds with grant token
+    const grantResult = await viewGrantHandler!({ senderFrame: {} }, { scopeId, path: targetFile });
+    expect(grantResult.token).toBeDefined();
+    expect(grantResult.name).toBe("declared-file.txt");
+    expect(grantResult.path).toBe(targetFile);
+    expect(grantResult.scopeId).toBe(scopeId);
+
+    // Grant must be retrievable via agents.getGrant
+    const grantEntry = agents.getGrant(grantResult.token, scopeId);
+    expect(grantEntry).toBeDefined();
+    expect(grantEntry.canonical).toBe(targetFile);
+
+    // 2. Undeclared path -> refused (rejects)
+    await expect(
+      viewGrantHandler!({ senderFrame: {} }, { scopeId, path: undeclaredFile })
+    ).rejects.toThrow();
+
+    // 3. Wrong / non-existent scopeId -> refused (rejects)
+    await expect(
+      viewGrantHandler!({ senderFrame: {} }, { scopeId: "wrong-scope-999", path: targetFile })
+    ).rejects.toThrow();
+
+    // 4. Invalid arguments -> rejected
+    await expect(
+      viewGrantHandler!({ senderFrame: {} }, { scopeId: "", path: targetFile })
+    ).rejects.toThrow();
+    await expect(
+      viewGrantHandler!({ senderFrame: {} }, null)
+    ).rejects.toThrow();
+
+    // 5. fromApp returning false -> refused
+    allowFromApp = false;
+    await expect(
+      viewGrantHandler!({ senderFrame: {} }, { scopeId, path: targetFile })
+    ).rejects.toThrow(/refused|unknown sender/i);
+  });
+
+  it("Finding 4: buildEarlyLaunchOptions extracts call-site arguments from app and process", () => {
+    // Mutation: missing buildEarlyLaunchOptions or dropping metadata arguments at main.mjs call sites
+    const fakeAppPackaged = {
+      isPackaged: true,
+      getAppPath: () => "/Applications/UniView.app/Contents/Resources/app.asar",
+      getPath: (name: string) => (name === "userData" ? "/mock/userData" : ""),
+    };
+    const optsPackaged = buildEarlyLaunchOptions({ app: fakeAppPackaged as any });
+    expect(optsPackaged).toEqual({
+      userDataDir: "/mock/userData",
+      app: fakeAppPackaged,
+      isPackaged: true,
+      appPath: "/Applications/UniView.app/Contents/Resources/app.asar",
+    });
+
+    const fakeAppUnpackaged = {
+      isPackaged: false,
+      getAppPath: () => "/Users/dev/uniview",
+      getPath: (name: string) => (name === "userData" ? "/mock/userData" : ""),
+    };
+    const optsUnpackaged = buildEarlyLaunchOptions({ app: fakeAppUnpackaged as any });
+    expect(optsUnpackaged).toEqual({
+      userDataDir: "/mock/userData",
+      app: fakeAppUnpackaged,
+      isPackaged: false,
+      appPath: "/Users/dev/uniview",
+    });
+
+    expect(() => buildEarlyLaunchOptions({ app: null as any })).toThrow();
+  });
+
+  it("Finding 4 static test: main.mjs imports buildEarlyLaunchOptions and calls it at both early call sites", async () => {
+    // Mutation: main.mjs directly constructing or dropping metadata arguments instead of using buildEarlyLaunchOptions
+    const mainMjsPath = path.resolve(__dirname, "../../electron/main.mjs");
+    const mainMjsContent = await fs.readFile(mainMjsPath, "utf8");
+
+    // Must import buildEarlyLaunchOptions from ./lib/app-agents.mjs
+    expect(mainMjsContent).toMatch(/import\s*\{[^}]*buildEarlyLaunchOptions[^}]*\}\s*from\s*["']\.\/lib\/app-agents\.mjs["']/);
+
+    // Must call buildEarlyLaunchOptions at both early.isMcp and early.isCli sites
+    const calls = mainMjsContent.match(/buildEarlyLaunchOptions\s*\(/g);
+    expect(calls).not.toBeNull();
+    expect(calls!.length).toBeGreaterThanOrEqual(2);
   });
 });
