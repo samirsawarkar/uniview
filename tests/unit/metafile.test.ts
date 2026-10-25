@@ -63,7 +63,8 @@ describe('metafileToPng', () => {
     expect(res).toBeNull();
   });
 
-  it('converts minimal valid EMF to a non-empty PNG Blob with PNG signature', async () => {
+  // 30s: the first conversion loads the renderer lazily and a 2-core CI runner running many test files in parallel can exceed the 5s default.
+  it('converts minimal valid EMF to a non-empty PNG Blob with PNG signature', { timeout: 30_000 }, async () => {
     const emf = createMinimalEmf();
     const res = await metafileToPng(emf, 'emf');
     expect(res).not.toBeNull();
