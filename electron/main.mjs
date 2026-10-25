@@ -1,12 +1,13 @@
 // UniView desktop shell. Serves the shared web UI from uniview://app/ and granted files from uniview-file://.
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, session, shell, nativeImage } from "electron";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setupRemote, thumbnailPng } from "./lib/remote-main.mjs";
-import { installShutdownDismiss, registerReviewIpc } from "./lib/review-ipc.mjs";
+import { installShutdownDismiss } from "./lib/review-ipc.mjs";
+import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp } from "./lib/app-agents.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,7 @@ const grants = new GrantStore();
 const pending = [];
 let win = null;
 let rendererReady = false;
+let appAgents = null;
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "uniview", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true, allowServiceWorkers: true } },
@@ -30,25 +32,46 @@ protocol.registerSchemesAsPrivileged([
 // Separate profiles (and so separate single-instance locks) for tests that run a host and a client side by side.
 if (!app.isPackaged && process.env.UNIVIEW_USER_DATA) app.setPath("userData", process.env.UNIVIEW_USER_DATA);
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
+// 8. Early CLI and MCP detection: runs before single-instance lock without creating a window.
+const early = detectEarlyArgv(process.argv, app.isPackaged);
+if (early.isMcp) {
+  const code = await runEarlyMcp({ userDataDir: app.getPath("userData") });
+  app.exit(typeof code === "number" ? code : 0);
+} else if (early.isCli) {
+  const code = await runEarlyCli({ argv: early.cliArgv, userDataDir: app.getPath("userData") });
+  app.exit(typeof code === "number" ? code : 0);
 } else {
-  app.on("second-instance", (_e, argv) => {
-    void openPaths(filesFromArgv(argv, app.isPackaged));
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
+  appAgents = createAppAgents({
+    app,
+    dialog,
+    ipcMain,
+    fromApp,
+    getWindow: () => win,
+    userDataDir: app.getPath("userData"),
+    grants,
   });
-  // macOS delivers Finder opens as events, possibly before the app is ready.
-  app.on("open-file", (e, path) => {
-    e.preventDefault();
-    void openPaths([path]);
-  });
-  app.whenReady().then(start, (err) => {
-    dialog.showErrorBox("UniView could not start", String(err?.stack ?? err));
+
+  const startRes = await appAgents.start();
+  if (!startRes.ok) {
     app.quit();
-  });
+  } else {
+    app.on("second-instance", (_e, argv) => {
+      void openPaths(filesFromArgv(argv, app.isPackaged));
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.focus();
+      }
+    });
+    // macOS delivers Finder opens as events, possibly before the app is ready.
+    app.on("open-file", (e, path) => {
+      e.preventDefault();
+      void openPaths([path]);
+    });
+    app.whenReady().then(start, (err) => {
+      dialog.showErrorBox("UniView could not start", String(err?.stack ?? err));
+      app.quit();
+    });
+  }
 }
 
 async function grantFile(path) {
@@ -94,7 +117,12 @@ async function serveApp(request) {
 
 async function serveFile(request) {
   const url = new URL(request.url);
-  const entry = grants.get(url.hostname);
+  const token = url.hostname;
+  const agentEntry = appAgents?.getGrant(token, url.searchParams.get("scope"));
+  if (agentEntry) {
+    return appAgents.serveAgentFile(agentEntry, request);
+  }
+  const entry = grants.get(token);
   if (!entry) return new Response("Forbidden", { status: 403 });
   let size;
   try {
@@ -144,7 +172,11 @@ function registerIpc() {
     const expanded = path.startsWith("~") ? join(app.getPath("home"), path.slice(1)) : path;
     return grantFile(expanded);
   }));
-  ipcMain.handle("uniview:read", guard(async (_e, token, start, end) => {
+  ipcMain.handle("uniview:read", guard(async (_e, token, start, end, scopeId) => {
+    const agentEntry = appAgents?.getGrant(token, scopeId);
+    if (agentEntry) {
+      return appAgents.readAgentHandle(agentEntry, start, end, MAX_READ);
+    }
     const entry = grants.get(token);
     if (!entry) throw new Error("This file is no longer available. Open it again.");
     const s = await stat(entry.path);
@@ -171,6 +203,10 @@ function registerIpc() {
     if (entry) shell.showItemInFolder(entry.path);
   });
   ipcMain.handle("uniview:thumb", guard(async (_e, token, size) => {
+    const agentEntry = appAgents?.getGrant(token);
+    if (agentEntry) {
+      return appAgents.thumbnail(agentEntry, Math.max(32, Math.min(512, Number(size) || 256)), nativeImage);
+    }
     const entry = grants.get(token);
     if (!entry) return null;
     return thumbnailPng(entry.path, Math.max(32, Math.min(512, Number(size) || 256)));
@@ -178,6 +214,7 @@ function registerIpc() {
   ipcMain.on("uniview:ready", (e) => {
     if (!fromApp(e)) return;
     rendererReady = true;
+    void appAgents?.uiManager?.setReady();
     if (pending.length && win) win.webContents.send("open-files", pending.splice(0));
   });
 }
@@ -202,9 +239,6 @@ async function start() {
   lockDown(session.defaultSession);
   registerIpc();
   await setupRemote({ fromApp, getWindow: () => win });
-  // Reviews open by grant token only; open reviews are recorded as dismissed when the app quits.
-  const reviews = await registerReviewIpc({ fromApp, grants });
-  installShutdownDismiss({ app, manager: reviews });
   buildMenu();
 
   app.on("web-contents-created", (_e, contents) => {
@@ -237,7 +271,7 @@ async function start() {
   win.once("ready-to-show", () => win?.show());
   win.webContents.on("render-process-gone", (_e, details) => {
     if (details.reason !== "clean-exit") {
-      void reviews.dismissAll(); // the tabs that held these reviews are gone with the renderer
+      void appAgents?.stop();
       win?.reload();
     }
   });

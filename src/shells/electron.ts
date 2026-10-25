@@ -123,10 +123,11 @@ export interface AgentsApi {
 export interface ElectronApi {
   pickFiles(): Promise<GrantedFile[]>;
   openPath(path: string): Promise<GrantedFile>;
-  readRange(token: string, start: number, end: number): Promise<ArrayBuffer>;
+  readRange(token: string, start: number, end: number, scopeId?: string): Promise<ArrayBuffer>;
   reveal(token: string): void;
   onOpenFiles(cb: (files: GrantedFile[]) => void): () => void;
   ready(): void;
+  tabClosed?(scopeId: string): void;
   thumbnail(token: string, size: number): Promise<Uint8Array | null>;
   share: ShareApi;
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
@@ -139,6 +140,7 @@ export interface GrantedFile {
   name: string;
   path: string;
   size: number;
+  scopeId?: string;
 }
 
 export function hasElectronApi(): boolean {
@@ -165,7 +167,7 @@ function toSource(f: GrantedFile): FileSource {
   const read = async (start: number, end: number, signal?: AbortSignal) => {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     try {
-      return await api().readRange(f.token, start, end);
+      return await api().readRange(f.token, start, end, f.scopeId);
     } catch (err) {
       throw new AccessDeniedError((err as Error).message);
     }
@@ -178,8 +180,17 @@ function toSource(f: GrantedFile): FileSource {
     readAll: (signal) => read(0, f.size, signal),
     readRange: read,
     // Served by the main process with HTTP range support, so media streams instead of loading whole.
-    url: async () => `uniview-file://${f.token}/${encodeURIComponent(f.name)}`,
-    release() {},
+    url: async () =>
+      f.scopeId
+        ? `uniview-file://${f.token}/${encodeURIComponent(f.name)}?scope=${encodeURIComponent(f.scopeId)}`
+        : `uniview-file://${f.token}/${encodeURIComponent(f.name)}`,
+    release() {
+      if (f.scopeId && hasElectronApi()) {
+        try {
+          api().tabClosed?.(f.scopeId);
+        } catch {}
+      }
+    },
     reopen: async () => toSource(await api().openPath(f.path)),
   };
   tokens.set(source, f.token);

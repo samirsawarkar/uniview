@@ -18,9 +18,17 @@ ipcRenderer.on("share:changed", (_e, state) => {
 contextBridge.exposeInMainWorld("uniview", {
   pickFiles: () => ipcRenderer.invoke("uniview:pick"),
   openPath: (path) => ipcRenderer.invoke("uniview:open-path", String(path)),
-  readRange: (token, start, end) => ipcRenderer.invoke("uniview:read", String(token), Number(start), Number(end)),
+  readRange: (token, start, end, scopeId) =>
+    ipcRenderer.invoke(
+      "uniview:read",
+      String(token),
+      Number(start),
+      Number(end),
+      scopeId ? String(scopeId) : undefined
+    ),
   thumbnail: (token, size) => ipcRenderer.invoke("uniview:thumb", String(token), Number(size)),
   reveal: (token) => ipcRenderer.send("uniview:reveal", String(token)),
+  tabClosed: (scopeId) => ipcRenderer.send("uniview:tab-closed", String(scopeId)),
   /** Absolute path of a dropped File, so desktop drops stream from disk and appear in recents. */
   pathOf: (file) => {
     try {
