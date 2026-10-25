@@ -256,20 +256,6 @@ async function placementStillValid(fs, dir, targetPath) {
   }
 }
 
-async function isOurSidecar(fs, targetPath, decision) {
-  try {
-    const raw = await fs.readFile(targetPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Boolean(
-      parsed &&
-      parsed.reviewId === decision.reviewId &&
-      (!decision.receiptDigest || parsed.receiptDigest === decision.receiptDigest)
-    );
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Writes `<receipt>.decision.json` next to the receipt. Never overwrites another review's decision:
  * the file is created atomically only if absent. Resolves true when this review's decision is there.
@@ -304,20 +290,20 @@ export async function writeDecisionNextToReceipt(receiptPath, decision, { fs = d
     const outcome = await createExclusive(fs, targetPath, JSON.stringify(decision, null, 2));
     if (outcome === "created") {
       if (await placementStillValid(fs, dir, targetPath)) return true;
-      // An ancestor changed under us: verify the target belongs to this review before unlinking so a redirected
-      // pathname never deletes another review's sidecar.
-      if (await isOurSidecar(fs, targetPath, decision)) {
-        try {
-          await fs.unlink(targetPath);
-        } catch {}
-      } else if (outcomeOut) {
+      // Post-create placement/ancestor verification failed: never unlink targetPath by pathname
+      // (a redirected pathname could delete another review's file). Leave harmless decision text,
+      // return persisted:false with sidecar_unverified note. Only the temp file was unlinked by createExclusive.
+      if (outcomeOut) {
         outcomeOut.note = "sidecar_unverified";
       }
       return false;
     }
 
     // Something is already there: fine only if it is this review's own decision.
-    if (!(await placementStillValid(fs, dir, targetPath))) return false;
+    if (!(await placementStillValid(fs, dir, targetPath))) {
+      if (outcomeOut) outcomeOut.note = "sidecar_unverified";
+      return false;
+    }
     const existingStats = await fs.lstat(targetPath);
     if (existingStats.isSymbolicLink()) {
       return false;

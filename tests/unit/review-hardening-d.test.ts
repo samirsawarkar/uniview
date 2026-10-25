@@ -433,34 +433,33 @@ describe("review hardening d (P14b-1d)", () => {
     }
     const leftovers = async (dir: string) => (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp"));
 
-    // Mutation caught: no verification after the write (the file is reported written although an ancestor was swapped).
-    it("an ancestor swapped after the first realpath: nothing is left behind and false is returned", async () => {
+    // Under CTO decision (P17b-1c): failed placement check never unlinks target by pathname;
+    // whatever was created is left in place (harmless decision text); only temp files are removed.
+    it("an ancestor swapped after the first realpath: only temp files removed, target left in place, false returned", async () => {
       const dir = path.join(testDir, "proj");
       const receiptPath = await receiptIn(dir);
       const swapFs = swappingFs((p, real) => (p === dir ? path.join(testDir, "elsewhere") : real));
       expect(await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs: swapFs })).toBe(false);
-      await expect(fs.access(`${receiptPath}.decision.json`)).rejects.toBeTruthy();
+      await expect(fs.access(`${receiptPath}.decision.json`)).resolves.toBeUndefined();
       expect(await leftovers(dir)).toEqual([]);
     });
 
-    // Mutation caught: only the directory re-checked, not the created target itself.
-    it("the created target resolving elsewhere is also refused and removed", async () => {
+    it("the created target resolving elsewhere is refused and left in place without unlinking target", async () => {
       const dir = path.join(testDir, "proj2");
       const receiptPath = await receiptIn(dir);
       const target = `${receiptPath}.decision.json`;
       const swapFs = swappingFs((p, real) => (p === target ? path.join(testDir, "elsewhere", "x.json") : real));
       expect(await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs: swapFs })).toBe(false);
-      await expect(fs.access(target)).rejects.toBeTruthy();
+      await expect(fs.access(target)).resolves.toBeUndefined();
     });
 
-    // Mutation caught: the cleanup of a rejected write missing (the swapped-in file would stay).
     it("works through the copyFile fallback as well", async () => {
       const dir = path.join(testDir, "proj3");
       const receiptPath = await receiptIn(dir);
       const swapFs = { ...swappingFs((p, real) => (p === dir ? path.join(testDir, "elsewhere") : real)), link: async () => { throw Object.assign(new Error("no links"), { code: "EPERM" }); } };
       // link is unsupported, copyFile (which flips the swap) is used
       expect(await writeDecisionNextToReceipt(receiptPath, makeDecision(), { fs: swapFs })).toBe(false);
-      await expect(fs.access(`${receiptPath}.decision.json`)).rejects.toBeTruthy();
+      await expect(fs.access(`${receiptPath}.decision.json`)).resolves.toBeUndefined();
     });
 
     // Mutation caught: the same-review "already there" branch trusting a path that no longer resolves in place.
@@ -474,7 +473,7 @@ describe("review hardening d (P14b-1d)", () => {
     });
 
     // Mutation caught: a failed re-verification still reported as persisted by decide, or leaving the store copy at true.
-    it("decide ends persisted false with no sidecar and a matching store copy when the swap is detected", async () => {
+    it("decide ends persisted false with sidecar_unverified note and a matching store copy when the swap is detected", async () => {
       const dir = path.join(testDir, "proj5");
       const receiptPath = await receiptIn(dir);
       const w = fakeWorld();
@@ -487,8 +486,9 @@ describe("review hardening d (P14b-1d)", () => {
       const result = await decide({ review, shown, decision: "approved", verifier, store });
       expect(result.ok).toBe(true);
       expect(result.decision.persisted).toBe(false);
+      expect(result.note).toBe("sidecar_unverified");
       expect((await store.load(review.reviewId)).persisted).toBe(false);
-      await expect(fs.access(`${receiptPath}.decision.json`)).rejects.toBeTruthy();
+      await expect(fs.access(`${receiptPath}.decision.json`)).resolves.toBeUndefined();
     });
   });
 

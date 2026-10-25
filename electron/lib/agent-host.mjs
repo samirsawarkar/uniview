@@ -147,6 +147,8 @@ export function createAgentHost(deps) {
     if (!state) {
       state = {
         sessionId: session.sessionId,
+        epoch: 1,
+        closed: false,
         kind: "unidentified",
         client: { name: "", version: "" },
         sawRequest: false,
@@ -159,6 +161,10 @@ export function createAgentHost(deps) {
       sessions.set(session.sessionId, state);
     }
     return state;
+  }
+
+  function isSessionLive(state, epoch) {
+    return !state.closed && state.epoch === epoch && sessions.get(state.sessionId) === state;
   }
 
   const agentLabel = (state) => (state.kind === "cli" ? "command line" : state.client.name);
@@ -342,6 +348,7 @@ export function createAgentHost(deps) {
   }
 
   async function opOpen(state, params, body) {
+    const epoch = state.epoch;
     if (!body || body.length === 0) throw err("bad_request");
     let list;
     try {
@@ -366,6 +373,10 @@ export function createAgentHost(deps) {
           }
         }),
       );
+      if (!isSessionLive(state, epoch)) {
+        for (const r of results) if (r?.ok) closeQuietly(r.handle);
+        throw err("not_found");
+      }
       if (results.some((r) => !r || !r.ok)) {
         for (const r of results) if (r?.ok) closeQuietly(r.handle);
         throw err("bad_path");
@@ -393,6 +404,7 @@ export function createAgentHost(deps) {
       for (const item of items) tabs.set(item.scopeId, { kind: "file", sessionId: state.sessionId });
       slots.placed();
       for (const item of items) {
+        if (!isSessionLive(state, epoch)) throw err("not_found");
         await callUi("openFile", {
           scopeId: item.scopeId,
           token: item.token,
@@ -403,6 +415,7 @@ export function createAgentHost(deps) {
           agent: agentLabel(state),
         });
         shown.push(item.scopeId);
+        if (!isSessionLive(state, epoch)) throw err("not_found");
       }
     } catch (e) {
       slots.rollback();
@@ -422,18 +435,26 @@ export function createAgentHost(deps) {
   }
 
   async function opViewShow(state, params, body) {
+    const epoch = state.epoch;
     const source = documentSource(params, body);
     const { bytes } = await loadDocument(source, "invalid_spec");
+    if (!isSessionLive(state, epoch)) throw err("not_found");
     const spec = await parseSpec(bytes);
+    if (!isSessionLive(state, epoch)) throw err("not_found");
     const slots = reserveTabs(state, 1);
     const scopeId = grants.openScope();
     tabs.set(scopeId, { kind: "view", sessionId: state.sessionId, declared: declaredPaths(spec), granted: new Map() });
     slots.placed();
     try {
+      if (!isSessionLive(state, epoch)) throw err("not_found");
       await callUi("showView", { scopeId, specBytes: bytes, spec, sessionId: state.sessionId, agent: agentLabel(state) });
+      if (!isSessionLive(state, epoch)) throw err("not_found");
     } catch (e) {
       slots.rollback();
       await dropTab(scopeId);
+      try {
+        await ui.closeTab?.(scopeId);
+      } catch {}
       throw e;
     }
     slots.commit();
@@ -452,8 +473,10 @@ export function createAgentHost(deps) {
   }
 
   async function opReviewOpen(state, params, body) {
+    const epoch = state.epoch;
     const source = documentSource(params, body);
     const { bytes, canonical } = await loadDocument(source, "invalid_receipt");
+    if (!isSessionLive(state, epoch)) throw err("not_found");
     let review;
     try {
       review = await openReview({ receiptBytes: bytes, receiptPath: canonical });
@@ -461,6 +484,7 @@ export function createAgentHost(deps) {
       if (e instanceof ReviewError) throw err("invalid_receipt");
       throw e;
     }
+    if (!isSessionLive(state, epoch)) throw err("not_found");
     let slot;
     let slots;
     slots = reserveTabs(state, 1);
@@ -478,8 +502,10 @@ export function createAgentHost(deps) {
     try {
       if (typeof review.receipt.view === "string") {
         view = await loadReceiptView(review.receipt.view);
+        if (!isSessionLive(state, epoch)) throw err("not_found");
         if (view.spec) tab.declared = declaredPaths(view.spec);
       }
+      if (!isSessionLive(state, epoch)) throw err("not_found");
       const record = {
         reviewId: review.reviewId,
         ownerSessionId: state.sessionId,
@@ -502,11 +528,15 @@ export function createAgentHost(deps) {
         sessionId: state.sessionId,
         agent: agentLabel(state),
       });
+      if (!isSessionLive(state, epoch)) throw err("not_found");
     } catch (e) {
       reviews.delete(review.reviewId);
       slot.rollback();
       slots.rollback();
       await dropTab(scopeId);
+      try {
+        await ui.closeTab?.(scopeId);
+      } catch {}
       throw e;
     }
     slot.commit();
@@ -571,12 +601,39 @@ export function createAgentHost(deps) {
   // ---- bridge entry points --------------------------------------------------------------------------------
 
   async function closeSessionScopes(sessionId) {
-    for (const [scopeId, tab] of [...tabs.entries()]) {
+    const sessionScopeIds = [];
+    for (const [scopeId, tab] of tabs.entries()) {
       if (tab.sessionId === sessionId) {
-        tabs.delete(scopeId);
-        await grants.closeScope(scopeId);
+        if (tab.kind === "review") {
+          tab.sessionId = null;
+        } else {
+          tabs.delete(scopeId);
+          sessionScopeIds.push(scopeId);
+        }
       }
     }
+    // Invalidate ALL the session's scopes/tokens synchronously first, then close handles concurrently with a bounded wait.
+    const closePromises = sessionScopeIds.map((id) => {
+      const p = grants.closeScope(id);
+      p.catch(() => {});
+      return new Promise((resolve) => {
+        let timer;
+        timer = clock.setTimeout(() => {
+          resolve();
+        }, 2000);
+        p.then(
+          () => {
+            clock.clearTimeout(timer);
+            resolve();
+          },
+          () => {
+            clock.clearTimeout(timer);
+            resolve();
+          },
+        );
+      });
+    });
+    await Promise.all(closePromises);
   }
 
   function cancelVerifications(record) {
@@ -619,11 +676,24 @@ export function createAgentHost(deps) {
   function onSessionClosed(sessionId) {
     approval.sessionClosed(sessionId);
     const state = sessions.get(sessionId);
+    if (state) {
+      state.closed = true;
+      state.epoch = (state.epoch || 1) + 1;
+    }
     for (const record of reviews.values()) {
       if (record.ownerSessionId !== sessionId) continue;
       cancelVerifications(record);
       cancelWaits(sessionId, record);
-      if (record.decision) reviews.delete(record.reviewId);
+      if (record.decision) {
+        reviews.delete(record.reviewId);
+      } else {
+        record.ownerSessionId = null;
+      }
+    }
+    for (const tab of tabs.values()) {
+      if (tab.sessionId === sessionId && tab.kind === "review") {
+        tab.sessionId = null;
+      }
     }
     decidedBySession.delete(sessionId);
     if (state && state.kind === "mcp") log("session_closed", state);
@@ -794,6 +864,11 @@ export function createAgentHost(deps) {
         if (record.ownerSessionId === id) {
           cancelVerifications(record);
           cancelWaits(id, record);
+          if (record.decision) {
+            reviews.delete(record.reviewId);
+          } else {
+            record.ownerSessionId = null;
+          }
         }
       }
       try {
