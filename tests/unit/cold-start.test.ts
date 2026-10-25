@@ -4,8 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 
-// @ts-expect-error plain ESM module without types
-import { buildColdStartCommand, cleanSpawnEnv } from "../../electron/lib/cold-start.mjs";
+import {
+  buildColdStartCommand,
+  cleanSpawnEnv,
+  COLD_START_SCRIPT,
+  COLD_EXE_ENV,
+  COLD_ARGS_ENV,
+  // @ts-expect-error plain ESM module without types
+} from "../../electron/lib/cold-start.mjs";
 // @ts-expect-error plain ESM module without types
 import { runMcpServer } from "../../electron/lib/mcp-runner.mjs";
 // @ts-expect-error plain ESM module without types
@@ -14,53 +20,43 @@ import { runEarlyCli } from "../../electron/lib/app-agents.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe("Packet P27: cold start command builder and handle leak prevention", () => {
-  it("Windows packaged: execPath with spaces and empty args produces cmd.exe start with quoted exe", () => {
-    // Mutation: missing cmd.exe wrapper, omitting start "" title, or unquoted paths with spaces
+  it("Windows packaged: powershell Start-Process, exe and args carried in env vars, not in the script", () => {
+    // Mutation: reverting to cmd.exe start or a direct spawn (both leak the caller pipes from
+    // Electron's main process), or interpolating paths into the PowerShell command text
     const res = buildColdStartCommand({
       platform: "win32",
       execPath: "C:\\Program Files\\UniView\\UniView.exe",
       args: [],
-      env: { ELECTRON_RUN_AS_NODE: "1", PATH: "C:\\bin" },
+      env: { ELECTRON_RUN_AS_NODE: "1", PATH: "C:\\bin", SystemRoot: "C:\\Windows" },
     });
 
-    expect(res.file).toBe("cmd.exe");
-    expect(res.args).toEqual([
-      "/d",
-      "/s",
-      "/c",
-      "start",
-      '""',
-      '"C:\\Program Files\\UniView\\UniView.exe"',
-    ]);
-    expect(res.options.detached).toBe(true);
-    expect(res.options.stdio).toBe("ignore");
+    expect(res.file).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(res.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", COLD_START_SCRIPT]);
+    expect(COLD_START_SCRIPT).toMatch(/Start-Process/);
+    expect(res.args.join(" ")).not.toContain("Program Files");
+    expect(res.options.stdio).toEqual(["ignore", "ignore", "ignore"]);
     expect(res.options.windowsHide).toBe(true);
-    expect(res.options.windowsVerbatimArguments).toBe(true);
+    expect(res.options.env[COLD_EXE_ENV]).toBe("C:\\Program Files\\UniView\\UniView.exe");
+    expect(res.options.env[COLD_ARGS_ENV]).toBe("");
     expect(res.options.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(res.options.env.PATH).toBe("C:\\bin");
   });
 
-  it("Windows unpackaged: extra app path arg is quoted and passed to start", () => {
-    // Mutation: omitting appPath argument or failing to quote arguments
+  it("Windows unpackaged: app path args are quoted into the args env var", () => {
+    // Mutation: omitting appPath argument, failing to quote, or not doubling a trailing backslash
     const res = buildColdStartCommand({
       platform: "win32",
       execPath: "C:\\Program Files\\nodejs\\node.exe",
-      args: ["I:\\Development\\Clone\\Universal\\uniview"],
+      args: ["I:\\Development\\Clone\\Universal\\uniview", "C:\\dir with space\\"],
       env: { PATH: "C:\\bin" },
     });
 
-    expect(res.file).toBe("cmd.exe");
-    expect(res.args).toEqual([
-      "/d",
-      "/s",
-      "/c",
-      "start",
-      '""',
-      '"C:\\Program Files\\nodejs\\node.exe"',
-      '"I:\\Development\\Clone\\Universal\\uniview"',
-    ]);
+    expect(res.file).toMatch(/powershell\.exe$/);
+    expect(res.options.env[COLD_EXE_ENV]).toBe("C:\\Program Files\\nodejs\\node.exe");
+    expect(res.options.env[COLD_ARGS_ENV]).toBe(
+      '"I:\\Development\\Clone\\Universal\\uniview" "C:\\dir with space\\\\"'
+    );
     expect(res.options.windowsHide).toBe(true);
-    expect(res.options.windowsVerbatimArguments).toBe(true);
   });
 
   it("non-Windows unchanged: direct execPath spawn on darwin and linux without cmd.exe or windows options", () => {
@@ -116,8 +112,8 @@ describe("Packet P27: cold start command builder and handle leak prevention", ()
     expect(cmd.options.env.SYSTEMROOT).toBe("C:\\Windows");
   });
 
-  it("hostile characters rejected on Windows: double quotes, %, !, ^, & in execPath and args throw", () => {
-    // Mutation: allowing hostile characters leading to cmd.exe command injection or variable expansion
+  it("hostile characters rejected on Windows: double quotes and line breaks throw; metacharacters stay inert", () => {
+    // Mutation: allowing quotes/newlines (command-line injection) or interpolating values into the script
     // Embedded double quotes in execPath must throw on all platforms
     expect(() =>
       buildColdStartCommand({ platform: "win32", execPath: 'C:\\App"Test\\UniView.exe' })
@@ -126,36 +122,30 @@ describe("Packet P27: cold start command builder and handle leak prevention", ()
       buildColdStartCommand({ platform: "darwin", execPath: '/bin/app"evil' })
     ).toThrow(/double quote/i);
 
-    // Hostile cmd characters in execPath on Windows
-    expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\App%TEST%\\UniView.exe" })
-    ).toThrow(/hostile/i);
-    expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\App!TEST!\\UniView.exe" })
-    ).toThrow(/hostile/i);
-    expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\App^Test\\UniView.exe" })
-    ).toThrow(/hostile/i);
-    expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\App&Calc\\UniView.exe" })
-    ).toThrow(/hostile/i);
-
-    // Hostile cmd characters in args on Windows
+    // Quotes, line breaks and empty values in args or execPath cannot be carried safely
     expect(() =>
       buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: ['arg"withquote'] })
     ).toThrow(/hostile/i);
     expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: ["%PATH%"] })
+      buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: ["a\r\nb"] })
     ).toThrow(/hostile/i);
     expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: ["!VAR!"] })
-    ).toThrow(/hostile/i);
+      buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: [""] })
+    ).toThrow(/non-empty/i);
     expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: ["arg^caret"] })
+      buildColdStartCommand({ platform: "win32", execPath: "C:\\App\nX\\UniView.exe" })
     ).toThrow(/hostile/i);
-    expect(() =>
-      buildColdStartCommand({ platform: "win32", execPath: "C:\\UniView.exe", args: ["arg&calc"] })
-    ).toThrow(/hostile/i);
+
+    // Shell metacharacters are inert: they travel only in env vars, never in the script text
+    const res = buildColdStartCommand({
+      platform: "win32",
+      execPath: "C:\\App%TEST%!x^&y'z\\UniView.exe",
+      args: ["$(calc) %PATH% & 'q'"],
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(res.options.env[COLD_EXE_ENV]).toBe("C:\\App%TEST%!x^&y'z\\UniView.exe");
+    expect(res.options.env[COLD_ARGS_ENV]).toBe(`"$(calc) %PATH% & 'q'"`);
+    expect(res.args.join(" ")).not.toMatch(/calc|TEST/);
   });
 
   it("both call sites use the builder: static source inspection", async () => {
@@ -206,12 +196,11 @@ describe("Packet P27: cold start command builder and handle leak prevention", ()
 
       expect(spawnCalls.length).toBeGreaterThanOrEqual(1);
       const cliSpawn = spawnCalls[0];
-      expect(cliSpawn.cmd).toBe("cmd.exe");
-      expect(cliSpawn.args).toEqual(
-        expect.arrayContaining(["/d", "/s", "/c", "start", '""'])
-      );
-      expect(cliSpawn.opts.windowsVerbatimArguments).toBe(true);
+      expect(cliSpawn.cmd).toMatch(/powershell\.exe$/);
+      expect(cliSpawn.args).toContain(COLD_START_SCRIPT);
+      expect(cliSpawn.opts.stdio).toEqual(["ignore", "ignore", "ignore"]);
       expect(cliSpawn.opts.windowsHide).toBe(true);
+      expect(cliSpawn.opts.env[COLD_EXE_ENV]).toBeTruthy();
 
       // 2. runMcpServer cold start launcher
       spawnCalls.length = 0;
@@ -247,12 +236,11 @@ describe("Packet P27: cold start command builder and handle leak prevention", ()
 
       expect(spawnCalls.length).toBeGreaterThanOrEqual(1);
       const mcpSpawn = spawnCalls[0];
-      expect(mcpSpawn.cmd).toBe("cmd.exe");
-      expect(mcpSpawn.args).toEqual(
-        expect.arrayContaining(["/d", "/s", "/c", "start", '""'])
-      );
-      expect(mcpSpawn.opts.windowsVerbatimArguments).toBe(true);
+      expect(mcpSpawn.cmd).toMatch(/powershell\.exe$/);
+      expect(mcpSpawn.args).toContain(COLD_START_SCRIPT);
+      expect(mcpSpawn.opts.stdio).toEqual(["ignore", "ignore", "ignore"]);
       expect(mcpSpawn.opts.windowsHide).toBe(true);
+      expect(mcpSpawn.opts.env[COLD_EXE_ENV]).toBeTruthy();
     } finally {
       spawnSpy.mockRestore();
     }

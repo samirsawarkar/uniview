@@ -50,7 +50,9 @@ describe.skipIf(!isWindows)("Packet P27: cold start pipe leakage on Windows (rea
           });
           const child = spawn(cmd.file, cmd.args, cmd.options);
           child.unref();
-          process.exit(0);
+          // The real CLI lingers until the app acknowledges, which is far longer than
+          // PowerShell needs to start the app; an instant exit would cut the launcher short.
+          setTimeout(() => process.exit(0), 1000);
         }
       });
     `;
