@@ -21,6 +21,10 @@ No code plugins or marketplace; no agent access to file contents, folder listing
 - **What agents can do:** show files they name, show views, ask for reviews, read *their own* review decisions. They cannot read contents, list folders, reach paired computers, or see other agents' reviews.
 - **What the decision returns:** the decision, comment, the receipt digest, and per receipt file `unchanged | changed | missing | unreadable`. Hash equality for files the agent named gives a same-user agent nothing it could not compute itself.
 - **Agent text is never trusted UI.** Specs, receipts and names render inside a clearly framed "content from the agent" area; UniView's own verification results and the Approve / Request changes controls live in a fixed app bar outside it. No content can trigger a decision; approval needs a real click (no keyboard default, a 500 ms arming delay after the review appears or changes).
+- **Accepted residual risks (CTO decision 2026-10-25):**
+  - (a) the trust boundary is the OS user account: any process running as the same Windows user can read the bridge key and therefore talk to the bridge; a client that sends cli.hello is treated as the command line and is not asked for approval (so a hostile same-user program can open files for display the same way a person-run `UniView open` can; it cannot read file contents back, cannot decide a review, and files must be local regular files);
+  - (b) 'Always allow' enrollment is keyed by the agent's self-reported name and the enrollment key is readable by the same user: a same-user program that reports an enrolled agent's name can reuse its enrollment; the approval prompt always shows the name and, for first-time agents, the person decides; the person can revoke access in the Agents panel or delete the agents folder;
+  - (c) a local receipt review opened by the person reads the receipt through its granted pathname (user-opened files are not agent grants).
 
 ## Interfaces
 

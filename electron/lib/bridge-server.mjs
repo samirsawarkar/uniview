@@ -86,6 +86,62 @@ export function createAuthFailureLogger({
 export const defaultAuthFailureLogger = createAuthFailureLogger();
 
 /**
+ * Creates a rate-limited logger for backpressure / outbound buffer overflow events.
+ * Logs up to 10 failures per minute, then one summary line per minute.
+ * @param {{ log?: (...args: any[]) => void, now?: () => number }} [options]
+ * @returns {({ reason, sessionId }: { reason: string, sessionId?: string }) => void}
+ */
+export function createBackpressureLogger({
+  log = console.warn,
+  now = Date.now,
+} = {}) {
+  let windowStart = 0;
+  let count = 0;
+  let suppressed = 0;
+  let flushTimer = null;
+
+  function flushSuppressed(warnFn) {
+    if (suppressed > 0) {
+      warnFn(`… ${suppressed} more backpressure warnings suppressed`);
+      suppressed = 0;
+    }
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+  }
+
+  return function backpressureLogger({ reason } = {}) {
+    const getTime = typeof now === "function" ? now : Date.now;
+    const warnFn = typeof log === "function" ? log : console.warn;
+    const current = getTime();
+
+    if (current - windowStart >= 60000) {
+      flushSuppressed(warnFn);
+      windowStart = current;
+      count = 0;
+    }
+
+    if (count < 10) {
+      count++;
+      warnFn(`Bridge connection destroyed due to outbound backpressure: ${reason}`);
+    } else {
+      suppressed++;
+      if (!flushTimer) {
+        flushTimer = setTimeout(() => {
+          flushSuppressed(warnFn);
+          windowStart = getTime();
+          count = 0;
+        }, 60000);
+        if (flushTimer && flushTimer.unref) flushTimer.unref();
+      }
+    }
+  };
+}
+
+export const defaultBackpressureLogger = createBackpressureLogger();
+
+/**
  * Starts the local bridge server on the rendezvous endpoint.
  * @param {{
  *   endpoint: string,
@@ -115,6 +171,9 @@ export async function startBridgeServer({
   maxInFlight = 16,
   handshakeTimeoutMs = 5000,
   onAuthFailure = defaultAuthFailureLogger,
+  onBackpressure = defaultBackpressureLogger,
+  maxQueuedBytes = 4 * 1024 * 1024,
+  drainTimeoutMs = 10000,
   platform = process.platform,
   fs = fsPromises,
   connect = defaultConnect,
@@ -314,6 +373,106 @@ export async function startBridgeServer({
     };
     socket.once("close", fireSessionClosed);
 
+    let queuedOutboundBytes = 0;
+    let isPaused = false;
+    let drainTimer = null;
+    let loggedBackpressure = false;
+    const pausedFrames = [];
+
+    const logAndDestroy = (reason) => {
+      if (!loggedBackpressure) {
+        loggedBackpressure = true;
+        try {
+          onBackpressure({ reason, sessionId });
+        } catch {}
+      }
+      if (drainTimer) {
+        clearTimeout(drainTimer);
+        drainTimer = null;
+      }
+      try {
+        socket.destroy();
+      } catch {}
+    };
+
+    const writeResponse = (frameBuf) => {
+      if (!socket.writable || socket.destroyed) return false;
+      const len = frameBuf.byteLength ?? frameBuf.length ?? 0;
+      queuedOutboundBytes += len;
+
+      if (queuedOutboundBytes > maxQueuedBytes) {
+        logAndDestroy("buffer_overflow");
+        return false;
+      }
+
+      let writtenOk = true;
+      try {
+        writtenOk = socket.write(frameBuf, (err) => {
+          queuedOutboundBytes = Math.max(0, queuedOutboundBytes - len);
+          if (queuedOutboundBytes === 0 && drainTimer) {
+            clearTimeout(drainTimer);
+            drainTimer = null;
+          }
+        });
+      } catch {
+        try {
+          socket.destroy();
+        } catch {}
+        return false;
+      }
+
+      if (writtenOk === false) {
+        if (!isPaused) {
+          isPaused = true;
+          try {
+            if (typeof socket.pause === "function") socket.pause();
+          } catch {}
+        }
+        if (!drainTimer) {
+          drainTimer = setTimeout(() => {
+            logAndDestroy("drain_timeout");
+          }, drainTimeoutMs);
+          if (drainTimer.unref) drainTimer.unref();
+        }
+      }
+
+      return writtenOk;
+    };
+
+    socket.on("drain", () => {
+      if (drainTimer) {
+        clearTimeout(drainTimer);
+        drainTimer = null;
+      }
+      if (isPaused) {
+        isPaused = false;
+        try {
+          if (typeof socket.resume === "function") socket.resume();
+        } catch {}
+      }
+      while (!isPaused && pausedFrames.length > 0) {
+        const next = pausedFrames.shift();
+        handleFrame(next);
+      }
+    });
+
+    socket.once("close", () => {
+      if (drainTimer) {
+        clearTimeout(drainTimer);
+        drainTimer = null;
+      }
+      queuedOutboundBytes = 0;
+      pausedFrames.length = 0;
+    });
+
+    const dispatchFrame = (f) => {
+      if (isPaused) {
+        pausedFrames.push(f);
+      } else {
+        handleFrame(f);
+      }
+    };
+
     const inFlightIds = new Set();
 
     function isValidRequestId(id) {
@@ -356,7 +515,7 @@ export async function startBridgeServer({
       if (inFlightIds.has(header.id)) {
         if (socket.writable) {
           try {
-            socket.write(
+            writeResponse(
               encodeFrame({
                 t: "res",
                 id: header.id,
@@ -374,7 +533,7 @@ export async function startBridgeServer({
       if (inFlightIds.size >= maxInFlight && header.method !== "review.cancelWait") {
         if (socket.writable) {
           try {
-            socket.write(
+            writeResponse(
               encodeFrame({
                 t: "res",
                 id: header.id,
@@ -398,7 +557,7 @@ export async function startBridgeServer({
           const resBody =
             res && typeof res === "object" && "body" in res ? res.body : undefined;
           if (socket.writable) {
-            socket.write(
+            writeResponse(
               encodeFrame({ t: "res", id: header.id, ok: true, result }, resBody)
             );
           }
@@ -406,7 +565,7 @@ export async function startBridgeServer({
           const code =
             err instanceof BridgeError && err.code ? err.code : "internal";
           if (socket.writable) {
-            socket.write(
+            writeResponse(
               encodeFrame({
                 t: "res",
                 id: header.id,
@@ -423,7 +582,7 @@ export async function startBridgeServer({
 
     try {
       for (const f of pending) {
-        handleFrame(f);
+        dispatchFrame(f);
       }
     } catch (err) {
       const code =
@@ -440,7 +599,7 @@ export async function startBridgeServer({
       try {
         const frames = decoder.push(chunk);
         for (const f of frames) {
-          handleFrame(f);
+          dispatchFrame(f);
         }
       } catch (err) {
         const code =

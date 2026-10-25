@@ -171,6 +171,7 @@ export default function ReviewTab({
   const [changeWarning, setChangeWarning] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isInitialVerifying, setIsInitialVerifying] = useState<boolean>(() => Boolean(initialReview));
 
   const decidedRef = useRef(false);
   const inFlightRef = useRef(false);
@@ -252,16 +253,32 @@ export default function ReviewTab({
       setLoading(false);
       const a = apiRef.current;
       if (a) {
-        void a.refresh(initialReview.reviewId).then((refreshed) => {
-          if (mountedRef.current && !cancelled && refreshed?.ok && refreshed.files) {
-            setFiles(filesFromResults(initialReview.receipt, refreshed.files));
-          }
-        });
+        setIsInitialVerifying(true);
+        void a
+          .refresh(initialReview.reviewId)
+          .then((refreshed) => {
+            if (mountedRef.current && !cancelled) {
+              if (refreshed?.ok && refreshed.files) {
+                setFiles(filesFromResults(initialReview.receipt, refreshed.files));
+              }
+              setIsInitialVerifying(false);
+              setArmEpoch((k) => k + 1);
+            }
+          })
+          .catch(() => {
+            if (mountedRef.current && !cancelled) {
+              setIsInitialVerifying(false);
+            }
+          });
+      } else {
+        setIsInitialVerifying(false);
       }
       return () => {
         cancelled = true;
       };
     }
+
+    setIsInitialVerifying(false);
 
     void (async () => {
       const a = apiRef.current;
@@ -338,7 +355,17 @@ export default function ReviewTab({
     async (event: React.MouseEvent, decisionType: "approved" | "changes_requested") => {
       const a = apiRef.current;
       if (!isDeliberateClick(event)) return;
-      if (!armed || isSubmitting || isRefreshing || decidedRef.current || isCommentOverLimit || !reviewId || !a || !receipt) {
+      if (
+        !armed ||
+        isSubmitting ||
+        isRefreshing ||
+        isInitialVerifying ||
+        decidedRef.current ||
+        isCommentOverLimit ||
+        !reviewId ||
+        !a ||
+        !receipt
+      ) {
         return;
       }
 
@@ -389,7 +416,7 @@ export default function ReviewTab({
         }
       }
     },
-    [armed, isSubmitting, isRefreshing, isCommentOverLimit, reviewId, receipt, comment, dismissIfOpen]
+    [armed, isSubmitting, isRefreshing, isInitialVerifying, isCommentOverLimit, reviewId, receipt, comment, dismissIfOpen]
   );
 
   const handleApprove = (e: React.MouseEvent) => void handleDecide(e, "approved");
@@ -496,7 +523,7 @@ export default function ReviewTab({
   const agentName = receipt.agent?.name ? sanitizeLabel(receipt.agent.name, 80) : null;
   const agentModel = receipt.agent?.model ? sanitizeLabel(receipt.agent.model, 80) : null;
   const isDecided = decisionOutcome !== null;
-  const controlsDisabled = !armed || isSubmitting || isRefreshing || isDecided || isCommentOverLimit;
+  const controlsDisabled = !armed || isSubmitting || isRefreshing || isInitialVerifying || isDecided || isCommentOverLimit;
 
   return (
     <div className="receipt-viewer-container review-tab-container" onKeyDown={blockEnter}>
@@ -567,7 +594,7 @@ export default function ReviewTab({
         </div>
 
         <div className="uniview-bar-right review-bar-right">
-          <button type="button" className="receipt-reload-btn" onClick={() => void handleReload()} disabled={isRefreshing || isSubmitting}>
+          <button type="button" className="receipt-reload-btn" onClick={() => void handleReload()} disabled={isRefreshing || isSubmitting || isInitialVerifying}>
             Reload
           </button>
         </div>

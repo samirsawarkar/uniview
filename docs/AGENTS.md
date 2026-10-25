@@ -404,6 +404,15 @@ In `.cursor/mcp.json`:
 
 ---
 
+## Security model and limits
+
+Accepted residual risks (CTO decision 2026-10-25):
+- **(a) Trust boundary is the OS user account:** The trust boundary is the OS user account: any process running as the same Windows user can read the bridge key and therefore talk to the bridge; a client that sends cli.hello is treated as the command line and is not asked for approval (so a hostile same-user program can open files for display the same way a person-run `UniView open` can; it cannot read file contents back, cannot decide a review, and files must be local regular files).
+- **(b) 'Always allow' enrollment key reuse:** 'Always allow' enrollment is keyed by the agent's self-reported name and the enrollment key is readable by the same user: a same-user program that reports an enrolled agent's name can reuse its enrollment; the approval prompt always shows the name and, for first-time agents, the person decides. The person can revoke access at any time in the Agents panel or delete the agents folder (`<userData>/agents/`).
+- **(c) Local receipt reviews:** A local receipt review opened by the person reads the receipt through its granted pathname (user-opened files are not agent grants).
+
+---
+
 ## Troubleshooting
 
 ### App is not reachable (Exit Code 6 / `app_unavailable`)

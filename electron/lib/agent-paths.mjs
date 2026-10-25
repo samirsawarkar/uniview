@@ -949,6 +949,18 @@ export class AgentGrantStore {
   }
 
   /**
+   * Number of open scopes currently tracked.
+   * @returns {number}
+   */
+  get size() {
+    return this.#scopes.size;
+  }
+
+  get scopeCount() {
+    return this.#scopes.size;
+  }
+
+  /**
    * Close every handle belonging to a scope, remove its tokens, and mark it closed. Idempotent.
    *
    * @param {string} scopeId
@@ -959,6 +971,7 @@ export class AgentGrantStore {
     if (!scope || scope.closed) {
       return;
     }
+    this.#scopes.delete(scopeId);
     scope.closed = true;
 
     for (const token of scope.tokens) {

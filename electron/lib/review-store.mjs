@@ -1,6 +1,8 @@
 import path from "node:path";
 import defaultFs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+// @ts-expect-error plain ESM module without types
+import { validateDecision } from "../../shared/receipt.mjs";
 
 // Errors that mean "this filesystem cannot make hard links"; the exclusive copy is used instead.
 const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EINVAL", "EMLINK"]);
@@ -256,6 +258,31 @@ async function placementStillValid(fs, dir, targetPath) {
   }
 }
 
+function isDecisionEqual(a, b) {
+  if (!a || !b) return false;
+  if (a.reviewId !== b.reviewId) return false;
+  if (a.receiptDigest !== b.receiptDigest) return false;
+  if (a.decision !== b.decision) return false;
+  if ((a.comment ?? "") !== (b.comment ?? "")) return false;
+  if (a.decidedAt !== b.decidedAt) return false;
+  if (a.verifiedAt !== b.verifiedAt) return false;
+
+  if (!Array.isArray(a.files) || !Array.isArray(b.files)) return false;
+  if (a.files.length !== b.files.length) return false;
+
+  for (let i = 0; i < a.files.length; i++) {
+    const af = a.files[i];
+    const bf = b.files[i];
+    if (!af || !bf) return false;
+    if (af.path !== bf.path) return false;
+    if (af.expectedSha256 !== bf.expectedSha256) return false;
+    if ((af.observedSha256 ?? null) !== (bf.observedSha256 ?? null)) return false;
+    if (af.state !== bf.state) return false;
+  }
+
+  return true;
+}
+
 /**
  * Writes `<receipt>.decision.json` next to the receipt. Never overwrites another review's decision:
  * the file is created atomically only if absent. Resolves true when this review's decision is there.
@@ -306,9 +333,34 @@ export async function writeDecisionNextToReceipt(receiptPath, decision, { fs = d
     }
     const existingStats = await fs.lstat(targetPath);
     if (existingStats.isSymbolicLink()) {
+      if (outcomeOut) outcomeOut.note = "sidecar_conflict";
       return false;
     }
-    const existing = JSON.parse(await fs.readFile(targetPath, "utf8"));
+
+    let existing;
+    try {
+      const raw = await fs.readFile(targetPath, "utf8");
+      existing = JSON.parse(raw);
+    } catch {
+      if (outcomeOut) outcomeOut.note = "sidecar_conflict";
+      return false;
+    }
+
+    if (outcomeOut) {
+      const validation = await validateDecision(existing);
+      if (!validation.ok) {
+        outcomeOut.note = "sidecar_conflict";
+        return false;
+      }
+
+      if (!isDecisionEqual(validation.decision, decision)) {
+        outcomeOut.note = "sidecar_conflict";
+        return false;
+      }
+
+      return true;
+    }
+
     return Boolean(existing) && existing.reviewId === decision.reviewId;
   } catch {
     return false;

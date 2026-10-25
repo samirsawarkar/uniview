@@ -81,6 +81,7 @@ android/ ios/  Capacitor projects with native "Open with" / Share handling
 - **Offline by construction.** Desktop: the session cancels every request that is not to the app's own schemes. Web/mobile: the Content Security Policy allows no remote hosts. On Android the INTERNET permission is used only for direct, end-to-end encrypted connections to computers you paired with on your local network; the page itself still cannot reach any remote host.
 - **Desktop isolation.** Sandboxed renderer, context isolation, no Node.js in the page, navigation and new windows denied, IPC accepted only from the app's top-level page. Files are served from `uniview-file://<token>/` with HTTP range support, where the 128-bit token exists only for files the user opened (picker, drop, file association, typed path).
 - **Untrusted documents.** EPUB chapters run in a sandboxed iframe without scripts, with their own CSP and sanitized HTML; Markdown is sanitized with DOMPurify; SVG is shown through `<img>`; DOCX embedded HTML is never rendered. ZIP-based formats have per-entry (512 MB) and per-package (1 GB) decompression limits.
+- **Agent security boundary.** The agent bridge trust boundary is the local OS user account (same-user processes can open local regular files for display or reuse enrolled agent keys; file contents cannot be read back and approvals always require human interaction; enrollments can be revoked in the Agents panel).
 
 ## Decisions and reviews
 
