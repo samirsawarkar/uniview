@@ -5,6 +5,7 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as nodeExecFile, spawn } from "node:child_process";
+import { buildColdStartCommand, cleanSpawnEnv } from "./cold-start.mjs";
 import { fileURLToPath } from "node:url";
 
 import { connectBridge } from "./bridge-client.mjs";
@@ -66,11 +67,7 @@ export function resolveUserDataDir({
  * Strips ELECTRON_RUN_AS_NODE from child process environment on cold start
  * so the spawned child runs as the full Electron desktop app rather than Node.
  */
-export function cleanSpawnEnv(parentEnv = process.env) {
-  const childEnv = { ...parentEnv };
-  delete childEnv.ELECTRON_RUN_AS_NODE;
-  return childEnv;
-}
+export { cleanSpawnEnv };
 
 /**
  * Computes spawn args for launching UniView in packaged vs unpackaged mode.
@@ -105,6 +102,7 @@ export async function runMcpServer({
   fs = defaultFs,
   execFile = defaultExecFile,
   spawnApp,
+  spawnProcess = spawn,
   connect,
   clock = realClock,
   approvalGraceMs = 125_000,
@@ -164,15 +162,13 @@ export async function runMcpServer({
       const isExeUniView = path.basename(execPath).toLowerCase().includes("uniview");
       const isInsideAsar = import.meta.url.includes("app.asar");
       const resolvedIsPackaged = app?.isPackaged ?? isPackaged ?? (isExeUniView && isInsideAsar);
-      const child = spawn(
+      const cmd = buildColdStartCommand({
+        platform,
         execPath,
-        computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
-        {
-          detached: true,
-          stdio: "ignore",
-          env: cleanSpawnEnv(env),
-        }
-      );
+        args: computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
+        env,
+      });
+      const child = spawnProcess(cmd.file, cmd.args, cmd.options);
       child.unref();
     });
 

@@ -40,6 +40,7 @@ import { cleanLabel } from "./agent-util.mjs";
 import { runCli } from "./cli.mjs";
 import { runMcp, MCP_LIMITS } from "./mcp-server.mjs";
 import { computeAppSpawnArgs, cleanSpawnEnv, runMcpServer } from "./mcp-runner.mjs";
+import { buildColdStartCommand } from "./cold-start.mjs";
 import { parseRange, contentType, checkReadArgs } from "./core.mjs";
 
 const defaultFs = fsPromises;
@@ -650,6 +651,7 @@ export async function runEarlyCli({
   fs = defaultFs,
   execFile = defaultExecFile,
   spawnApp,
+  spawnProcess = spawn,
   connect,
   sleep,
   app,
@@ -678,15 +680,13 @@ export async function runEarlyCli({
     (async () => {
       const resolvedAppPath = appPath ?? (app?.getAppPath ? app.getAppPath() : process.cwd());
       const resolvedIsPackaged = app?.isPackaged ?? isPackaged;
-      const child = spawn(
-        process.execPath,
-        computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
-        {
-          detached: true,
-          stdio: "ignore",
-          env: cleanSpawnEnv(process.env),
-        }
-      );
+      const cmd = buildColdStartCommand({
+        platform,
+        execPath: process.execPath,
+        args: computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
+        env: process.env,
+      });
+      const child = spawnProcess(cmd.file, cmd.args, cmd.options);
       child.unref();
     });
 
