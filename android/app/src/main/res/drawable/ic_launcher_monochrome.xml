@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- UniView Themed / Monochrome Adaptive Layer -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M 24,54 A 32,32 0 0,1 84,54 A 32,32 0 0,1 24,54 Z M 54,45 A 9,9 0 1,0 54,63 A 9,9 0 1,0 54,45 Z" />
+</vector>
