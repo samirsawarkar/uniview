@@ -65,64 +65,109 @@ function getAllFilesRecursively(dir: string, baseDir: string = dir): string[] {
   return results;
 }
 
-describe("P18 installed-build eval suite (evals/agents.json)", () => {
+function validateSuiteShape(suite: EvalSuite, minCases: number) {
+  expect(Array.isArray(suite.command), "command must be an array").toBe(true);
+  expect(suite.command.length, "command must not be empty").toBeGreaterThan(0);
+  for (const c of suite.command) {
+    expect(typeof c).toBe("string");
+    expect(c.length).toBeGreaterThan(0);
+  }
+
+  expect(Array.isArray(suite.cases), "cases must be an array").toBe(true);
+  expect(suite.cases.length, `cases must contain at least ${minCases} test cases`).toBeGreaterThanOrEqual(minCases);
+
+  for (const c of suite.cases) {
+    expect(typeof c.name, `case ${c.name} must have a name string`).toBe("string");
+    expect(c.name.trim().length, `case ${c.name} name must not be empty`).toBeGreaterThan(0);
+
+    expect(Array.isArray(c.args), `case ${c.name} args must be an array`).toBe(true);
+    for (const a of c.args) {
+      expect(typeof a, `case ${c.name} arg must be string`).toBe("string");
+    }
+
+    if (c.input !== undefined) {
+      expect(typeof c.input, `case ${c.name} input must be a string`).toBe("string");
+    }
+
+    expect(typeof c.expect, `case ${c.name} must have expect object`).toBe("object");
+    expect(c.expect !== null).toBe(true);
+    expect(Number.isInteger(c.expect.exit_code), `case ${c.name} exit_code must be integer`).toBe(true);
+
+    if (c.expect.contains !== undefined) {
+      expect(Array.isArray(c.expect.contains), `case ${c.name} contains must be an array`).toBe(true);
+      for (const s of c.expect.contains) {
+        expect(typeof s).toBe("string");
+      }
+    }
+    if (c.expect.not_contains !== undefined) {
+      expect(Array.isArray(c.expect.not_contains), `case ${c.name} not_contains must be an array`).toBe(true);
+      for (const s of c.expect.not_contains) {
+        expect(typeof s).toBe("string");
+      }
+    }
+    if (c.expect.regex !== undefined) {
+      expect(typeof c.expect.regex, `case ${c.name} regex must be string`).toBe("string");
+    }
+    if (c.expect.json_keys !== undefined) {
+      expect(Array.isArray(c.expect.json_keys), `case ${c.name} json_keys must be an array`).toBe(true);
+      for (const k of c.expect.json_keys) {
+        expect(typeof k).toBe("string");
+      }
+    }
+  }
+}
+
+describe("P18/P25 installed-build eval suite (evals/agents.json and evals/agents-mcp.json)", () => {
   const rootDir = path.resolve(__dirname, "../..");
   const suitePath = path.join(rootDir, "evals", "agents.json");
+  const mcpSuitePath = path.join(rootDir, "evals", "agents-mcp.json");
 
-  it("evals/agents.json exists and has valid aes eval suite shape", () => {
+  it("evals/agents.json exists and has valid aes eval suite shape for CLI cases", () => {
     expect(fs.existsSync(suitePath), "evals/agents.json must exist").toBe(true);
     const content = fs.readFileSync(suitePath, "utf8");
     const suite: EvalSuite = JSON.parse(content);
+    validateSuiteShape(suite, 4);
 
-    expect(Array.isArray(suite.command), "command must be an array").toBe(true);
-    expect(suite.command.length, "command must not be empty").toBeGreaterThan(0);
-    for (const c of suite.command) {
-      expect(typeof c).toBe("string");
-      expect(c.length).toBeGreaterThan(0);
-    }
+    expect(suite.command).toEqual(["UniView.exe"]);
 
-    expect(Array.isArray(suite.cases), "cases must be an array").toBe(true);
-    expect(suite.cases.length, "cases must contain at least 4 test cases").toBeGreaterThanOrEqual(4);
+    // Disallowed in packaged exe suite because no-args starts GUI and unknown arg opens file
+    expect(suite.cases.some((c) => c.name === "usage error missing command")).toBe(false);
+    expect(suite.cases.some((c) => c.name === "usage error unknown command")).toBe(false);
 
-    for (const c of suite.cases) {
-      expect(typeof c.name, `case ${c.name} must have a name string`).toBe("string");
-      expect(c.name.trim().length, `case ${c.name} name must not be empty`).toBeGreaterThan(0);
+    // MCP cases moved to agents-mcp.json
+    expect(suite.cases.some((c) => c.args.includes("--mcp"))).toBe(false);
+  });
 
-      expect(Array.isArray(c.args), `case ${c.name} args must be an array`).toBe(true);
-      for (const a of c.args) {
-        expect(typeof a, `case ${c.name} arg must be string`).toBe("string");
-      }
+  it("evals/agents-mcp.json exists and has valid shape with placeholder launcher command", () => {
+    expect(fs.existsSync(mcpSuitePath), "evals/agents-mcp.json must exist").toBe(true);
+    const content = fs.readFileSync(mcpSuitePath, "utf8");
+    const suite: EvalSuite = JSON.parse(content);
+    validateSuiteShape(suite, 3);
 
-      if (c.input !== undefined) {
-        expect(typeof c.input, `case ${c.name} input must be a string`).toBe("string");
-      }
+    expect(suite.command).toEqual(["cmd", "/c", "<install>\\resources\\uniview-mcp.cmd"]);
 
-      expect(typeof c.expect, `case ${c.name} must have expect object`).toBe("object");
-      expect(c.expect !== null).toBe(true);
-      expect(Number.isInteger(c.expect.exit_code), `case ${c.name} exit_code must be integer`).toBe(true);
+    const hasMcpTranscript = suite.cases.some(
+      (c) =>
+        c.input?.includes("initialize") &&
+        c.input?.includes("tools/list") &&
+        c.expect.exit_code === 0 &&
+        c.expect.contains?.some((sub) => sub.includes("tools"))
+    );
+    expect(hasMcpTranscript, "MCP suite must include initialize + tools/list transcript case").toBe(true);
 
-      if (c.expect.contains !== undefined) {
-        expect(Array.isArray(c.expect.contains), `case ${c.name} contains must be an array`).toBe(true);
-        for (const s of c.expect.contains) {
-          expect(typeof s).toBe("string");
-        }
-      }
-      if (c.expect.not_contains !== undefined) {
-        expect(Array.isArray(c.expect.not_contains), `case ${c.name} not_contains must be an array`).toBe(true);
-        for (const s of c.expect.not_contains) {
-          expect(typeof s).toBe("string");
-        }
-      }
-      if (c.expect.regex !== undefined) {
-        expect(typeof c.expect.regex, `case ${c.name} regex must be string`).toBe("string");
-      }
-      if (c.expect.json_keys !== undefined) {
-        expect(Array.isArray(c.expect.json_keys), `case ${c.name} json_keys must be an array`).toBe(true);
-        for (const k of c.expect.json_keys) {
-          expect(typeof k).toBe("string");
-        }
-      }
-    }
+    const hasSpecError = suite.cases.some(
+      (c) =>
+        c.input?.includes("show_view") &&
+        c.expect.contains?.some((sub) => sub.includes("invalid_spec"))
+    );
+    expect(hasSpecError, "MCP suite must include invalid_spec case").toBe(true);
+
+    const hasReceiptError = suite.cases.some(
+      (c) =>
+        c.input?.includes("request_review") &&
+        c.expect.contains?.some((sub) => sub.includes("invalid_receipt"))
+    );
+    expect(hasReceiptError, "MCP suite must include invalid_receipt case").toBe(true);
   });
 
   it("every args flag used in CLI cases is accepted by cli.mjs parseArgs without drift", () => {
@@ -134,8 +179,6 @@ describe("P18 installed-build eval suite (evals/agents.json)", () => {
 
     for (const c of suite.cases) {
       if (c.args.includes("--mcp")) {
-        // MCP entry flag
-        expect(c.args).toEqual(["--mcp"]);
         continue;
       }
 
@@ -166,7 +209,6 @@ describe("P18 installed-build eval suite (evals/agents.json)", () => {
 
         const parsed = parseArgs(c.args, cwd);
         if (!parsed.ok) {
-          // If parseArgs failed, ensure it is NOT because of an unknown flag
           expect(
             parsed.error,
             `Case '${c.name}' failed parseArgs with unknown option: ${parsed.error}`
@@ -176,7 +218,7 @@ describe("P18 installed-build eval suite (evals/agents.json)", () => {
     }
   });
 
-  it("covers required P18 golden cases: open ack, usage errors, mcp transcript, spec/receipt error", () => {
+  it("covers required P18 golden CLI cases: open ack and open usage errors", () => {
     expect(fs.existsSync(suitePath)).toBe(true);
     const suite: EvalSuite = JSON.parse(fs.readFileSync(suitePath, "utf8"));
 
@@ -188,38 +230,23 @@ describe("P18 installed-build eval suite (evals/agents.json)", () => {
     );
     expect(hasOpenAck, "suite must include an open acknowledgement case").toBe(true);
 
-    const usageCases = suite.cases.filter((c) => c.expect.exit_code === 2);
-    expect(usageCases.length, "suite must include usage-error exit code (2) cases").toBeGreaterThanOrEqual(2);
-
-    const hasMcpTranscript = suite.cases.some(
-      (c) =>
-        c.args.includes("--mcp") &&
-        c.input?.includes("initialize") &&
-        c.input?.includes("tools/list") &&
-        c.expect.exit_code === 0 &&
-        c.expect.contains?.some((sub) => sub.includes("tools"))
-    );
-    expect(hasMcpTranscript, "suite must include --mcp initialize + tools/list transcript case").toBe(true);
-
-    const hasValidationErr = suite.cases.some(
-      (c) =>
-        c.expect.contains?.some(
-          (sub) => sub.includes("invalid_spec") || sub.includes("invalid_receipt")
-        )
-    );
-    expect(hasValidationErr, "suite must include a spec or receipt validation error case").toBe(true);
+    const usageCases = suite.cases.filter((c) => c.expect.exit_code === 2 && c.args[0] === "open");
+    expect(usageCases.length, "suite must include open usage-error exit code (2) cases").toBeGreaterThanOrEqual(2);
   });
 });
 
-describe("P18 packaging verification (electron-builder.json)", () => {
+describe("P18/P25 packaging verification (electron-builder.json)", () => {
   const rootDir = path.resolve(__dirname, "../..");
   const builderPath = path.join(rootDir, "electron-builder.json");
 
-  it("electron-builder.json includes electron/lib/*.mjs and shared/**", () => {
+  it("electron-builder.json includes electron/mcp-entry.mjs, electron/lib/*.mjs, shared/**, and extraResources launcher", () => {
     expect(fs.existsSync(builderPath)).toBe(true);
     const config = JSON.parse(fs.readFileSync(builderPath, "utf8"));
     const files = config.files;
     expect(Array.isArray(files), "electron-builder.json must have 'files' array").toBe(true);
+
+    // Verify electron/mcp-entry.mjs is covered
+    expect(isCovered("electron/mcp-entry.mjs", files), "files glob must cover electron/mcp-entry.mjs").toBe(true);
 
     // Verify electron/lib/*.mjs
     const libDir = path.join(rootDir, "electron", "lib");
@@ -246,6 +273,18 @@ describe("P18 packaging verification (electron-builder.json)", () => {
         `electron-builder.json files must cover ${relPath}`
       ).toBe(true);
     }
+
+    // Verify extraResources contains uniview-mcp.cmd
+    expect(Array.isArray(config.extraResources), "electron-builder.json must have 'extraResources' array").toBe(true);
+    const hasLauncher = config.extraResources.some((res: any) => {
+      if (typeof res === "string") return res.includes("uniview-mcp.cmd");
+      return (res?.from?.includes("uniview-mcp.cmd") || res?.to?.includes("uniview-mcp.cmd"));
+    });
+    expect(hasLauncher, "extraResources must package uniview-mcp.cmd launcher").toBe(true);
+
+    // Verify build/uniview-mcp.cmd exists on disk
+    const launcherSource = path.join(rootDir, "build", "uniview-mcp.cmd");
+    expect(fs.existsSync(launcherSource), "build/uniview-mcp.cmd must exist").toBe(true);
   });
 
   it("README.md links to docs/AGENTS.md and docs/AGENTS.md exists", () => {

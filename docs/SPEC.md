@@ -89,6 +89,12 @@ Limits: files over 2 GB stream (media) or page (text/hex). In-memory parsers ref
 
 `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`, `webSecurity: true`. App served from the `uniview://app/` scheme. Files served from `uniview-file://<token>` with HTTP range support, only for paths the user granted (picker, drop, argv/file association, recent list confirmed by the user). Every other request is cancelled. `will-navigate` and `window.open` are denied. Single instance; second-instance argv opens files in tabs. IPC channels are allow-listed and validate their arguments.
 
+## Packaging and Agent Integration
+
+- Desktop packaging via electron-builder (`electron-builder.json`).
+- CLI client: `UniView open <files>...` runs early in the GUI executable and communicates with the running app or cold-starts it.
+- MCP stdio server: because Electron's GUI executable on Windows closes stdin in the main process, stdio MCP cannot run directly via `UniView.exe --mcp`. Instead, the MCP server runs via `ELECTRON_RUN_AS_NODE=1 UniView.exe resources/app.asar/electron/mcp-entry.mjs` or the bundled launcher `resources/uniview-mcp.cmd` (shipped via extraResources). Invoking `UniView.exe --mcp` writes an explanatory error message to stderr and exits with code 2 (CTO decision 2026-10-25).
+
 ## Tests
 
 - Unit (vitest): detection table, PPTX parser, EPUB parser, ZIP listing, CSV/XLSX adapter, text heuristic, hex formatter, Electron path grants and range parsing, fence.

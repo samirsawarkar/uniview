@@ -13,6 +13,12 @@
     "package.json",
     "!**/*.map"
   ],
+  "extraResources": [
+    {
+      "from": "build/uniview-mcp.cmd",
+      "to": "uniview-mcp.cmd"
+    }
+  ],
   "asar": true,
   "npmRebuild": false,
   "electronLanguages": [

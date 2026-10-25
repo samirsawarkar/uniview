@@ -27,7 +27,7 @@ UniView is one simple, Chrome-like app for viewing documents, spreadsheets, pres
 - **Open:** drag files anywhere, click **Open** (Ctrl+O), double-click a file in Explorer/Finder, or use "Open with" / Share on a phone.
 - **Tabs:** Ctrl+T new tab, Ctrl+W close, Ctrl+Tab / Ctrl+Shift+Tab switch, Ctrl+1…9 jump, middle-click closes.
 - **Omnibox (Ctrl+L):** search open tabs and recent files; on desktop, paste a file path and press Enter.
-- **AI agents:** connect over MCP (`--mcp`) or command line (`UniView open`), show files, render declarative view specs, and request human review approvals. See [docs/AGENTS.md](docs/AGENTS.md).
+- **AI agents:** connect over MCP (`resources\uniview-mcp.cmd` or `ELECTRON_RUN_AS_NODE=1 UniView.exe resources\app.asar\electron\mcp-entry.mjs` because Electron's main process on Windows closes stdin in GUI mode) or command line (`UniView open`), show files, render declarative view specs, and request human review approvals. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Measured
 

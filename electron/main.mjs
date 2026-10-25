@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { setupRemote, thumbnailPng } from "./lib/remote-main.mjs";
 import { installShutdownDismiss } from "./lib/review-ipc.mjs";
 import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp, buildEarlyLaunchOptions } from "./lib/app-agents.mjs";
+import { buildMcpErrorMessage } from "./lib/mcp-runner.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,10 +36,8 @@ if (!app.isPackaged && process.env.UNIVIEW_USER_DATA) app.setPath("userData", pr
 // 8. Early CLI and MCP detection: runs before single-instance lock without creating a window.
 const early = detectEarlyArgv(process.argv, app.isPackaged);
 if (early.isMcp) {
-  const code = await runEarlyMcp({
-    ...buildEarlyLaunchOptions({ app, process }),
-  });
-  app.exit(typeof code === "number" ? code : 0);
+  process.stderr.write(buildMcpErrorMessage());
+  app.exit(2);
 } else if (early.isCli) {
   const code = await runEarlyCli({
     argv: early.cliArgv,

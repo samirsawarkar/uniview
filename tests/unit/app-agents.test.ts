@@ -881,7 +881,7 @@ describe("Packet P17c: app-agents wiring factory", () => {
     expect(() => buildEarlyLaunchOptions({ app: null as any })).toThrow();
   });
 
-  it("Finding 4 static test: main.mjs imports buildEarlyLaunchOptions and calls it at both early call sites", async () => {
+  it("Finding 4 static test: main.mjs imports buildEarlyLaunchOptions for CLI and handles early MCP exit", async () => {
     // Mutation: main.mjs directly constructing or dropping metadata arguments instead of using buildEarlyLaunchOptions
     const mainMjsPath = path.resolve(__dirname, "../../electron/main.mjs");
     const mainMjsContent = await fs.readFile(mainMjsPath, "utf8");
@@ -889,9 +889,13 @@ describe("Packet P17c: app-agents wiring factory", () => {
     // Must import buildEarlyLaunchOptions from ./lib/app-agents.mjs
     expect(mainMjsContent).toMatch(/import\s*\{[^}]*buildEarlyLaunchOptions[^}]*\}\s*from\s*["']\.\/lib\/app-agents\.mjs["']/);
 
-    // Must call buildEarlyLaunchOptions at both early.isMcp and early.isCli sites
+    // Must call buildEarlyLaunchOptions at early.isCli site
     const calls = mainMjsContent.match(/buildEarlyLaunchOptions\s*\(/g);
     expect(calls).not.toBeNull();
-    expect(calls!.length).toBeGreaterThanOrEqual(2);
+    expect(calls!.length).toBeGreaterThanOrEqual(1);
+
+    // Must use buildMcpErrorMessage and app.exit(2) on early.isMcp
+    expect(mainMjsContent).toMatch(/buildMcpErrorMessage/);
+    expect(mainMjsContent).toMatch(/app\.exit\(2\)/);
   });
 });

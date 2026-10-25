@@ -1,0 +1,52 @@
+{
+  "command": [
+    "cmd",
+    "/c",
+    "<install>\\resources\\uniview-mcp.cmd"
+  ],
+  "cases": [
+    {
+      "name": "mcp initialize and tools list transcript",
+      "args": [],
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"eval-suite\",\"version\":\"1.0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n",
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "\"protocolVersion\":\"2025-06-18\"",
+          "\"serverInfo\":{\"name\":\"UniView\"",
+          "\"tools\":[",
+          "\"name\":\"open_files\"",
+          "\"name\":\"show_view\"",
+          "\"name\":\"request_review\"",
+          "\"name\":\"get_review\""
+        ]
+      }
+    },
+    {
+      "name": "mcp show_view returns invalid_spec error on invalid spec",
+      "args": [],
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"eval-suite\",\"version\":\"1.0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"show_view\",\"arguments\":{\"specText\":\"{\\\"uniview\\\":\\\"view/1\\\",\\\"body\\\":[]}\"}}}\n",
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "invalid_spec",
+          "The view spec is not valid",
+          "schema"
+        ]
+      }
+    },
+    {
+      "name": "mcp request_review returns invalid_receipt error on invalid receipt",
+      "args": [],
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"eval-suite\",\"version\":\"1.0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"request_review\",\"arguments\":{\"receiptText\":\"{\\\"uniview\\\":\\\"receipt/1\\\"}\"}}}\n",
+      "expect": {
+        "exit_code": 0,
+        "contains": [
+          "invalid_receipt",
+          "The review receipt is not valid",
+          "schema"
+        ]
+      }
+    }
+  ]
+}

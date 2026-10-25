@@ -64,10 +64,17 @@ UniView provides a built-in Model Context Protocol (MCP) stdio server.
 
 ### Invocation
 
+Because Electron on Windows closes stdin in GUI process mode, stdio MCP cannot run directly via `UniView.exe --mcp`; it must be run with `ELECTRON_RUN_AS_NODE=1` pointing to the entry script or through the bundled cmd launcher:
+
 ```bash
-UniView.exe --mcp
+# Using the launcher:
+"C:\Users\<username>\AppData\Local\Programs\UniView\resources\uniview-mcp.cmd"
+
+# Or using UniView.exe with ELECTRON_RUN_AS_NODE=1:
+set ELECTRON_RUN_AS_NODE=1
+"C:\Users\<username>\AppData\Local\Programs\UniView\UniView.exe" "C:\Users\<username>\AppData\Local\Programs\UniView\resources\app.asar\electron\mcp-entry.mjs"
 ```
-*(In source development: `electron . --mcp`)*
+*(In source development: `node electron/mcp-entry.mjs`)*
 
 - **Transport**: Standard JSON-RPC 2.0 over `stdin` and `stdout` (newline-delimited UTF-8).
 - **Logging**: All diagnostics and operational logs are written to `stderr`. `stdout` carries only protocol messages.
@@ -351,27 +358,41 @@ When approved, UniView generates a decision record (`uniview decision/1`) signed
 
 Replace `<username>` with your Windows user profile name.
 
-Packaged executable path placeholder on Windows:
+Packaged installation directory placeholder on Windows:
 ```text
-C:\Users\<username>\AppData\Local\Programs\UniView\UniView.exe
+C:\Users\<username>\AppData\Local\Programs\UniView
 ```
 
 ### 1. Claude Code
 
-Add the MCP server via CLI:
+Add the MCP server via CLI using the launcher:
 ```bash
-claude mcp add uniview -- "C:\Users\<username>\AppData\Local\Programs\UniView\UniView.exe" --mcp
+claude mcp add uniview -- "C:\Users\<username>\AppData\Local\Programs\UniView\resources\uniview-mcp.cmd"
 ```
 
-Or add to `.mcp.json` / Claude Desktop configuration:
+Or configure in `.mcp.json` / Claude Desktop configuration using `ELECTRON_RUN_AS_NODE`:
 ```json
 {
   "mcpServers": {
     "uniview": {
       "command": "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\UniView.exe",
       "args": [
-        "--mcp"
-      ]
+        "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\app.asar\\electron\\mcp-entry.mjs"
+      ],
+      "env": {
+        "ELECTRON_RUN_AS_NODE": "1"
+      }
+    }
+  }
+}
+```
+
+Alternative launcher configuration:
+```json
+{
+  "mcpServers": {
+    "uniview": {
+      "command": "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\uniview-mcp.cmd"
     }
   }
 }
@@ -383,7 +404,14 @@ In `config.toml`:
 ```toml
 [mcp_servers.uniview]
 command = "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\UniView.exe"
-args = ["--mcp"]
+args = ["C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\app.asar\\electron\\mcp-entry.mjs"]
+env = { ELECTRON_RUN_AS_NODE = "1" }
+```
+
+Alternative using the launcher:
+```toml
+[mcp_servers.uniview]
+command = "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\uniview-mcp.cmd"
 ```
 
 ### 3. Cursor
@@ -395,8 +423,22 @@ In `.cursor/mcp.json`:
     "uniview": {
       "command": "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\UniView.exe",
       "args": [
-        "--mcp"
-      ]
+        "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\app.asar\\electron\\mcp-entry.mjs"
+      ],
+      "env": {
+        "ELECTRON_RUN_AS_NODE": "1"
+      }
+    }
+  }
+}
+```
+
+Alternative using the launcher:
+```json
+{
+  "mcpServers": {
+    "uniview": {
+      "command": "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\uniview-mcp.cmd"
     }
   }
 }

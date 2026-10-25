@@ -39,6 +39,7 @@ import { enrollProof, BridgeError } from "./bridge-proto.mjs";
 import { cleanLabel } from "./agent-util.mjs";
 import { runCli } from "./cli.mjs";
 import { runMcp, MCP_LIMITS } from "./mcp-server.mjs";
+import { computeAppSpawnArgs, cleanSpawnEnv, runMcpServer } from "./mcp-runner.mjs";
 import { parseRange, contentType, checkReadArgs } from "./core.mjs";
 
 const defaultFs = fsPromises;
@@ -618,14 +619,7 @@ export function createMcpClock({ approvalGraceMs = 125_000, clock = realClock } 
   };
 }
 
-/**
- * Computes spawn args for launching UniView in packaged vs unpackaged mode.
- * In unpackaged mode (dev), starts process.execPath with [appPath] so Electron loads this app.
- * In packaged mode, starts process.execPath with [].
- */
-export function computeAppSpawnArgs({ isPackaged = false, appPath = "" } = {}) {
-  return isPackaged ? [] : [appPath || process.cwd()];
-}
+export { computeAppSpawnArgs, cleanSpawnEnv, runMcpServer };
 
 /**
  * Builds the launch options required for runEarlyCli and runEarlyMcp from app and process metadata.
@@ -690,6 +684,7 @@ export async function runEarlyCli({
         {
           detached: true,
           stdio: "ignore",
+          env: cleanSpawnEnv(process.env),
         }
       );
       child.unref();
@@ -708,88 +703,10 @@ export async function runEarlyCli({
 
 /**
  * Runs the MCP stdio server early before the single-instance lock.
+ * Delegates to reusable runMcpServer (Packet P25).
  */
-export async function runEarlyMcp({
-  stdin = process.stdin,
-  stdout = process.stdout,
-  stderr = process.stderr,
-  userDataDir,
-  platform = process.platform,
-  fs = defaultFs,
-  execFile = defaultExecFile,
-  spawnApp,
-  connect,
-  clock = realClock,
-  approvalGraceMs = 125_000,
-  app,
-  isPackaged = false,
-  appPath,
-}) {
-  const bridgeDir = path.join(userDataDir, "bridge");
-  const agentsDir = path.join(userDataDir, "agents");
-
-  const baseConnect =
-    connect ||
-    (async () => {
-      const key = await readBridgeKey(bridgeDir, { platform, fs, execFile });
-      const endpoint =
-        platform === "win32"
-          ? bridgeEndpoint({
-              platform,
-              bridgeDir,
-              userSid: await windowsUserSid({ execFile }),
-              installId: await ensureInstallId(bridgeDir, { fs }),
-            })
-          : bridgeEndpoint({ platform, bridgeDir });
-      return connectBridge({ endpoint, key });
-    });
-
-  const wrappedConnect = async () => {
-    const client = await baseConnect();
-    return {
-      ...client,
-      request: async (method, params, body) => {
-        if (method !== "mcp.hello") return client.request(method, params, body);
-        let enroll;
-        try {
-          const found = await readClientKey({ dir: agentsDir, name: params?.client?.name, fs });
-          if (found) {
-            enroll = {
-              clientId: found.clientId,
-              proof: enrollProof(found.key, client.serverNonce, client.clientNonce).toString("base64"),
-            };
-          }
-        } catch {}
-        return client.request(method, { ...params, ...(enroll ? { enroll } : {}) }, body);
-      },
-    };
-  };
-
-  const doStartApp =
-    spawnApp ||
-    (async () => {
-      const resolvedAppPath = appPath ?? (app?.getAppPath ? app.getAppPath() : process.cwd());
-      const resolvedIsPackaged = app?.isPackaged ?? isPackaged;
-      const child = spawn(
-        process.execPath,
-        computeAppSpawnArgs({ isPackaged: resolvedIsPackaged, appPath: resolvedAppPath }),
-        {
-          detached: true,
-          stdio: "ignore",
-        }
-      );
-      child.unref();
-    });
-
-  return runMcp({
-    stdin,
-    stdout,
-    stderr,
-    connect: wrappedConnect,
-    startApp: doStartApp,
-    clock,
-    approvalGraceMs,
-  });
+export async function runEarlyMcp(options = {}) {
+  return runMcpServer(options);
 }
 
 /**
