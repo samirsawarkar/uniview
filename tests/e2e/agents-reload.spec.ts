@@ -75,8 +75,8 @@ test.describe("Packet P17c-3: Agent view reload verification", () => {
       const openRes = await client.request("open", {}, Buffer.from(JSON.stringify([uviewFile]), "utf8"));
       expect(openRes.result).toEqual({ opened: 1 });
 
-      // Tab should appear named after the title or filename
-      await expect(page.locator(".tab", { hasText: "ORIGINAL_AGENT_VIEW_TITLE" })).toBeVisible({ timeout: 15_000 });
+      // Tab should appear named after the filename
+      await expect(page.locator(".tab", { hasText: "agent-spec.uview.json" })).toBeVisible({ timeout: 15_000 });
       await expect(page.locator(".vs-title")).toContainText("ORIGINAL_AGENT_VIEW_TITLE");
       await expect(page.locator(".vs-heading")).toContainText("ORIGINAL_AGENT_VIEW_HEADING");
 
