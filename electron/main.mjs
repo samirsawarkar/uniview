@@ -10,6 +10,8 @@ import { installShutdownDismiss } from "./lib/review-ipc.mjs";
 import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp, buildEarlyLaunchOptions } from "./lib/app-agents.mjs";
 import { buildMcpErrorMessage } from "./lib/mcp-runner.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
+import { isNewWindowShortcut, shouldStopAppAgentsOnRenderProcessGone } from "./lib/window-lifecycle.mjs";
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DIST = join(here, "..", "dist");
@@ -22,7 +24,7 @@ const CSP =
 const grants = new GrantStore();
 const pending = [];
 let win = null;
-let rendererReady = false;
+const readyWindows = new Set();
 let appAgents = null;
 
 protocol.registerSchemesAsPrivileged([
@@ -94,7 +96,7 @@ async function openPaths(paths) {
     }
   }
   if (!files.length) return;
-  if (win && rendererReady) win.webContents.send("open-files", files);
+  if (win && readyWindows.has(win)) win.webContents.send("open-files", files);
   else pending.push(...files);
 }
 
@@ -170,8 +172,9 @@ function guard(handler) {
 }
 
 function registerIpc() {
-  ipcMain.handle("uniview:pick", guard(async () => {
-    const res = await dialog.showOpenDialog(win, { properties: ["openFile", "multiSelections"], title: "Open files" });
+  ipcMain.handle("uniview:pick", guard(async (event) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(parent, { properties: ["openFile", "multiSelections"], title: "Open files" });
     if (res.canceled) return [];
     return Promise.all(res.filePaths.map(grantFile));
   }));
@@ -248,16 +251,27 @@ function registerIpc() {
   }));
   ipcMain.on("uniview:ready", (e) => {
     if (!fromApp(e)) return;
-    rendererReady = true;
+    const window = BrowserWindow.fromWebContents(e.sender);
+    if (!window) return;
+    readyWindows.add(window);
     void appAgents?.uiManager?.setReady();
-    if (pending.length && win) win.webContents.send("open-files", pending.splice(0));
+    if (pending.length && window === win) window.webContents.send("open-files", pending.splice(0));
   });
+}
+
+let lastNewWindowTime = 0;
+function openNewWindow() {
+  const now = Date.now();
+  if (now - lastNewWindowTime < 250) return null;
+  lastNewWindowTime = now;
+  return createWindow();
 }
 
 function buildMenu() {
   const isMac = process.platform === "darwin";
   const template = [
     ...(isMac ? [{ role: "appMenu" }] : []),
+    { label: "File", submenu: [{ label: "New Window", accelerator: "CommandOrControl+N", click: () => { void openNewWindow(); } }] },
     { role: "editMenu" },
     {
       label: "View",
@@ -284,7 +298,12 @@ async function start() {
     contents.on("will-attach-webview", (e) => e.preventDefault());
   });
 
-  win = new BrowserWindow({
+  await createWindow();
+  void openPaths(filesFromArgv(process.argv, app.isPackaged));
+}
+
+async function createWindow() {
+  const window = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 480,
@@ -304,19 +323,35 @@ async function start() {
       navigateOnDragDrop: false,
     },
   });
-  win.once("ready-to-show", () => win?.show());
-  win.webContents.on("render-process-gone", (_e, details) => {
-    if (details.reason !== "clean-exit") {
-      void appAgents?.stop();
-      win?.reload();
+  if (!win) win = window;
+  window.webContents.on("before-input-event", (event, input) => {
+    if (isNewWindowShortcut(input)) {
+      event.preventDefault();
+      void openNewWindow();
     }
   });
-  win.on("closed", () => {
-    win = null;
-    rendererReady = false;
+  window.on("focus", () => {
+    win = window;
+    if (readyWindows.has(window) && pending.length) window.webContents.send("open-files", pending.splice(0));
   });
-  await win.loadURL("uniview://app/index.html");
-  void openPaths(filesFromArgv(process.argv, app.isPackaged));
+  window.once("ready-to-show", () => window.show());
+  window.webContents.on("render-process-gone", (_e, details) => {
+    if (shouldStopAppAgentsOnRenderProcessGone(BrowserWindow.getAllWindows(), window)) {
+      void appAgents?.stop();
+    }
+    if (details.reason !== "clean-exit") {
+      readyWindows.delete(window);
+      window.reload();
+    }
+  });
+  window.on("closed", () => {
+    readyWindows.delete(window);
+    if (win === window) {
+      win = BrowserWindow.getAllWindows().find((candidate) => candidate !== window && !candidate.isDestroyed()) ?? null;
+      if (win && readyWindows.has(win) && pending.length) win.webContents.send("open-files", pending.splice(0));
+    }
+  });
+  await window.loadURL("uniview://app/index.html");
 }
 
 app.on("window-all-closed", () => app.quit());

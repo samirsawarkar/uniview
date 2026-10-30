@@ -25,6 +25,7 @@ UniView is one simple, Chrome-like app for viewing documents, spreadsheets, pres
 ## Using it
 
 - **Open:** drag files anywhere, click **Open** (Ctrl+O), double-click a file in Explorer/Finder, or use "Open with" / Share on a phone.
+- **Windows:** Ctrl+N opens a new window with its own tabs on desktop.
 - **Tabs:** Ctrl+T new tab, Ctrl+W close, Ctrl+Tab / Ctrl+Shift+Tab switch, Ctrl+1…9 jump, middle-click closes.
 - **Omnibox (Ctrl+L):** search open tabs and recent files; on desktop, paste a file path and press Enter.
 - **AI agents:** connect over MCP (`resources\uniview-mcp.cmd` or `ELECTRON_RUN_AS_NODE=1 UniView.exe resources\app.asar\electron\mcp-entry.mjs` because Electron's main process on Windows closes stdin in GUI mode) or command line (`UniView open`), show files, render declarative view specs, and request human review approvals. See [docs/AGENTS.md](docs/AGENTS.md).
@@ -104,3 +105,9 @@ Recorded in Obsidian (`uniview`) and in `.aes/`:
 ## License
 
 MIT for UniView's own code. Bundled libraries keep their licences: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Set UniView as a default viewer on Windows
+
+Install `UniView-Setup-1.0.0.exe` (the portable version does not register file types). Open **Settings → Apps → Default apps**, search for **UniView**, and select it for each file type you want it to open. You can also right-click a file in Explorer, choose **Open with → Choose another app**, select UniView, and choose **Always**. Installing UniView does not change your existing defaults. Windows chooses defaults separately for each extension.
+
+UniView can open other files using **Open** or drag and drop, including an inspection fallback for unknown formats; it cannot faithfully render every document format. See the format table and known limits above and below.

@@ -72,3 +72,27 @@ test("desktop shell opens argv files, streams media and blocks the network", asy
     await app.close();
   }
 });
+
+test("Ctrl+N opens an independent window and closing it keeps the first window usable", async () => {
+  const app = await electron.launch({ args: [".", join(FX, "deck.pptx")], cwd: process.cwd() });
+  try {
+    const first = await app.firstWindow();
+    await expect(first.locator(".tab", { hasText: "deck.pptx" })).toBeVisible();
+    const nextWindow = app.waitForEvent("window");
+    await first.keyboard.press("Control+N");
+    const second = await nextWindow;
+    await expect(second.locator(".tab", { hasText: "deck.pptx" })).toHaveCount(0);
+    await app.evaluate(({ dialog }, file) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
+    }, join(FX, "tone.wav"));
+    await second.keyboard.press("Control+O");
+    await expect(second.locator(".tab", { hasText: "tone.wav" })).toBeVisible();
+    await expect(first.locator(".tab", { hasText: "tone.wav" })).toHaveCount(0);
+    await second.close();
+    await expect(first.locator(".tab", { hasText: "deck.pptx" })).toBeVisible();
+    await first.keyboard.press("Control+T");
+    await expect(first.locator(".tab")).toHaveCount(2);
+  } finally {
+    await app.close();
+  }
+});
