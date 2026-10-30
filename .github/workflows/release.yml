@@ -1,0 +1,174 @@
+# UniView manual release. Run it from the Actions tab: "Release (manual, unsigned)", "Run workflow", enter a tag such as v1.0.0.
+#
+# What it produces (all UNSIGNED; no certificate, keystore, password or secret is used anywhere in this file):
+#   - Windows installer and portable exe (electron-builder)
+#   - Android debug APK (debug-signed by Android's own debug key, installable) and release APK (unsigned)
+#   - SHA256SUMS.txt for every file
+# Everything is uploaded as a workflow artifact and attached to a DRAFT GitHub release. Nothing is published:
+# a person must open the draft on GitHub and press "Publish release". See docs/FREE-RELEASE.md.
+name: Release (manual, unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.0.0 (must equal v + the version in package.json)"
+        required: true
+        type: string
+
+# Read-only by default. Only the draft-release job below is granted write access.
+permissions:
+  contents: read
+
+# One release run at a time.
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows and Android (unsigned)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      # The input is passed through an environment variable, never pasted into a script.
+      RELEASE_TAG: ${{ inputs.tag }}
+      # Never look for a certificate on the runner; the output is deliberately unsigned (same as ci.yml).
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check the tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Tag '$($env:RELEASE_TAG)' is not like v1.0.0"
+          }
+
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # Installer file names use the version from package.json, so the tag must match it.
+      - name: Check the tag matches package.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Tag '$($env:RELEASE_TAG)' does not match package.json version '$version'. Bump the version first (docs/RELEASE-CHECKLIST.md, Phase 2)."
+          }
+
+      # package.json has no "engines" field, so Node comes from the README (Node 22+, tested on 24.x). Same as ci.yml.
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # pdf.js data and licence files are copied into public/ (git-ignored) by the "prebuild" npm hook.
+      # Plain `npx vite build` does not run npm hooks, so run the same script first (same as ci.yml).
+      - name: Copy pdf.js assets and licence files
+        run: node scripts/copy-assets.mjs
+
+      - name: Type check
+        run: npx tsc --noEmit -p .
+
+      - name: Production build
+        run: npx vite build
+
+      - name: Package the Windows app with electron-builder (unsigned, no publishing)
+        run: npx electron-builder --win --config electron-builder.json --config.directories.output=release-out --publish never
+
+      # Android needs JDK 21 (android/app/capacitor.build.gradle sets Java 21). The Android SDK is preinstalled
+      # on windows-latest runners. [VERIFY] on the first run: if Gradle cannot find or download SDK platform 36,
+      # this step is where it fails.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Copy the web build into the Android project
+        run: npx cap sync android
+
+      # Debug APK: signed with Android's public debug key, so a phone accepts it. Release APK: UNSIGNED
+      # (there is no signingConfig in android/app/build.gradle and no keystore here), so a phone will not install
+      # it until someone signs it. Gradle must run inside android/ (it takes the current folder as the project).
+      - name: Build the Android APKs
+        working-directory: android
+        run: .\gradlew.bat assembleDebug assembleRelease
+
+      - name: Collect the release files and compute SHA-256
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:RELEASE_TAG
+          New-Item -ItemType Directory -Force staging | Out-Null
+
+          $sources = @(
+            @{ Pattern = 'release-out/UniView-Setup-*.exe';    Name = $null },
+            @{ Pattern = 'release-out/UniView-Portable-*.exe'; Name = $null },
+            @{ Pattern = 'android/app/build/outputs/apk/debug/*.apk';   Name = "UniView-$tag-android-debug.apk" },
+            @{ Pattern = 'android/app/build/outputs/apk/release/*.apk'; Name = "UniView-$tag-android-release-unsigned.apk" }
+          )
+          foreach ($s in $sources) {
+            $found = @(Get-ChildItem -Path $s.Pattern -File)
+            if ($found.Count -ne 1) { throw "Expected exactly 1 file for '$($s.Pattern)', found $($found.Count)" }
+            $target = if ($s.Name) { $s.Name } else { $found[0].Name }
+            Copy-Item $found[0].FullName (Join-Path staging $target)
+          }
+
+          # SHA256SUMS.txt in the format `sha256sum -c` reads: "<lowercase hash>  <file name>", LF line ends, no BOM.
+          $lines = Get-ChildItem staging -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'staging/SHA256SUMS.txt'), (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          Get-Content staging/SHA256SUMS.txt
+
+      - name: Upload the release files as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uniview-release-unsigned
+          path: staging/*
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    name: Create the draft GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only write permission in this workflow: creating a release in this repository. Uses the built-in token.
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@v4
+        with:
+          name: uniview-release-unsigned
+          path: staging
+
+      - name: Verify the checksums
+        working-directory: staging
+        run: sha256sum -c SHA256SUMS.txt
+
+      # --draft: nothing is public until a person presses "Publish release". The tag is created at the built commit
+      # only when the draft is published (--target pins it to this run's commit).
+      - name: Create the draft release
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release for $RELEASE_TAG already exists. Delete it or pick a new tag." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" staging/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "UniView $RELEASE_TAG (unsigned)" \
+            --notes "Unsigned builds. Windows will show a SmartScreen warning ('More info', then 'Run anyway'). Check each file against SHA256SUMS.txt before running it. The Android debug APK installs on a phone; the release APK is unsigned and needs signing first. Full guide: docs/FREE-RELEASE.md in the repository."
