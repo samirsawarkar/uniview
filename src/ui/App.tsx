@@ -620,8 +620,8 @@ export function App() {
                 onOpen={(f) => openFiles(f, false)}
                 active={t.id === activeId}
               />
-            ) : t.page?.kind === "sharing" && bridge.share ? (
-              <SharingPanel share={bridge.share} />
+            ) : t.page?.kind === "sharing" && (bridge.share || (window as any).uniview?.share) ? (
+              <SharingPanel share={bridge.share || (window as any).uniview?.share} />
             ) : t.page?.kind === "agents" ? (
               <AgentsPanel agents={bridge.agents} />
             ) : t.page?.kind === "remote" && bridge.remoteTransport && hostFor(t.page.hostId) ? (
@@ -637,6 +637,7 @@ export function App() {
                 recents={recents}
                 canReopen={!!bridge.openPath}
                 hosts={hosts}
+                canShare={Boolean(hasElectronApi() && (bridge.share || (window as any).uniview?.share))}
                 onPick={pick}
                 onReopen={reopenRecent}
                 onForget={(r) => setRecents(forgetRecent(r))}
@@ -646,6 +647,7 @@ export function App() {
                   disconnect(hostId);
                   setHosts(forgetHost(hostId));
                 }}
+                onOpenSharing={() => openPage({ kind: "sharing" }, true)}
               />
             )}
             {t.source && t.sessionId && (
@@ -798,22 +800,26 @@ function Home({
   recents,
   canReopen,
   hosts = [],
+  canShare,
   onPick,
   onReopen,
   onForget,
   onConnect,
   onOpenHost,
   onForgetHost,
+  onOpenSharing,
 }: {
   recents: Recent[];
   canReopen: boolean;
   hosts?: HostRecord[];
+  canShare?: boolean;
   onPick: () => void;
   onReopen: (r: Recent) => void;
   onForget: (r: Recent) => void;
   onConnect?: () => void;
   onOpenHost?: (h: HostRecord) => void;
   onForgetHost?: (hostId: string) => void;
+  onOpenSharing?: () => void;
 }) {
   const [connectStatus, setConnectStatus] = useState<AgentConnectStatusResult | null>(null);
   const [confirmClient, setConfirmClient] = useState<"claude" | "codex" | null>(null);
@@ -1024,6 +1030,23 @@ function Home({
               {connectError}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ponytail: Phone sharing row does not probe network or active peer count on Home; upgrade: show live connected phone badge if desired */}
+      {(canShare ?? Boolean(hasElectronApi() && (window as any).uniview?.share)) && onOpenSharing && (
+        <div className="home-agents-row" aria-label="Phone">
+          <div className="home-agent-item">
+            <span className="home-agent-name">Phone</span>
+            <button
+              type="button"
+              className="link small"
+              onClick={onOpenSharing}
+              data-testid="open-sharing"
+            >
+              Share with phone
+            </button>
+          </div>
         </div>
       )}
 

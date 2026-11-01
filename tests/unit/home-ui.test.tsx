@@ -26,12 +26,14 @@ describe("Home UI", () => {
     localStorage.clear();
     delete document.documentElement.dataset.theme;
     delete (window as any).uniview;
+    delete (mockBridge as any).share;
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
     delete (window as any).uniview;
+    delete (mockBridge as any).share;
     container.remove();
     vi.restoreAllMocks();
   });
@@ -221,6 +223,55 @@ describe("Home UI", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  it("with the Electron bridge and a share API, open-sharing is shown and clicking it opens the sharing page; without the bridge it is not shown", async () => {
+    // Without the bridge: open-sharing is not shown
+    delete (window as any).uniview;
+    delete (mockBridge as any).share;
+    const rootWithoutBridge = createRoot(container);
+    await act(async () => {
+      rootWithoutBridge.render(<App />);
+    });
+    expect(container.querySelector('[data-testid="open-sharing"]')).toBeNull();
+    await act(async () => {
+      rootWithoutBridge.unmount();
+    });
+
+    // With the Electron bridge and a share API: open-sharing is shown and clicking it opens sharing page
+    const mockShare = {
+      state: vi.fn().mockResolvedValue({
+        enabled: false,
+        listening: false,
+        addresses: [],
+        port: 0,
+        roots: [],
+        devices: [],
+        log: [],
+      }),
+      onChanged: vi.fn().mockReturnValue(() => {}),
+    };
+    (window as any).uniview = { share: mockShare };
+    (mockBridge as any).share = mockShare;
+
+    const rootWithBridge = createRoot(container);
+    await act(async () => {
+      rootWithBridge.render(<App />);
+    });
+
+    const shareBtn = container.querySelector<HTMLButtonElement>('[data-testid="open-sharing"]');
+    expect(shareBtn).toBeTruthy();
+    expect(shareBtn!.textContent).toBe("Share with phone");
+
+    await act(async () => {
+      shareBtn!.click();
+    });
+
+    expect(container.querySelector('[data-testid="sharing-panel"]')).toBeTruthy();
+
+    await act(async () => {
+      rootWithBridge.unmount();
     });
   });
 });

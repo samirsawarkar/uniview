@@ -97,3 +97,19 @@ test("Ctrl+N opens an independent window and closing it keeps the first window u
     await app.close();
   }
 });
+
+test("clicking Share with phone on Home opens the Sharing panel with turn-on and pair controls", async () => {
+  const app = await electron.launch({ args: ["."], cwd: process.cwd() });
+  try {
+    const page = await app.firstWindow();
+    const openSharing = page.locator('[data-testid="open-sharing"]');
+    await expect(openSharing).toBeVisible();
+    await openSharing.click();
+
+    await expect(page.locator('[data-testid="sharing-panel"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sharing-toggle"]')).toBeVisible();
+    await expect(page.locator('[data-testid="pair-device"]')).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});

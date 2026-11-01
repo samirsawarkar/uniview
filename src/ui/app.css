@@ -355,7 +355,7 @@ input.grow { flex: 1; }
 /* ------------------------------------------------------------------ remote: browser (client) */
 .computers .section-head, .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .computers .section-head h2 { margin: 0; }
-.computers button:not(.link):not(.recent) { border: 1px solid var(--line); }
+.computers button:not(.link):not(.recent) { border: 1px solid var(--line); margin-bottom: 8px; }
 .crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; font-size: 13px; }
 .file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; padding: 16px; }
 .file-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 8px; border-radius: 12px; border: 1px solid transparent; background: var(--bg); min-width: 0; }
