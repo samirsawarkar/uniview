@@ -52,6 +52,9 @@ describe("Home UI", () => {
     expect(openBtn).toBeTruthy();
     expect(agentsRow).toBeTruthy();
 
+    const logo = container.querySelector("img.logo");
+    expect(logo).toBeTruthy();
+
     const shareBtn = container.querySelector('[data-testid="open-sharing"]');
     expect(shareBtn).toBeNull();
     // Theme is chosen in the View > Theme menu, so Home must not show it.
@@ -63,9 +66,12 @@ describe("Home UI", () => {
     expect(recentHeading).toBeTruthy();
 
     const all = Array.from(container.querySelectorAll("*"));
+    const logoIdx = all.indexOf(logo!);
     const openIdx = all.indexOf(openBtn!);
     const agentsIdx = all.indexOf(agentsRow!);
     const recentIdx = all.indexOf(recentHeading!);
+    expect(logoIdx).toBeGreaterThan(-1);
+    expect(logoIdx).toBeLessThan(openIdx);
     expect(openIdx).toBeGreaterThan(-1);
     expect(agentsIdx).toBeGreaterThan(-1);
     expect(recentIdx).toBeGreaterThan(-1);
