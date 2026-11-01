@@ -74,8 +74,8 @@ for (const htmlFile of htmlFiles) {
         errors.push(`${relFile}: path contains "../" in ${attr}="${val}"`);
       }
 
-      // Skip external links in <a> or other non-resource links
-      if (/^(https?:|mailto:|tel:|javascript:)/i.test(val)) {
+      // Skip external links or inline/blob data schemes in <a> or resource tags
+      if (/^(https?:|mailto:|tel:|javascript:|data:|blob:)/i.test(val)) {
         continue;
       }
 
@@ -102,6 +102,29 @@ for (const htmlFile of htmlFiles) {
         }
       }
     }
+  }
+}
+
+const cssFiles = fs.readdirSync(siteDir)
+  .filter(file => file.endsWith('.css'))
+  .map(file => path.join(siteDir, file));
+
+for (const cssFile of cssFiles) {
+  const relFile = path.relative(process.cwd(), cssFile).replace(/\\/g, '/');
+  const content = fs.readFileSync(cssFile, 'utf-8');
+
+  // Match third-party @import (e.g. @import url('https://...'), @import 'http://...', etc.)
+  const importRegex = /@import\s+(?:url\s*\(\s*['"]?|['"])(?:https?:)?\/\/[^'")]+['"]?\s*\)?/gi;
+  let importMatch;
+  while ((importMatch = importRegex.exec(content)) !== null) {
+    errors.push(`${relFile}: external @import "${importMatch[0]}" is not allowed`);
+  }
+
+  // Match external url(http...) or url(//...)
+  const urlRegex = /url\s*\(\s*['"]?(?:https?:)?\/\/[^'")]+['"]?\s*\)/gi;
+  let urlMatch;
+  while ((urlMatch = urlRegex.exec(content)) !== null) {
+    errors.push(`${relFile}: external url "${urlMatch[0]}" is not allowed`);
   }
 }
 
