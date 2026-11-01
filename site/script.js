@@ -17,7 +17,8 @@
       if (!tickingProgress) {
         requestAnimationFrame(() => {
           const max = document.documentElement.scrollHeight - window.innerHeight;
-          progress.style.width = max > 0 ? `${(window.scrollY / max) * 100}%` : '0%';
+          const ratio = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+          progress.style.transform = `scaleX(${ratio})`;
           tickingProgress = false;
         });
         tickingProgress = true;
@@ -199,48 +200,7 @@
     }
   }
 
-  // 9. Smooth FAQ Details Open/Close Animation
-  const faqDetails = document.querySelectorAll('.faq-list details');
-  faqDetails.forEach(details => {
-    const summary = details.querySelector('summary');
-    const content = details.querySelector('.details-content');
-    if (!summary || !content) return;
-
-    summary.addEventListener('click', (e) => {
-      if (reducedMotion) return; // Allow native toggle under reduced-motion
-
-      if (details.open) {
-        // Smoothly close
-        e.preventDefault();
-        content.style.transition = 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)';
-        content.style.opacity = '0';
-        content.style.transform = 'translateY(-6px)';
-        setTimeout(() => {
-          details.removeAttribute('open');
-          content.style.opacity = '';
-          content.style.transform = '';
-          content.style.transition = '';
-        }, 190);
-      } else {
-        // Smoothly open
-        content.style.opacity = '0';
-        content.style.transform = 'translateY(-6px)';
-        // Browser sets open on next frame
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            content.style.transition = 'opacity 0.22s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)';
-            content.style.opacity = '1';
-            content.style.transform = 'translateY(0)';
-            setTimeout(() => {
-              content.style.transition = '';
-            }, 230);
-          });
-        });
-      }
-    });
-  });
-
-  // 10. Primary Button Magnetic Feedback (fine pointer only)
+  // 9. Primary Button Magnetic Feedback (fine pointer only)
   if (!reducedMotion && window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
     const primaryBtns = document.querySelectorAll('.button.primary');
     primaryBtns.forEach(btn => {

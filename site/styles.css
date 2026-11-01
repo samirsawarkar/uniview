@@ -2,6 +2,7 @@
 /* Design read: premium consumer / Linear-style light aesthetic; clean typography, refined borders, purposeful animation. */
 
 :root {
+  interpolate-size: allow-keywords;
   --ink: #1e2530;
   --ink-deep: #0f172a;
   --muted: #64748b;
@@ -69,12 +70,14 @@ img {
   position: fixed;
   top: 0;
   left: 0;
+  right: 0;
+  width: 100%;
   height: 2px;
   background: var(--blue);
   z-index: 1000;
-  width: 0;
+  transform: scaleX(0);
+  transform-origin: left;
   pointer-events: none;
-  transition: width 0.08s linear;
 }
 
 /* Site Navigation — Floating Frosted Pill */
@@ -273,12 +276,20 @@ img {
   font-weight: 550;
   color: var(--blue);
   margin-top: 22px;
-  transition: gap 0.2s ease, color 0.18s ease;
+  transition: color 0.18s ease;
+}
+
+.text-link span {
+  display: inline-block;
+  transition: transform 0.2s ease;
 }
 
 .text-link:hover {
   color: var(--blue-hover);
-  gap: 9px;
+}
+
+.text-link:hover span {
+  transform: translateX(3px);
 }
 
 /* Hero Section */
@@ -799,12 +810,24 @@ img {
 }
 
 .route-badge {
+  position: relative;
   padding: 2px 10px;
   border-radius: 6px;
   background: #ffffff;
   border: 1px solid var(--line);
   box-shadow: var(--shadow-subtle);
-  transition: color 0.25s ease, border-color 0.25s ease;
+  color: var(--blue);
+}
+
+.route-badge::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 0 10px rgba(36, 108, 229, 0.18);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .route-track {
@@ -886,7 +909,7 @@ img {
 .connection-demo.story-active .track-top i {
   animation: story-packet-top 7.5s linear infinite;
 }
-.connection-demo.story-active .route-badge {
+.connection-demo.story-active .route-badge::after {
   animation: story-route-badge 7.5s ease infinite;
 }
 .connection-demo.story-active .track-bottom i {
@@ -928,9 +951,9 @@ img {
 }
 
 @keyframes story-route-badge {
-  0%, 18%  { color: var(--muted); border-color: var(--line); }
-  22%, 88% { color: var(--blue); border-color: #cbd5e1; box-shadow: 0 0 10px rgba(36, 108, 229, 0.12); }
-  94%, 100%{ color: var(--muted); border-color: var(--line); }
+  0%, 18%  { opacity: 0; }
+  22%, 88% { opacity: 1; }
+  94%, 100%{ opacity: 0; }
 }
 
 @keyframes story-packet-bottom {
@@ -1313,6 +1336,19 @@ img {
 
 .details-content {
   overflow: hidden;
+}
+
+/* ponytail: CSS ::details-content smooth transition replaces JS setTimeout state machine; older engines open/close natively without JS */
+.faq-list details::details-content {
+  opacity: 0;
+  block-size: 0;
+  overflow-y: clip;
+  transition: content-visibility 0.25s allow-discrete, opacity 0.22s ease, block-size 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.faq-list details[open]::details-content {
+  opacity: 1;
+  block-size: auto;
 }
 
 .faq-list p {
@@ -1735,7 +1771,7 @@ footer {
   .connection-demo.story-active .demo-row-2,
   .connection-demo.story-active .demo-row-3,
   .connection-demo.story-active .track-top i,
-  .connection-demo.story-active .route-badge,
+  .connection-demo.story-active .route-badge::after,
   .connection-demo.story-active .track-bottom i,
   .connection-demo.story-active .destination-check {
     animation: none !important;
