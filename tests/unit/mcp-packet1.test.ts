@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error plain ESM module without types
-import { runMcp, parseMaxWait, SERVER_INSTRUCTIONS } from "../../electron/lib/mcp-server.mjs";
+import { runMcp, parseMaxWait, SERVER_INSTRUCTIONS, MCP_LIMITS } from "../../electron/lib/mcp-server.mjs";
 import { startServer, createFakeClock, toolCall, flush } from "./mcp-helpers";
 import { makeHost, newSession } from "./agent-host-helpers";
 
@@ -423,7 +423,7 @@ describe("Packet 1: MCP and bridge", () => {
     expect(p1).toEqual({
       jsonrpc: "2.0",
       method: "notifications/progress",
-      params: { progressToken: "token-123" },
+      params: { progressToken: "token-123", progress: 1, total: 50 },
     });
 
     // Advance another 20s
@@ -432,7 +432,7 @@ describe("Packet 1: MCP and bridge", () => {
     expect(p2).toEqual({
       jsonrpc: "2.0",
       method: "notifications/progress",
-      params: { progressToken: "token-123" },
+      params: { progressToken: "token-123", progress: 2, total: 50 },
     });
 
     // Complete the wait
@@ -573,6 +573,92 @@ describe("Packet 1: MCP and bridge", () => {
     expect(bridgeCallsAfter).toBe(bridgeCallsBefore);
 
     await s.end();
+  });
+
+  it("wait guard: an unanswered bridge wait ends at timeoutMs + grace, cancels it, and keeps a late message", async () => {
+    const clock = createFakeClock();
+    let bridgeResolve: ((v: any) => void) | undefined;
+    const fake = {
+      calls: [] as any[],
+      connects: 0,
+      closes: 0,
+      connect: async () => client,
+    };
+    const client = {
+      sessionId: "s".repeat(32),
+      async request(method: string, params: any) {
+        fake.calls.push({ method, params });
+        if (method === "mcp.hello") return { result: {} };
+        if (method === "session.waitMessage") return new Promise((r) => { bridgeResolve = r; });
+        return { result: {} };
+      },
+      async close() {},
+    };
+
+    const s = startServer({ clock, connect: fake.connect });
+    await s.initialize();
+
+    s.send(toolCall(1, "wait_for_user_message", { waitSeconds: 2 }));
+    await flush();
+
+    // Not before the guard fires
+    await clock.advance(2_000 + MCP_LIMITS.WAIT_GRACE_MS - 1);
+    expect(s.lines).toHaveLength(0);
+
+    await clock.advance(1);
+    const res = await s.nextJson();
+    expect(res.id).toBe(1);
+    expect(res.result.structuredContent).toEqual({ status: "waiting" });
+    expect(fake.calls.some((c) => c.method === "session.cancelWaitMessage")).toBe(true);
+
+    // The reply that arrives after the guard is not lost
+    bridgeResolve!({ result: { status: "message", text: "Late", documentPath: "/a.txt" } });
+    await flush();
+    s.send(toolCall(2, "wait_for_user_message", { waitSeconds: 50 }));
+    const res2 = await s.nextJson();
+    expect(res2.result.structuredContent).toEqual({ status: "message", text: "Late", documentPath: "/a.txt" });
+
+    await s.end();
+  });
+
+  it("post_message failure: a renderer that cannot be reached is a tool failure, not posted", async () => {
+    const t = await makeHost();
+    const s = await t.approvedMcp("agent");
+    t.ui.postMessage = async () => {
+      throw new Error("no window");
+    };
+    expect(await t.fail(s, "session.postMessage", { text: "x" })).toBe("app_unavailable");
+  });
+
+  it("sendMessage requires documentPath and case-folds only on win32 and darwin", async () => {
+    const t = await makeHost();
+    t.fakeFs.set("/w/doc.txt", "content");
+    const s = await t.approvedMcp("agent");
+    await t.open(s, ["/w/doc.txt"]);
+
+    await expect(t.host.sendMessage({ sessionId: s.sessionId, text: "no path" })).rejects.toThrow(/documentPath/);
+    await expect(t.host.sendMessage({ sessionId: s.sessionId, text: "null path", documentPath: null })).rejects.toThrow(
+      /documentPath/,
+    );
+    await expect(
+      t.host.sendMessage({ sessionId: s.sessionId, text: "wrong path", documentPath: "/w/other.txt" }),
+    ).rejects.toThrow(/isolation/);
+
+    // Case-only variants are the same file on win32/darwin, and a different path on posix.
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    try {
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      await expect(
+        t.host.sendMessage({ sessionId: s.sessionId, text: "case", documentPath: "/W/DOC.TXT" }),
+      ).rejects.toThrow(/isolation/);
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+    if (process.platform === "win32" || process.platform === "darwin") {
+      await expect(
+        t.host.sendMessage({ sessionId: s.sessionId, text: "case", documentPath: "/W/DOC.TXT" }),
+      ).resolves.toMatchObject({ ok: true });
+    }
   });
 
   it("reset chatClosed on open: session ends, chatClosed is reset when session opens a document again", async () => {

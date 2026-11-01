@@ -311,12 +311,24 @@ export function createAskDialog({ dialog, getWindow }) {
  * to the renderer window or custom handler. While the renderer is still loading,
  * requests are queued up to a bound of 32; a 33rd request rejects with code "busy".
  */
-export function createUiManager({ getWindow, openRendererTab }) {
+export function createUiManager({ getWindow, getWindows, openRendererTab }) {
   let rendererReady = false;
   const pendingQueue = [];
   const MAX_QUEUE = 32;
 
+  // Every live window: the focused one alone drops a session's messages when its tab lives elsewhere.
+  function liveWindows() {
+    const all = getWindows ? getWindows() || [] : [];
+    const list = all.length > 0 ? all : [getWindow ? getWindow() : null];
+    return list.filter((w) => w && !w.isDestroyed?.() && w.webContents);
+  }
+
   async function dispatchTab(item) {
+    if (item.kind === "message" || item.kind === "sessionState") {
+      const channel = item.kind === "message" ? "agent:message" : "agent:session-state";
+      for (const w of liveWindows()) w.webContents.send(channel, item.params);
+      return;
+    }
     if (openRendererTab) {
       await openRendererTab(item);
     }
@@ -384,16 +396,10 @@ export function createUiManager({ getWindow, openRendererTab }) {
         await enqueueOrDispatch({ kind: "closeTab", scopeId });
       },
       async postMessage(params) {
-        const win = getWindow ? getWindow() : null;
-        if (win && !win.isDestroyed?.() && win.webContents) {
-          win.webContents.send("agent:message", params);
-        }
+        await enqueueOrDispatch({ kind: "message", params });
       },
       async sessionState(params) {
-        const win = getWindow ? getWindow() : null;
-        if (win && !win.isDestroyed?.() && win.webContents) {
-          win.webContents.send("agent:session-state", params);
-        }
+        await enqueueOrDispatch({ kind: "sessionState", params });
       },
     },
   };
@@ -736,6 +742,7 @@ export function createAppAgents({
   ipcMain,
   fromApp,
   getWindow,
+  getWindows,
   userDataDir,
   platform = process.platform,
   openRendererTab,
@@ -785,6 +792,7 @@ export function createAppAgents({
 
   const uiManager = createUiManager({
     getWindow,
+    getWindows,
     openRendererTab: async (item) => {
       if (item.token && item.scopeId) {
         tokenScopeMap.set(item.token, item.scopeId);
