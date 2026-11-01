@@ -2,6 +2,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, session, shell, nativeImage } from "electron";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
+import os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -11,6 +13,7 @@ import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp, buildEarlyL
 import { buildMcpErrorMessage } from "./lib/mcp-runner.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
 import { isNewWindowShortcut, shouldStopAppAgentsOnRenderProcessGone } from "./lib/window-lifecycle.mjs";
+import { createAgentConnect } from "./lib/agent-connect.mjs";
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -274,6 +277,35 @@ function registerIpc() {
     if (!appAgents?.host) throw new Error("Agent host not available");
     return appAgents.host.endSession(sessionId);
   }));
+  ipcMain.handle("agents:connect-status", guard(async () => {
+    return getAgentConnect().status();
+  }));
+  ipcMain.handle("agents:connect", guard(async (_e, client) => {
+    if (client !== "claude" && client !== "codex") throw new Error("Invalid client");
+    return getAgentConnect().connect(client);
+  }));
+  ipcMain.handle("agents:disconnect", guard(async (_e, client) => {
+    if (client !== "claude" && client !== "codex") throw new Error("Invalid client");
+    return getAgentConnect().disconnect(client);
+  }));
+}
+
+let agentConnect = null;
+function getAgentConnect() {
+  if (!agentConnect) {
+    const entryPath = app.isPackaged
+      ? join(process.resourcesPath, "app.asar", "electron", "mcp-entry.mjs")
+      : join(here, "mcp-entry.mjs");
+    agentConnect = createAgentConnect({
+      homedir: os.homedir(),
+      env: process.env,
+      fs: fsPromises,
+      exePath: process.execPath,
+      entryPath,
+      platform: process.platform,
+    });
+  }
+  return agentConnect;
 }
 
 let lastNewWindowTime = 0;
@@ -292,7 +324,22 @@ function buildMenu() {
     { role: "editMenu" },
     {
       label: "View",
-      submenu: [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }, ...(app.isPackaged ? [] : [{ role: "toggleDevTools" }])],
+      submenu: [
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+        { type: "separator" },
+        {
+          label: "Agents",
+          click: () => {
+            const target = BrowserWindow.getFocusedWindow() || win;
+            target?.webContents.send("view:agents");
+          },
+        },
+        ...(app.isPackaged ? [] : [{ role: "toggleDevTools" }]),
+      ],
     },
     { role: "windowMenu" },
   ];

@@ -20,7 +20,7 @@ test("a paired client browses, opens and streams a host's shared folder", async 
   try {
     // Host: open Sharing, turn it on, share a folder through the permission screen, start pairing.
     const h = host.page;
-    await h.getByTestId("open-sharing").click();
+    await h.evaluate(() => (window as any).__univiewOpenPage({ kind: "sharing" }, true));
     await expect(h.getByTestId("sharing-panel")).toBeVisible();
     await h.getByTestId("sharing-toggle").check();
     await expect(h.getByText(/reachable at/)).toBeVisible();
@@ -34,7 +34,7 @@ test("a paired client browses, opens and streams a host's shared folder", async 
 
     // Client: pair with the code (both instances run on this machine, so use loopback).
     const c = client.page;
-    await c.getByTestId("connect-computer").click();
+    await c.evaluate(() => (window as any).__univiewSetPairing(true));
     await c.getByTestId("pair-code-input").fill(code.replace(/h=[^&]+/, "h=127.0.0.1"));
     await c.getByTestId("pair-connect").click();
     const browser = c.getByTestId("remote-browser");

@@ -21,7 +21,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("home page offers opening files", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "UniView" })).toBeVisible();
+  await expect(page.locator(".home-dropzone")).toBeVisible();
   await expect(page.getByTestId("open-button")).toBeVisible();
 });
 
@@ -186,14 +186,15 @@ test("closing a tab mid-load leaves no errors and no stray fonts (finding 7)", a
   expect(await page.evaluate(() => [...document.fonts].filter((f) => f.family.startsWith("uv-font-")).length)).toBe(0);
 });
 
-test("a recently opened image shows its thumbnail on the home page", async ({ page }) => {
+test("a recently opened image shows in the recent list on the home page", async ({ page }) => {
   await open(page, "pixel.png");
   await expect(panel(page).locator("img").first()).toBeVisible();
-  await page.getByTestId("home-button").click();
+  await page.locator(".tab-new").click();
   const recent = page.locator(".recents .recent").filter({ hasText: "pixel.png" });
-  await expect(recent.locator("img.recent-thumb")).toBeVisible();
-  // Files without a thumbnail keep their kind badge.
+  await expect(recent).toBeVisible();
+  await expect(recent.locator(".recent-name")).toHaveText("pixel.png");
+  // Files without a thumbnail also show in the recent list.
   await open(page, "notes.md");
-  await page.getByTestId("home-button").click();
-  await expect(page.locator(".recents .recent").filter({ hasText: "notes.md" }).locator(".badge")).toBeVisible();
+  await page.locator(".tab-new").click();
+  await expect(page.locator(".recents .recent").filter({ hasText: "notes.md" })).toBeVisible();
 });

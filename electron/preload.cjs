@@ -9,6 +9,7 @@ const reviewListeners = new Set();
 const closeTabListeners = new Set();
 const agentMessageListeners = new Set();
 const agentSessionStateListeners = new Set();
+const openAgentsListeners = new Set();
 
 ipcRenderer.on("open-files", (_e, files) => {
   if (!Array.isArray(files)) return;
@@ -38,6 +39,10 @@ ipcRenderer.on("agent:message", (_e, msg) => {
 
 ipcRenderer.on("agent:session-state", (_e, state) => {
   for (const cb of agentSessionStateListeners) cb(state);
+});
+
+ipcRenderer.on("view:agents", () => {
+  for (const cb of openAgentsListeners) cb();
 });
 
 contextBridge.exposeInMainWorld("uniview", {
@@ -119,6 +124,14 @@ contextBridge.exposeInMainWorld("uniview", {
     return () => agentSessionStateListeners.delete(cb);
   },
   ready: () => ipcRenderer.send("uniview:ready"),
+  connectStatus: () => ipcRenderer.invoke("agents:connect-status"),
+  connect: (client) => ipcRenderer.invoke("agents:connect", String(client)),
+  disconnect: (client) => ipcRenderer.invoke("agents:disconnect", String(client)),
+  onOpenAgents: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    openAgentsListeners.add(cb);
+    return () => openAgentsListeners.delete(cb);
+  },
 
   // Review tab desktop IPC. Receipts are named by the grant token of a file the person opened, never by a
   // path; main resolves the token itself. Only the known fields are forwarded, with their types checked.
