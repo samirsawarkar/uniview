@@ -24,125 +24,6 @@
   "electronLanguages": [
     "en-US"
   ],
-  "fileAssociations": [
-    {
-      "ext": [
-        "pdf"
-      ],
-      "name": "PDF document",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "docx",
-        "docm",
-        "dotx"
-      ],
-      "name": "Word document",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "xlsx",
-        "xlsm",
-        "xlsb",
-        "xls",
-        "ods",
-        "csv",
-        "tsv"
-      ],
-      "name": "Spreadsheet",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "pptx",
-        "pptm",
-        "ppsx",
-        "potx"
-      ],
-      "name": "PowerPoint presentation",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "epub"
-      ],
-      "name": "EPUB book",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "md",
-        "markdown"
-      ],
-      "name": "Markdown document",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "png",
-        "jpg",
-        "jpeg",
-        "gif",
-        "webp",
-        "bmp",
-        "svg",
-        "tif",
-        "tiff",
-        "avif",
-        "ico"
-      ],
-      "name": "Image",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "mp4",
-        "m4v",
-        "mov",
-        "webm",
-        "mkv",
-        "ogv"
-      ],
-      "name": "Video",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "mp3",
-        "m4a",
-        "aac",
-        "wav",
-        "ogg",
-        "opus",
-        "flac"
-      ],
-      "name": "Audio",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "zip",
-        "cbz"
-      ],
-      "name": "ZIP archive",
-      "role": "Viewer"
-    },
-    {
-      "ext": [
-        "json",
-        "txt",
-        "log",
-        "ttf",
-        "otf",
-        "woff",
-        "woff2"
-      ],
-      "name": "Document",
-      "role": "Viewer"
-    }
-  ],
   "win": {
     "icon": "build/icon.ico",
     "target": [
@@ -166,7 +47,8 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "artifactName": "UniView-Setup-${version}.${ext}"
+    "artifactName": "UniView-Setup-${version}.${ext}",
+    "include": "build/installer.nsh"
   },
   "portable": {
     "artifactName": "UniView-Portable-${version}.${ext}"

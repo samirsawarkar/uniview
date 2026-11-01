@@ -11,7 +11,19 @@ import { readClientKey } from "../../electron/lib/agent-enrollment.mjs";
 describe("agent host: dispatch and the canonical op set", () => {
   it("the canonical op set is exactly the P17a set plus cli.hello", async () => {
     // Mutation: adding, dropping or renaming a bridge op (the two clients must agree on one set)
-    expect([...BRIDGE_OPS]).toEqual(["cli.hello", "mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get"]);
+    expect([...BRIDGE_OPS]).toEqual([
+      "cli.hello",
+      "mcp.hello",
+      "open",
+      "view.show",
+      "review.open",
+      "review.wait",
+      "review.cancelWait",
+      "review.get",
+      "session.waitMessage",
+      "session.cancelWaitMessage",
+      "session.postMessage",
+    ]);
   });
 
   it("an unknown method (including the retired CLI ops) is unknown_method", async () => {

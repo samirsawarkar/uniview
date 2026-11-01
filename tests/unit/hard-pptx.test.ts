@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parsePptx, type ShapeEl, type TableEl, type ImageEl, type PlaceholderEl } from "../../src/core/pptx";
 import { makeHardPptx } from "../../scripts/fixture-builders.mjs";
-import { findPresenterEntrySlide, findNextSlide, findPrevSlide } from "../../src/viewers/pptx-navigation";
+import { findPresenterEntrySlide, findNextSlide, findPrevSlide, findVisibleSlide } from "../../src/viewers/pptx-navigation";
 
 const textOf = (el: ShapeEl) => el.text?.paragraphs.map((p) => p.runs.map((r) => r.text).join("")).join("\n") ?? "";
 
@@ -109,6 +109,28 @@ describe("parsePptx on hard.pptx fixture", () => {
     expect(chart!.y).toBeCloseTo(288);
     expect(chart!.w).toBeCloseTo(200);
     expect(chart!.h).toBeCloseTo(144);
+  });
+});
+
+describe("findVisibleSlide (scroll tracking)", () => {
+  it("picks slide 0 at the top of a deck shorter than half the panel", () => {
+    const boxes = [{ top: 0, height: 100 }, { top: 100, height: 100 }, { top: 200, height: 100 }];
+    expect(findVisibleSlide(boxes, 0, 1000)).toBe(0);
+  });
+
+  it("picks the tall slide covering most of the window when scrolled partway", () => {
+    const boxes = [{ top: 0, height: 600 }, { top: 600, height: 600 }];
+    expect(findVisibleSlide(boxes, 500, 800)).toBe(1);
+  });
+
+  it("picks the only slide in a one-slide deck", () => {
+    expect(findVisibleSlide([{ top: 0, height: 900 }], 0, 300)).toBe(0);
+  });
+
+  it("breaks a tie toward the earlier slide and returns -1 for an empty deck", () => {
+    const boxes = [{ top: 0, height: 400 }, { top: 400, height: 400 }];
+    expect(findVisibleSlide(boxes, 200, 400)).toBe(0);
+    expect(findVisibleSlide([], 0, 400)).toBe(-1);
   });
 });
 

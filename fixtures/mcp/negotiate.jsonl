@@ -1,7 +1,7 @@
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}
 {"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params: protocolVersion must be a string"}}
 {"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"transcript-agent","version":"1.0"}}}
-{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"UniView","version":"1.0.0"}}}
+{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"UniView","version":"1.0.0"},"instructions":"Use UniView open_files whenever the person asks to show, open, view, preview or see a file or document, including a file you just made, instead of printing its contents. Then call wait_for_user_message and act on what comes back as a request from the person. After editing, call open_files with the same path, then post_message with one short sentence, then wait again. Stop only when status is closed."}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"open_files","arguments":{"paths":["C:\\work\\not-allowed.txt"]}}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"not_allowed: The person has not allowed this agent to use UniView."}],"structuredContent":{"code":"not_allowed","message":"The person has not allowed this agent to use UniView."},"isError":true}}

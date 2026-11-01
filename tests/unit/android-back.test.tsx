@@ -74,11 +74,11 @@ describe("Android back event handling", () => {
     });
     expect(homeBack.defaultPrevented).toBe(false);
 
-    // 2. Click [data-testid=connect-computer], event dismisses dialog and prevents default
-    const connectBtn = container.querySelector('[data-testid="connect-computer"]') as HTMLElement;
+    // 2. Open the pairing dialog, then a back event dismisses it and prevents default
+    const connectBtn = container.querySelector<HTMLButtonElement>('[data-testid="connect-computer"]');
     expect(connectBtn).not.toBeNull();
     act(() => {
-      connectBtn.click();
+      connectBtn!.click();
     });
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 

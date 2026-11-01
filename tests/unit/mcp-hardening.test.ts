@@ -255,14 +255,14 @@ describe("MCP stdout backpressure", () => {
     stderr.setEncoding("utf8");
     stderr.on("data", (c: string) => (errText += c));
     const fake = createFakeBridge();
-    const done = runMcp({ stdin, stdout: out.stream, stderr, connect: fake.connect, maxQueuedOutputBytes: 300 });
+    const done = runMcp({ stdin, stdout: out.stream, stderr, connect: fake.connect, maxQueuedOutputBytes: 800 });
     await handshake(stdin);
     out.written.length = 0;
     out.state.flowing = false;
     // All 16 calls are read in one chunk; their answers arrive later and are never drained.
     stdin.write(Array.from({ length: 16 }, (_, i) => JSON.stringify(open1(i + 1))).join("\n") + "\n");
     await Promise.race([done, new Promise((_, r) => setTimeout(() => r(new Error("server did not close")), 5000))]);
-    expect(errText).toContain("uniview-mcp: output backlog larger than 300 bytes; closing");
+    expect(errText).toContain("uniview-mcp: output backlog larger than 800 bytes; closing");
     expect(out.written.length).toBeLessThan(5);
     expect(fake.closes).toBe(1);
   });
@@ -272,7 +272,7 @@ describe("MCP stdout backpressure", () => {
     const stdin = new PassThrough();
     const out = slowStdout();
     const stderr = new PassThrough();
-    const done = runMcp({ stdin, stdout: out.stream, stderr, connect: createFakeBridge().connect, maxQueuedOutputBytes: 300 });
+    const done = runMcp({ stdin, stdout: out.stream, stderr, connect: createFakeBridge().connect, maxQueuedOutputBytes: 800 });
     await handshake(stdin);
     for (let i = 1; i <= 50; i++) {
       stdin.write(JSON.stringify(open1(i)) + "\n");

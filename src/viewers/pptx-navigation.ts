@@ -48,3 +48,27 @@ export function findPrevSlide(slides: NavSlide[], from: number): number {
   }
   return from;
 }
+
+export interface SlideBox {
+  top: number;
+  height: number;
+}
+
+/**
+ * Returns the index of the slide with the largest visible height inside the
+ * scroll window, so a slide shorter than half the panel cannot lose to the one
+ * below it. A tie goes to the earlier slide; an empty list returns -1.
+ */
+export function findVisibleSlide(boxes: SlideBox[], scrollTop: number, clientHeight: number): number {
+  const bottom = scrollTop + clientHeight;
+  let best = -1;
+  let bestVisible = -Infinity;
+  boxes.forEach((b, i) => {
+    const visible = Math.min(b.top + b.height, bottom) - Math.max(b.top, scrollTop);
+    if (visible > bestVisible) {
+      best = i;
+      bestVisible = visible;
+    }
+  });
+  return best;
+}

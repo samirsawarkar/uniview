@@ -205,6 +205,44 @@ describe("Packet P17c: app-agents wiring factory", () => {
     expect(openedTabs).toHaveLength(33);
   });
 
+  it("postMessage and sessionState reach every live window, held until the renderer is ready", async () => {
+    const sent: any[] = [];
+    const win = (id: string) => ({
+      id,
+      isDestroyed: () => false,
+      webContents: { send: (channel: string, params: any) => sent.push({ id, channel, params }) },
+    });
+    const a = win("a");
+    const b = win("b");
+    const uiManager = createUiManager({
+      getWindow: () => a,
+      getWindows: () => [a, b],
+      openRendererTab: async () => {},
+    });
+
+    await uiManager.ui.postMessage({ sessionId: "s1", text: "hi" });
+    await uiManager.ui.sessionState({ sessionId: "s1", state: "working" });
+    expect(sent).toHaveLength(0);
+    expect(uiManager.queueLength()).toBe(2);
+
+    await uiManager.setReady();
+    expect(sent).toEqual([
+      { id: "a", channel: "agent:message", params: { sessionId: "s1", text: "hi" } },
+      { id: "b", channel: "agent:message", params: { sessionId: "s1", text: "hi" } },
+      { id: "a", channel: "agent:session-state", params: { sessionId: "s1", state: "working" } },
+      { id: "b", channel: "agent:session-state", params: { sessionId: "s1", state: "working" } },
+    ]);
+  });
+
+  it("postMessage falls back to getWindow when getWindows is absent", async () => {
+    const sent: any[] = [];
+    const win = { isDestroyed: () => false, webContents: { send: (channel: string, params: any) => sent.push({ channel, params }) } };
+    const uiManager = createUiManager({ getWindow: () => win, openRendererTab: async () => {} });
+    await uiManager.setReady();
+    await uiManager.ui.postMessage({ sessionId: "s1", text: "hi" });
+    expect(sent).toEqual([{ channel: "agent:message", params: { sessionId: "s1", text: "hi" } }]);
+  });
+
   it("closeSession destroys the bridge socket of a session", async () => {
     // Mutation: closeSession being a no-op or not destroying the underlying socket
     const tempDir = await makeTempDir("uv-closesession");

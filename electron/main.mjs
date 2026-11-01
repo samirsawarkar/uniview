@@ -2,6 +2,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, session, shell, nativeImage } from "electron";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
+import os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -10,6 +12,9 @@ import { installShutdownDismiss } from "./lib/review-ipc.mjs";
 import { createAppAgents, detectEarlyArgv, runEarlyCli, runEarlyMcp, buildEarlyLaunchOptions } from "./lib/app-agents.mjs";
 import { buildMcpErrorMessage } from "./lib/mcp-runner.mjs";
 import { GrantStore, checkReadArgs, contentType, filesFromArgv, isAllowedUrl, isAppFrame, parseRange, safeJoin } from "./lib/core.mjs";
+import { isNewWindowShortcut, shouldStopAppAgentsOnRenderProcessGone } from "./lib/window-lifecycle.mjs";
+import { createAgentConnect } from "./lib/agent-connect.mjs";
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DIST = join(here, "..", "dist");
@@ -22,7 +27,7 @@ const CSP =
 const grants = new GrantStore();
 const pending = [];
 let win = null;
-let rendererReady = false;
+const readyWindows = new Set();
 let appAgents = null;
 
 protocol.registerSchemesAsPrivileged([
@@ -51,6 +56,7 @@ if (early.isMcp) {
     ipcMain,
     fromApp,
     getWindow: () => win,
+    getWindows: () => BrowserWindow.getAllWindows(),
     userDataDir: app.getPath("userData"),
     userGrants: grants,
   });
@@ -94,7 +100,7 @@ async function openPaths(paths) {
     }
   }
   if (!files.length) return;
-  if (win && rendererReady) win.webContents.send("open-files", files);
+  if (win && readyWindows.has(win)) win.webContents.send("open-files", files);
   else pending.push(...files);
 }
 
@@ -170,8 +176,9 @@ function guard(handler) {
 }
 
 function registerIpc() {
-  ipcMain.handle("uniview:pick", guard(async () => {
-    const res = await dialog.showOpenDialog(win, { properties: ["openFile", "multiSelections"], title: "Open files" });
+  ipcMain.handle("uniview:pick", guard(async (event) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(parent, { properties: ["openFile", "multiSelections"], title: "Open files" });
     if (res.canceled) return [];
     return Promise.all(res.filePaths.map(grantFile));
   }));
@@ -248,20 +255,116 @@ function registerIpc() {
   }));
   ipcMain.on("uniview:ready", (e) => {
     if (!fromApp(e)) return;
-    rendererReady = true;
+    const window = BrowserWindow.fromWebContents(e.sender);
+    if (!window) return;
+    readyWindows.add(window);
     void appAgents?.uiManager?.setReady();
-    if (pending.length && win) win.webContents.send("open-files", pending.splice(0));
+    if (pending.length && window === win) window.webContents.send("open-files", pending.splice(0));
   });
+  ipcMain.on("uniview:new-window", (e) => {
+    if (!fromApp(e)) return;
+    void openNewWindow();
+  });
+  ipcMain.handle("agent:send-message", guard(async (_e, args) => {
+    if (!args || typeof args !== "object") throw new Error("Invalid arguments");
+    const { sessionId, text, documentPath } = args;
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Invalid sessionId");
+    if (typeof text !== "string" || !text) throw new Error("Invalid message text");
+    if (!appAgents?.host) throw new Error("Agent host not available");
+    return appAgents.host.sendMessage({ sessionId, text, documentPath });
+  }));
+  ipcMain.handle("agent:end-session", guard(async (_e, sessionId) => {
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Invalid sessionId");
+    if (!appAgents?.host) throw new Error("Agent host not available");
+    return appAgents.host.endSession(sessionId);
+  }));
+  ipcMain.handle("agents:connect-status", guard(async () => {
+    return getAgentConnect().status();
+  }));
+  ipcMain.handle("agents:connect", guard(async (_e, client) => {
+    if (client !== "claude" && client !== "codex") throw new Error("Invalid client");
+    return getAgentConnect().connect(client);
+  }));
+  ipcMain.handle("agents:disconnect", guard(async (_e, client) => {
+    if (client !== "claude" && client !== "codex") throw new Error("Invalid client");
+    return getAgentConnect().disconnect(client);
+  }));
 }
+
+let agentConnect = null;
+function getAgentConnect() {
+  if (!agentConnect) {
+    const entryPath = app.isPackaged
+      ? join(process.resourcesPath, "app.asar", "electron", "mcp-entry.mjs")
+      : join(here, "mcp-entry.mjs");
+    agentConnect = createAgentConnect({
+      homedir: os.homedir(),
+      env: process.env,
+      fs: fsPromises,
+      exePath: process.execPath,
+      entryPath,
+      platform: process.platform,
+    });
+  }
+  return agentConnect;
+}
+
+let lastNewWindowTime = 0;
+function openNewWindow() {
+  const now = Date.now();
+  if (now - lastNewWindowTime < 250) return null;
+  lastNewWindowTime = now;
+  return createWindow();
+}
+
+// Theme lives in the renderer's localStorage; this only remembers the session's menu choice.
+// ponytail: the radio shows System after a restart even if the stored theme is Dark. Upgrade: send
+// the renderer's stored theme back on ready and rebuild the menu from it.
+let theme = "system";
 
 function buildMenu() {
   const isMac = process.platform === "darwin";
+  const pickTheme = (value) => {
+    theme = value;
+    (BrowserWindow.getFocusedWindow() || win)?.webContents.send("view:theme", value);
+  };
   const template = [
     ...(isMac ? [{ role: "appMenu" }] : []),
+    { label: "File", submenu: [{ label: "New Window", accelerator: "CommandOrControl+N", click: () => { void openNewWindow(); } }] },
     { role: "editMenu" },
     {
       label: "View",
-      submenu: [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }, ...(app.isPackaged ? [] : [{ role: "toggleDevTools" }])],
+      submenu: [
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+        { type: "separator" },
+        {
+          label: "Agents",
+          click: () => {
+            const target = BrowserWindow.getFocusedWindow() || win;
+            target?.webContents.send("view:agents");
+          },
+        },
+        {
+          label: "Share with phone",
+          click: () => {
+            const target = BrowserWindow.getFocusedWindow() || win;
+            target?.webContents.send("view:share");
+          },
+        },
+        {
+          label: "Theme",
+          submenu: [
+            { label: "System", type: "radio", checked: theme === "system", click: () => pickTheme("system") },
+            { label: "Light", type: "radio", checked: theme === "light", click: () => pickTheme("light") },
+            { label: "Dark", type: "radio", checked: theme === "dark", click: () => pickTheme("dark") },
+          ],
+        },
+        ...(app.isPackaged ? [] : [{ role: "toggleDevTools" }]),
+      ],
     },
     { role: "windowMenu" },
   ];
@@ -284,7 +387,12 @@ async function start() {
     contents.on("will-attach-webview", (e) => e.preventDefault());
   });
 
-  win = new BrowserWindow({
+  await createWindow();
+  void openPaths(filesFromArgv(process.argv, app.isPackaged));
+}
+
+async function createWindow() {
+  const window = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 480,
@@ -297,6 +405,8 @@ async function start() {
     webPreferences: {
       preload: join(here, "preload.cjs"),
       sandbox: true,
+      // The E2E hooks flag is a build fact, not an env var the app can be talked into: packaged builds never get it.
+      additionalArguments: !app.isPackaged && process.env.UNIVIEW_E2E === "1" ? ["--uniview-e2e"] : [],
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
@@ -304,19 +414,35 @@ async function start() {
       navigateOnDragDrop: false,
     },
   });
-  win.once("ready-to-show", () => win?.show());
-  win.webContents.on("render-process-gone", (_e, details) => {
-    if (details.reason !== "clean-exit") {
-      void appAgents?.stop();
-      win?.reload();
+  if (!win) win = window;
+  window.webContents.on("before-input-event", (event, input) => {
+    if (isNewWindowShortcut(input)) {
+      event.preventDefault();
+      void openNewWindow();
     }
   });
-  win.on("closed", () => {
-    win = null;
-    rendererReady = false;
+  window.on("focus", () => {
+    win = window;
+    if (readyWindows.has(window) && pending.length) window.webContents.send("open-files", pending.splice(0));
   });
-  await win.loadURL("uniview://app/index.html");
-  void openPaths(filesFromArgv(process.argv, app.isPackaged));
+  window.once("ready-to-show", () => window.show());
+  window.webContents.on("render-process-gone", (_e, details) => {
+    if (shouldStopAppAgentsOnRenderProcessGone(BrowserWindow.getAllWindows(), window)) {
+      void appAgents?.stop();
+    }
+    if (details.reason !== "clean-exit") {
+      readyWindows.delete(window);
+      window.reload();
+    }
+  });
+  window.on("closed", () => {
+    readyWindows.delete(window);
+    if (win === window) {
+      win = BrowserWindow.getAllWindows().find((candidate) => candidate !== window && !candidate.isDestroyed()) ?? null;
+      if (win && readyWindows.has(win) && pending.length) win.webContents.send("open-files", pending.splice(0));
+    }
+  });
+  await window.loadURL("uniview://app/index.html");
 }
 
 app.on("window-all-closed", () => app.quit());

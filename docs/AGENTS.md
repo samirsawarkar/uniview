@@ -181,6 +181,28 @@ Polls the review decision for a previously requested review.
 - **Output**:
   Returns `{ "status": "decided", "decision": { ... } }` or `{ "status": "pending" }`.
 
+#### 5. `wait_for_user_message`
+Waits for a change request or message typed in the UniView bar under the document.
+
+- **Input Schema** *(optional)*:
+  ```json
+  { "waitSeconds": 300 }
+  ```
+- **Output**: `{ "status": "message", "text": "...", "documentPath": "C:\path\to\file.ts" }`, or `{ "status": "waiting" }` when the wait expires, or `{ "status": "closed" }` when the person ended the session. A wait longer than `UNIVIEW_MAX_WAIT` returns `waiting`.
+
+#### 6. `post_message`
+Posts a one-sentence reply or status to the person in UniView.
+
+- **Input Schema**:
+  ```json
+  { "text": "Fixed the header spacing." }
+  ```
+  *1 to 4000 characters.*
+- **Output**:
+  ```json
+  { "posted": true }
+  ```
+
 ### MCP Error Codes
 
 Standard JSON-RPC 2.0 error codes:
@@ -366,6 +388,8 @@ C:\Users\<username>\AppData\Local\Programs\UniView
 ### 1. Claude Code
 
 Add the MCP server via CLI using the launcher:
+
+`UNIVIEW_MAX_WAIT` (seconds, default `50`) caps `wait_for_user_message`; raise it in the `env` block below for longer waits.
 ```bash
 claude mcp add uniview -- "C:\Users\<username>\AppData\Local\Programs\UniView\resources\uniview-mcp.cmd"
 ```
@@ -380,7 +404,8 @@ Or configure in `.mcp.json` / Claude Desktop configuration using `ELECTRON_RUN_A
         "C:\\Users\\<username>\\AppData\\Local\\Programs\\UniView\\resources\\app.asar\\electron\\mcp-entry.mjs"
       ],
       "env": {
-        "ELECTRON_RUN_AS_NODE": "1"
+        "ELECTRON_RUN_AS_NODE": "1",
+        "UNIVIEW_MAX_WAIT": "50"
       }
     }
   }
