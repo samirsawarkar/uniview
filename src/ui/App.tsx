@@ -6,7 +6,6 @@ import { formatBytes } from "../core/errors";
 import { TabView } from "./TabView";
 import { badgeFor, KindBadge } from "./badges";
 import { loadRecents, rememberRecent, forgetRecent, type Recent } from "./recents";
-import { RecentThumb, captureRecentThumb } from "./recent-thumbs";
 import { SharingPanel } from "./remote/SharingPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { PairDialog } from "./remote/PairDialog";
@@ -884,7 +883,7 @@ function Home({
               }}
               disabled={busyClient === client}
             >
-              [Connect]
+              Connect
             </button>
           ) : (
             <button

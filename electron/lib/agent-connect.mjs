@@ -161,7 +161,7 @@ export function createAgentConnect({
   const p = platform === "win32" ? path.win32 : path.posix;
   const codexDir = env.CODEX_HOME ? env.CODEX_HOME : p.join(homedir, ".codex");
   const codexConfig = p.join(codexDir, "config.toml");
-  const claudeConfig = p.join(homedir, ".claude.json");
+  const claudeConfig = env.CLAUDE_CONFIG_DIR ? p.join(env.CLAUDE_CONFIG_DIR, ".claude.json") : p.join(homedir, ".claude.json");
 
   async function claudeCli() {
     const found = await resolveBinary("claude", { env, fs, platform });
@@ -208,13 +208,23 @@ export function createAgentConnect({
     }
   }
 
-  async function writeAtomic(file, text) {
+  /** Write via a sibling temp file, but only if the file still holds what the caller read. */
+  async function writeAtomic(file, text, expected) {
     const tmp = file + ".uniview-tmp";
     await fs.writeFile(tmp, text, "utf8");
-    await fs.rename(tmp, file);
+    try {
+      const now = await readText(file);
+      if (now.text !== expected) throw new Error(`${file} changed while UniView was editing it; nothing was written. Try again.`);
+      await fs.rename(tmp, file);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      throw err;
+    }
   }
 
   async function backupOnce(file, text) {
+    // Nothing to back up (missing or empty file): leave room for a later real backup.
+    if (text === "") return;
     try {
       await fs.writeFile(file + ".uniview-backup", text, { encoding: "utf8", flag: "wx" });
     } catch (err) {
@@ -278,7 +288,7 @@ export function createAgentConnect({
       const next = applyCodexBlock(read.text, exePath, entryPath);
       if (next.error) return fail(next.error);
       await backupOnce(codexConfig, read.text);
-      await writeAtomic(codexConfig, next.text);
+      await writeAtomic(codexConfig, next.text, read.text);
       return { ok: true };
     } catch (err) {
       return fail(`Could not update ${codexConfig}: ${err?.code || err?.message || "unknown error"}.`);
@@ -297,7 +307,7 @@ export function createAgentConnect({
       if (read.error) return fail(read.error);
       const next = stripCodexBlock(read.text);
       if (next.error) return fail(next.error);
-      if (next.found) await writeAtomic(codexConfig, next.text);
+      if (next.found) await writeAtomic(codexConfig, next.text, read.text);
       return { ok: true };
     } catch (err) {
       return fail(`Could not update ${codexConfig}: ${err?.code || err?.message || "unknown error"}.`);

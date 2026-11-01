@@ -7,7 +7,7 @@ export interface AgentBarStateOutput {
 /**
  * Pure state calculation for the document agent bar.
  * Exact labels from the spec:
- * - "Agent is listening" when a wait is open (state "listening" or "waiting")
+ * - "Agent is listening" when a wait is open (state "listening")
  * - "Working…" after delivery or when idle (state "idle" or "working")
  * - "Message queued. The agent will get it when it next checks" when queued with no wait open
  * - "Conversation ended" when closed (state "closed")
@@ -33,7 +33,7 @@ export function getAgentBarState(
     };
   }
 
-  if (state === "listening" || state === "waiting") {
+  if (state === "listening") {
     return {
       label: "Agent is listening",
       canSend: true,

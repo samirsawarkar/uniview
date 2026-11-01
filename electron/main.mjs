@@ -398,6 +398,8 @@ async function createWindow() {
     webPreferences: {
       preload: join(here, "preload.cjs"),
       sandbox: true,
+      // The E2E hooks flag is a build fact, not an env var the app can be talked into: packaged builds never get it.
+      additionalArguments: !app.isPackaged && process.env.UNIVIEW_E2E === "1" ? ["--uniview-e2e"] : [],
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,

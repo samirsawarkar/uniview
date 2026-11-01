@@ -75,7 +75,7 @@ afterEach(async () => {
 });
 
 describe("codex connect", () => {
-  it("creates the file, the block and a backup on a fresh profile", async () => {
+  it("creates the file and the block on a fresh profile, with no empty backup", async () => {
     const c = make();
     expect(await c.connect("codex")).toEqual({ ok: true });
     const text = await readFile(config, "utf8");
@@ -85,7 +85,45 @@ describe("codex connect", () => {
     expect(text).toContain('default_tools_approval_mode = "auto"');
     expect(text).toContain("UNIVIEW_MAX_WAIT = \"1500\"");
     expect(text).toContain('ELECTRON_RUN_AS_NODE = "1"');
-    expect(await readFile(config + ".uniview-backup", "utf8")).toBe("");
+    expect(await stat(config + ".uniview-backup").catch(() => null)).toBeNull();
+  });
+
+  it("backs up the real file later when the first connect had nothing to back up", async () => {
+    await writeFile(config, "", "utf8");
+    const c = make();
+    await c.connect("codex");
+    expect(await stat(config + ".uniview-backup").catch(() => null)).toBeNull();
+    await c.disconnect("codex");
+    await writeFile(config, "[a]\nk = 1\n", "utf8");
+    await c.connect("codex");
+    expect(await readFile(config + ".uniview-backup", "utf8")).toBe("[a]\nk = 1\n");
+  });
+
+  it("removes the temp file when the rename fails", async () => {
+    await writeFile(config, "[a]\nk = 1\n", "utf8");
+    const fs = Object.create(fsPromises);
+    fs.rename = async () => {
+      throw Object.assign(new Error("rename refused"), { code: "EACCES" });
+    };
+    const c = make({ fs });
+    const r = await c.connect("codex");
+    expect(r.ok).toBe(false);
+    expect(await import("node:fs").then((m) => m.readdirSync(join(home, ".codex")))).not.toContain("config.toml.uniview-tmp");
+  });
+
+  it("aborts and changes nothing when the file changes after it was read", async () => {
+    await writeFile(config, "[a]\nk = 1\n", "utf8");
+    const fs = Object.create(fsPromises);
+    fs.writeFile = async (file: string, data: unknown, opts: unknown) => {
+      if (String(file).endsWith(".uniview-tmp")) await fsPromises.writeFile(config, "[a]\nk = 2\n", "utf8");
+      return (fsPromises.writeFile as any)(file, data, opts);
+    };
+    const c = make({ fs });
+    const r = await c.connect("codex");
+    expect(r.ok).toBe(false);
+    expect(String((r as { error: string }).error)).toMatch(/changed/);
+    expect(await readFile(config, "utf8")).toBe("[a]\nk = 2\n");
+    expect(await import("node:fs").then((m) => m.readdirSync(join(home, ".codex")))).not.toContain("config.toml.uniview-tmp");
   });
 
   it("keeps every other byte: other servers and comments survive", async () => {
@@ -294,7 +332,7 @@ describe("codex disconnect", () => {
     const c = make();
     await c.connect("codex");
     const names = await import("node:fs").then((m) => m.readdirSync(join(home, ".codex")));
-    expect(names.sort()).toEqual(["config.toml", "config.toml.uniview-backup"]);
+    expect(names.sort()).toEqual(["config.toml"]);
   });
 });
 
@@ -402,6 +440,19 @@ describe("status", () => {
     const c = make();
     expect((await c.connect("nope")).ok).toBe(false);
     expect((await c.disconnect("nope")).ok).toBe(false);
+  });
+
+  it("reads .claude.json from CLAUDE_CONFIG_DIR when it is set", async () => {
+    const alt = join(home, "alt-claude");
+    await mkdir(alt, { recursive: true });
+    const spec = { command: EXE, args: [ENTRY], env: { ELECTRON_RUN_AS_NODE: "1" } };
+    await writeFile(join(alt, ".claude.json"), JSON.stringify({ mcpServers: { uniview: spec } }), "utf8");
+    await plantBin("claude");
+    const c = make({ env: { PATH: BIN, PATHEXT: ".EXE", CLAUDE_CONFIG_DIR: alt } });
+    const s = await c.status();
+    expect(s.claude).toMatchObject({ installed: true, connected: true, stale: false });
+    await writeFile(join(alt, ".claude.json"), JSON.stringify({ mcpServers: { uniview: { ...spec, command: "D:\\old\\UniView.exe" } } }), "utf8");
+    expect((await c.status()).claude.stale).toBe(true);
   });
 
   it("respects CODEX_HOME", async () => {

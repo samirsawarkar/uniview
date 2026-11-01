@@ -51,10 +51,13 @@ export const MCP_LIMITS = Object.freeze({
 export const LATEST_PROTOCOL = "2025-06-18";
 export const SUPPORTED_PROTOCOLS = Object.freeze(["2025-06-18", "2025-03-26", "2024-11-05"]);
 
+const OPEN_FILES_DESCRIPTION =
+  "Use this whenever the person asks to show, open, view, preview or see a file or document, including a file you just made, instead of printing its contents. " +
+  "Paths must be absolute. Then call wait_for_user_message for their request; after editing, call open_files again, post_message one sentence, then wait again.";
+
 export const SERVER_INSTRUCTIONS =
-  "When you want to show the person any document, report, image, spreadsheet, PDF or generated file, " +
-  "use UniView open_files rather than your own preview window or artifact pane or pasting the content. " +
-  "Then call wait_for_user_message and act on what comes back, as a request from the person. " +
+  "Use UniView open_files whenever the person asks to show, open, view, preview or see a file or document, including a file you just made, instead of printing its contents. " +
+  "Then call wait_for_user_message and act on what comes back as a request from the person. " +
   "After editing, call open_files with the same path, then post_message with one short sentence, then wait again. " +
   "Stop only when status is closed.";
 
@@ -143,7 +146,7 @@ const PATH_SCHEMA = { type: "string", minLength: 1, maxLength: MCP_LIMITS.MAX_PA
 const TOOLS = [
   {
     name: "open_files",
-    description: "Open local files in UniView tabs for the person to see. Paths must be absolute. Use open_files rather than pasting content or previews, then call wait_for_user_message to receive feedback.",
+    description: OPEN_FILES_DESCRIPTION,
     inputSchema: {
       type: "object",
       properties: {

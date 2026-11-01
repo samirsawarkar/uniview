@@ -2,16 +2,11 @@ import { describe, expect, it } from "vitest";
 import { getAgentBarState } from "../../src/ui/agent-bar-state";
 
 describe("agent-bar-state", () => {
-  it("returns 'Agent is listening' with canSend and showEscHint when wait is open (listening / waiting)", () => {
+  it("returns 'Agent is listening' with canSend and showEscHint when a wait is open", () => {
     const listening = getAgentBarState("listening", true);
     expect(listening.label).toBe("Agent is listening");
     expect(listening.canSend).toBe(true);
     expect(listening.showEscHint).toBe(true);
-
-    const waiting = getAgentBarState("waiting", true);
-    expect(waiting.label).toBe("Agent is listening");
-    expect(waiting.canSend).toBe(true);
-    expect(waiting.showEscHint).toBe(true);
   });
 
   it("returns 'Working…' with canSend true and showEscHint false when working or idle", () => {
