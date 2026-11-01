@@ -107,10 +107,9 @@ android/ ios/  Capacitor projects with native "Open with" / Share handling
 
 ## Decisions and reviews
 
-Recorded in Obsidian (`uniview`) and in the project's local `.aes/` records (not published):
+Recorded in Obsidian (`uniview`):
 
 - Shell: Electron + Capacitor behind a ShellBridge, accepted by the CEO (triage `dec-67e7d1c9` TYPE 1, debate `dec-9a21f812` unanimous). **Gate before code signing:** a 3-day Tauri v2 prototype against the same benchmark; migrate only if p50 time-to-first-view improves ≥25% or installer size drops ≥50% with no format regression.
-- Reuse-first scout: `.aes/scout/scout-080e764a.md` (with CTO verification and licence exceptions).
 - Licensing: CEO decision (2026-10-25) confirms V1 ships purely permissive (native OOXML renderer + `emf-converter`); the optional second PowerPoint engine (@aiden0z/pptx-renderer) is deferred to V1.1 as an isolated chunk.
 - Independent reviews: Codex (GPT) and pi (Gemini); the author was Claude.
 
