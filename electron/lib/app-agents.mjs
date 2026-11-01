@@ -331,6 +331,8 @@ export function createUiManager({ getWindow, openRendererTab }) {
             path: item.canonical,
             size: item.size,
             scopeId: item.scopeId,
+            sessionId: item.sessionId,
+            agent: item.agent,
           },
         ]);
       } else if (item.kind === "view") {
@@ -380,6 +382,18 @@ export function createUiManager({ getWindow, openRendererTab }) {
       },
       async closeTab(scopeId) {
         await enqueueOrDispatch({ kind: "closeTab", scopeId });
+      },
+      async postMessage(params) {
+        const win = getWindow ? getWindow() : null;
+        if (win && !win.isDestroyed?.() && win.webContents) {
+          win.webContents.send("agent:message", params);
+        }
+      },
+      async sessionState(params) {
+        const win = getWindow ? getWindow() : null;
+        if (win && !win.isDestroyed?.() && win.webContents) {
+          win.webContents.send("agent:session-state", params);
+        }
       },
     },
   };
@@ -831,6 +845,12 @@ export function createAppAgents({
         },
         async closeTab(id) {
           return uiManager.ui.closeTab(id);
+        },
+        async postMessage(p) {
+          return uiManager.ui.postMessage(p);
+        },
+        async sessionState(p) {
+          return uiManager.ui.sessionState(p);
         },
       },
       closeSession,

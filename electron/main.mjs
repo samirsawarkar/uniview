@@ -257,6 +257,23 @@ function registerIpc() {
     void appAgents?.uiManager?.setReady();
     if (pending.length && window === win) window.webContents.send("open-files", pending.splice(0));
   });
+  ipcMain.on("uniview:new-window", (e) => {
+    if (!fromApp(e)) return;
+    void openNewWindow();
+  });
+  ipcMain.handle("agent:send-message", guard(async (_e, args) => {
+    if (!args || typeof args !== "object") throw new Error("Invalid arguments");
+    const { sessionId, text, documentPath } = args;
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Invalid sessionId");
+    if (typeof text !== "string" || !text) throw new Error("Invalid message text");
+    if (!appAgents?.host) throw new Error("Agent host not available");
+    return appAgents.host.sendMessage({ sessionId, text, documentPath });
+  }));
+  ipcMain.handle("agent:end-session", guard(async (_e, sessionId) => {
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Invalid sessionId");
+    if (!appAgents?.host) throw new Error("Agent host not available");
+    return appAgents.host.endSession(sessionId);
+  }));
 }
 
 let lastNewWindowTime = 0;

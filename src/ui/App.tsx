@@ -30,6 +30,7 @@ interface Tab {
   scopeId?: string;
   agentReview?: any;
   agentSupplied?: boolean;
+  sessionId?: string;
 }
 
 const homeTab = (): Tab => ({ id: `home-${Math.random().toString(36).slice(2)}`, source: null });
@@ -43,6 +44,8 @@ declare global {
 export function App() {
   const bridge = useMemo(() => getBridge(), []);
   const [tabs, setTabs] = useState<Tab[]>(() => [homeTab()]);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const [activeId, setActiveId] = useState(() => tabs[0]!.id);
   const [dragging, setDragging] = useState(false);
   const [recents, setRecents] = useState<Recent[]>(() => loadRecents());
@@ -54,20 +57,67 @@ export function App() {
 
   const openFiles = useCallback((files: FileSource[], replaceHome = true) => {
     if (!files.length) return;
-    setTabs((prev) => {
-      const next = [...prev];
-      const created = files.map((f) => ({
-        id: f.id,
-        source: f,
-        scopeId: (f as any).scopeId ?? scopeIdOf(f),
-      }));
+    const current = tabsRef.current;
+    const next = [...current];
+    const created: Tab[] = [];
+    const toRelease: FileSource[] = [];
+    let focusedId: string | null = null;
+
+    const norm = (p: string) => p.toLowerCase();
+
+    for (const f of files) {
+      const sessionId = (f as any).sessionId;
+      const fPath = f.path;
+      // Only reload in place for agent opens (has sessionId); compare case-insensitively like Windows.
+      const existingIdx = sessionId && fPath
+        ? next.findIndex((t) => t.source?.path && norm(t.source.path) === norm(fPath))
+        : -1;
+      if (existingIdx >= 0) {
+        const oldTab = next[existingIdx]!;
+        if (oldTab.source) toRelease.push(oldTab.source);
+        const isAgent = Boolean(
+          oldTab.agentSupplied &&
+            (oldTab.detection?.kind === "viewspec" || oldTab.detection?.kind === "receipt")
+        );
+        next[existingIdx] = {
+          ...oldTab,
+          source: f,
+          detection: isAgent ? oldTab.detection : undefined,
+          scopeId: (f as any).scopeId ?? scopeIdOf(f),
+          sessionId,
+          agentSupplied: true,
+        };
+        focusedId = oldTab.id;
+      } else {
+        created.push({
+          id: f.id,
+          source: f,
+          scopeId: (f as any).scopeId ?? scopeIdOf(f),
+          sessionId,
+          agentSupplied: Boolean(sessionId),
+        });
+      }
+    }
+
+    if (created.length > 0) {
       const idx = next.findIndex((t) => t.id === activeId);
       // Opening from the home tab replaces it, like typing a URL into Chrome's new tab page.
       if (replaceHome && idx >= 0 && next[idx]!.source === null) next.splice(idx, 1, ...created);
       else next.splice(idx + 1, 0, ...created);
-      return next;
-    });
-    setActiveId(files[files.length - 1]!.id);
+      focusedId = created[created.length - 1]!.id;
+    }
+
+    // Release old scopes outside the updater so release runs exactly once.
+    for (const s of toRelease) {
+      try {
+        s.release();
+      } catch {}
+    }
+
+    setTabs(next);
+    if (focusedId) setActiveId(focusedId);
+    else if (next.length > 0) setActiveId(next[next.length - 1]!.id);
+
     for (const f of files) {
       if (f.remote) {
         setRecents(rememberRecent({ name: f.name, size: f.size, remote: f.remote }));
@@ -312,6 +362,10 @@ export function App() {
       const k = e.key.toLowerCase();
       if (k === "o") { e.preventDefault(); void pick(); }
       else if (k === "t") { e.preventDefault(); newTab(); }
+      else if (k === "n") {
+        e.preventDefault();
+        (window as unknown as { uniview?: { newWindow?: () => void } }).uniview?.newWindow?.();
+      }
       else if (k === "w") { e.preventDefault(); closeTab(activeId); }
       else if (k === "r") { e.preventDefault(); void reloadActiveTab(); }
       else if (k === "l") { e.preventDefault(); document.getElementById("omnibox")?.focus(); }

@@ -82,6 +82,7 @@ test("Ctrl+N opens an independent window and closing it keeps the first window u
     await first.keyboard.press("Control+N");
     const second = await nextWindow;
     await expect(second.locator(".tab", { hasText: "deck.pptx" })).toHaveCount(0);
+    await expect(second.locator(".tab", { hasText: "New tab" })).toBeVisible();
     await app.evaluate(({ dialog }, file) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
     }, join(FX, "tone.wav"));

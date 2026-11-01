@@ -75,7 +75,7 @@ export const HOST_LIMITS = Object.freeze({
   decidedKeptPerSession: 100,
 });
 
-export const BRIDGE_OPS = Object.freeze(["cli.hello", "mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get"]);
+export const BRIDGE_OPS = Object.freeze(["cli.hello", "mcp.hello", "open", "view.show", "review.open", "review.wait", "review.cancelWait", "review.get", "session.waitMessage", "session.cancelWaitMessage", "session.postMessage"]);
 
 const realClock = {
   now: () => Date.now(),
@@ -151,6 +151,7 @@ export function createAgentHost(deps) {
         sessionId: session.sessionId,
         epoch: 1,
         closed: false,
+        disconnected: false,
         kind: "unidentified",
         client: { name: "", version: "" },
         sawRequest: false,
@@ -159,6 +160,10 @@ export function createAgentHost(deps) {
         tabTimes: [],
         pendingReviews: 0,
         reservedReviews: 0,
+        inbox: [],
+        activeWait: null,
+        openedPaths: new Set(),
+        chatClosed: false,
       };
       sessions.set(session.sessionId, state);
     }
@@ -417,7 +422,10 @@ export function createAgentHost(deps) {
         }
         throw e;
       }
-      for (const item of items) tabs.set(item.scopeId, newTab(state, { kind: "file" }));
+      for (const item of items) {
+        state.openedPaths.add(item.opened.canonical);
+        tabs.set(item.scopeId, newTab(state, { kind: "file" }));
+      }
       slots.placed();
       for (const item of items) {
         if (!isSessionLive(state, epoch)) throw err("not_found");
@@ -448,6 +456,7 @@ export function createAgentHost(deps) {
       throw e;
     }
     slots.commit();
+    state.chatClosed = false;
     log("open", state, `${n} file(s)`);
     return { result: { opened: n } };
   }
@@ -629,6 +638,64 @@ export function createAgentHost(deps) {
     return { result: outcomeOf(ownedReview(state, params)) };
   }
 
+  async function opWaitMessage(state, params) {
+    if (state.activeWait) throw err("busy");
+    if (state.chatClosed) return { result: { status: "closed" } };
+    if (state.inbox.length > 0) {
+      const msg = state.inbox.shift();
+      try {
+        await ui.sessionState?.({ sessionId: state.sessionId, state: "working" });
+      } catch {}
+      return { result: { status: "message", text: msg.text, documentPath: msg.documentPath ?? null } };
+    }
+    const timeoutMs = params.timeoutMs === undefined ? 50_000 : params.timeoutMs;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > L.maxWaitMs) throw err("bad_request");
+    if (timeoutMs === 0) return { result: { status: "waiting" } };
+
+    try {
+      await ui.sessionState?.({ sessionId: state.sessionId, state: "listening" });
+    } catch {}
+
+    return new Promise((resolve) => {
+      const waiter = {};
+      waiter.finish = (outcome) => {
+        clock.clearTimeout(waiter.timer);
+        if (state.activeWait === waiter) state.activeWait = null;
+        if (outcome?.status === "waiting" && !state.disconnected && !state.closed) {
+          try {
+            ui.sessionState?.({ sessionId: state.sessionId, state: state.inbox.length > 0 ? "queued" : "idle" });
+          } catch {}
+        }
+        resolve({ result: outcome });
+      };
+      waiter.timer = clock.setTimeout(() => {
+        waiter.finish({ status: "waiting" });
+      }, timeoutMs);
+      state.activeWait = waiter;
+    });
+  }
+
+  async function opCancelWaitMessage(state) {
+    if (state.activeWait) {
+      const waiter = state.activeWait;
+      state.activeWait = null;
+      waiter.finish({ status: "waiting" });
+    }
+    return { result: {} };
+  }
+
+  async function opPostMessage(state, params, body) {
+    const rawText = params?.text ?? (body ? utf8.decode(body) : "");
+    if (typeof rawText !== "string" || rawText.length < 1 || rawText.length > 4000) {
+      throw err("bad_request");
+    }
+    try {
+      await ui.postMessage?.({ sessionId: state.sessionId, text: rawText });
+    } catch {}
+    log("post_message", state);
+    return { result: { posted: true } };
+  }
+
   const OPS = {
     "open": opOpen,
     "view.show": opViewShow,
@@ -636,6 +703,9 @@ export function createAgentHost(deps) {
     "review.wait": opReviewWait,
     "review.cancelWait": opReviewCancelWait,
     "review.get": opReviewGet,
+    "session.waitMessage": opWaitMessage,
+    "session.cancelWaitMessage": opCancelWaitMessage,
+    "session.postMessage": opPostMessage,
   };
 
   // ---- bridge entry points --------------------------------------------------------------------------------
@@ -740,7 +810,16 @@ export function createAgentHost(deps) {
     const state = sessions.get(sessionId);
     if (state) {
       state.closed = true;
+      state.disconnected = true;
       state.epoch = (state.epoch || 1) + 1;
+      if (state.activeWait) {
+        const waiter = state.activeWait;
+        state.activeWait = null;
+        waiter.finish({ status: "waiting" });
+      }
+      try {
+        ui.sessionState?.({ sessionId, state: "disconnected" });
+      } catch {}
     }
     for (const record of reviews.values()) {
       if (record.ownerSessionId !== sessionId) continue;
@@ -979,10 +1058,93 @@ export function createAgentHost(deps) {
     return { removed, sessionsClosed: ids.length };
   }
 
+  function sessionOpenedPath(sessionId, documentPath) {
+    const state = sessions.get(sessionId);
+    if (!state || typeof documentPath !== "string") return false;
+    const norm = path.normalize(documentPath).toLowerCase();
+    for (const p of state.openedPaths) {
+      if (path.normalize(p).toLowerCase() === norm) return true;
+    }
+    return false;
+  }
+
+  async function sendMessage({ sessionId, text, documentPath }) {
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Invalid sessionId");
+    const state = sessions.get(sessionId);
+    if (!state || state.disconnected || state.closed) {
+      throw new Error("Session not found or disconnected");
+    }
+    if (typeof text !== "string" || text.length < 1 || text.length > 8000) {
+      throw new Error("Message text must be 1 to 8000 characters");
+    }
+    if (documentPath) {
+      if (typeof documentPath !== "string") throw new Error("Invalid documentPath");
+      if (!sessionOpenedPath(sessionId, documentPath)) {
+        throw new Error("Session isolation: this session did not open this document");
+      }
+    }
+    if (state.inbox.length >= 100) {
+      throw new Error("Inbox is full (maximum 100 messages)");
+    }
+    state.inbox.push({ text, documentPath: documentPath || null });
+    if (state.activeWait) {
+      const msg = state.inbox.shift();
+      const waiter = state.activeWait;
+      state.activeWait = null;
+      waiter.finish({ status: "message", text: msg.text, documentPath: msg.documentPath });
+      try {
+        await ui.sessionState?.({ sessionId, state: "working" });
+      } catch {}
+      return { ok: true, delivered: true };
+    } else {
+      try {
+        await ui.sessionState?.({ sessionId, state: "queued" });
+      } catch {}
+      return { ok: true, delivered: false, queued: true };
+    }
+  }
+
+  async function endSession(sessionId) {
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Invalid sessionId");
+    const state = sessions.get(sessionId);
+    if (!state) throw new Error("Session not found");
+    state.chatClosed = true;
+    if (state.activeWait) {
+      const waiter = state.activeWait;
+      state.activeWait = null;
+      waiter.finish({ status: "closed" });
+    }
+    try {
+      await ui.sessionState?.({ sessionId, state: "closed" });
+    } catch {}
+    return { ok: true };
+  }
+
+  // Test-only accessor: returns the live queue so a case can seed "wait open + queued message".
+  function getSessionInbox(sessionId) {
+    const state = sessions.get(sessionId);
+    return state ? state.inbox : [];
+  }
+
+  function getSessionState(sessionId) {
+    const state = sessions.get(sessionId);
+    if (!state || state.disconnected || state.closed) return "disconnected";
+    if (state.chatClosed) return "closed";
+    if (state.activeWait) return "listening";
+    if (state.inbox.length > 0) return "queued";
+    return "idle";
+  }
+
   async function dispose() {
     for (const record of reviews.values()) {
       cancelVerifications(record);
       for (const waiter of [...record.waiters]) waiter.finish();
+    }
+    for (const state of sessions.values()) {
+      if (state.activeWait) {
+        state.activeWait.finish({ status: "waiting" });
+        state.activeWait = null;
+      }
     }
     tabs.clear();
     await grants.closeAll();
@@ -998,6 +1160,11 @@ export function createAgentHost(deps) {
     viewGrant,
     verifyReview,
     decideReview,
+    sendMessage,
+    endSession,
+    sessionOpenedPath,
+    getSessionInbox,
+    getSessionState,
     getReview(reviewId) {
       const record = typeof reviewId === "string" ? reviews.get(reviewId) : undefined;
       if (!record) return null;

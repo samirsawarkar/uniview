@@ -89,12 +89,17 @@ export interface ElectronApi {
   reveal(token: string): void;
   onOpenFiles(cb: (files: GrantedFile[]) => void): () => void;
   ready(): void;
+  newWindow?(): void;
   tabClosed?(scopeId: string): void;
   thumbnail(token: string, size: number, scopeId?: string): Promise<Uint8Array | null>;
   share: ShareApi;
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
   review?: ReviewApi;
   agents?: AgentsApi;
+  sendMessage?(args: { sessionId: string; text: string; documentPath?: string }): Promise<{ ok: boolean; error?: string }>;
+  endSession?(sessionId: string): Promise<{ ok: boolean; error?: string }>;
+  onAgentMessage?(cb: (msg: { sessionId: string; text: string }) => void): () => void;
+  onAgentSessionState?(cb: (state: { sessionId: string; state: string }) => void): () => void;
   onAgentShowView?(cb: (item: any) => void): () => void;
   onAgentShowReview?(cb: (item: any) => void): () => void;
   onAgentCloseTab?(cb: (scopeId: string) => void): () => void;
@@ -108,6 +113,7 @@ export interface GrantedFile {
   path: string;
   size: number;
   scopeId?: string;
+  sessionId?: string;
 }
 
 export function hasElectronApi(): boolean {
@@ -189,6 +195,9 @@ export function toSource(f: GrantedFile, ownsScope = true): FileSource {
   if (f.scopeId) {
     scopes.set(source, f.scopeId);
     (source as any).scopeId = f.scopeId;
+  }
+  if (f.sessionId) {
+    (source as any).sessionId = f.sessionId;
   }
   return source;
 }

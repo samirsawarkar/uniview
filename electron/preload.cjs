@@ -7,6 +7,8 @@ const shareListeners = new Set();
 const viewListeners = new Set();
 const reviewListeners = new Set();
 const closeTabListeners = new Set();
+const agentMessageListeners = new Set();
+const agentSessionStateListeners = new Set();
 
 ipcRenderer.on("open-files", (_e, files) => {
   if (!Array.isArray(files)) return;
@@ -28,6 +30,14 @@ ipcRenderer.on("agent:show-review", (_e, item) => {
 
 ipcRenderer.on("agent:close-tab", (_e, scopeId) => {
   for (const cb of closeTabListeners) cb(scopeId);
+});
+
+ipcRenderer.on("agent:message", (_e, msg) => {
+  for (const cb of agentMessageListeners) cb(msg);
+});
+
+ipcRenderer.on("agent:session-state", (_e, state) => {
+  for (const cb of agentSessionStateListeners) cb(state);
 });
 
 contextBridge.exposeInMainWorld("uniview", {
@@ -94,6 +104,19 @@ contextBridge.exposeInMainWorld("uniview", {
     if (typeof cb !== "function") return () => {};
     closeTabListeners.add(cb);
     return () => closeTabListeners.delete(cb);
+  },
+  newWindow: () => ipcRenderer.send("uniview:new-window"),
+  sendMessage: (args) => ipcRenderer.invoke("agent:send-message", args),
+  endSession: (sessionId) => ipcRenderer.invoke("agent:end-session", String(sessionId)),
+  onAgentMessage: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    agentMessageListeners.add(cb);
+    return () => agentMessageListeners.delete(cb);
+  },
+  onAgentSessionState: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    agentSessionStateListeners.add(cb);
+    return () => agentSessionStateListeners.delete(cb);
   },
   ready: () => ipcRenderer.send("uniview:ready"),
 

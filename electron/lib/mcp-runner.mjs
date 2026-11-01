@@ -181,5 +181,6 @@ export async function runMcpServer({
     clock,
     approvalGraceMs,
     clientInfo,
+    env,
   });
 }

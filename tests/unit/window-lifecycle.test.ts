@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-// @ts-expect-error plain ESM module without types
 import {
   isNewWindowShortcut,
   hasOtherLiveWindows,
