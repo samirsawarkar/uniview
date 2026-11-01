@@ -71,16 +71,15 @@
 
   if (sections.length > 0 && navLinks) {
     const navAnchors = Array.from(navLinks.querySelectorAll('a[href^="#"]'));
+    const inView = new Set();
     const sectionObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const id = entry.target.id;
-          navAnchors.forEach(a => {
-            const match = a.getAttribute('href') === `#${id}`;
-            a.classList.toggle('active', match);
-          });
-        }
+        if (entry.isIntersecting) inView.add(entry.target.id);
+        else inView.delete(entry.target.id);
       });
+      // Nothing in view (the hero) means no link is current.
+      const current = sectionIds.find(id => inView.has(id));
+      navAnchors.forEach(a => a.classList.toggle('active', a.getAttribute('href') === `#${current}`));
     }, { threshold: 0.35, rootMargin: '-60px 0px -40% 0px' });
 
     sections.forEach(sec => sectionObserver.observe(sec));
@@ -124,61 +123,7 @@
     }
   }
 
-  // 7. Agents flow scroll-drawn connecting line & step activation
-  const agentSection = document.getElementById('agents');
-  const agentActiveLine = document.querySelector('.agent-active-line');
-  const agentSteps = document.querySelectorAll('.agent-step');
-  const agentNodes = [
-    document.querySelector('.node-1'),
-    document.querySelector('.node-2'),
-    document.querySelector('.node-3')
-  ];
-
-  if (agentSection && agentActiveLine && !reducedMotion) {
-    let pathLength = 180;
-    try {
-      pathLength = agentActiveLine.getTotalLength();
-    } catch (_) {
-      pathLength = 180;
-    }
-    agentActiveLine.style.strokeDasharray = `${pathLength}`;
-    agentActiveLine.style.strokeDashoffset = `${pathLength}`;
-
-    let tickingAgent = false;
-    const updateAgentFlow = () => {
-      const rect = agentSection.getBoundingClientRect();
-      const vh = window.innerHeight;
-      // Start drawing when top of section reaches 70% of viewport, finish near 25%
-      const start = vh * 0.75;
-      const end = vh * 0.2;
-      const progress = Math.min(1, Math.max(0, (start - rect.top) / (rect.height + (start - end))));
-
-      /* ponytail: direct stroke-dashoffset interpolation along fixed vertical line */
-      agentActiveLine.style.strokeDashoffset = `${pathLength * (1 - progress)}`;
-
-      const thresholds = [0.15, 0.5, 0.82];
-      agentSteps.forEach((step, idx) => {
-        const isActive = progress >= thresholds[idx];
-        step.classList.toggle('active', isActive);
-        if (agentNodes[idx]) {
-          agentNodes[idx].classList.toggle('active', isActive);
-        }
-      });
-    };
-
-    window.addEventListener('scroll', () => {
-      if (!tickingAgent) {
-        requestAnimationFrame(() => {
-          updateAgentFlow();
-          tickingAgent = false;
-        });
-        tickingAgent = true;
-      }
-    }, { passive: true });
-    updateAgentFlow();
-  }
-
-  // 8. General Scroll Reveal for feature cards, format cards, privacy points
+  // 7. General Scroll Reveal for feature cards, format cards, privacy points
   if (!reducedMotion) {
     const revealElements = document.querySelectorAll(
       '.features article, .format-card, .privacy-points article, .closing'
@@ -200,7 +145,7 @@
     }
   }
 
-  // 9. Primary Button Magnetic Feedback (fine pointer only)
+  // 8. Primary Button Magnetic Feedback (fine pointer only)
   if (!reducedMotion && window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
     const primaryBtns = document.querySelectorAll('.button.primary');
     primaryBtns.forEach(btn => {

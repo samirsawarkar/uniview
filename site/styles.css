@@ -361,12 +361,6 @@ img {
   letter-spacing: 0.01em;
 }
 
-.hero-note i {
-  height: 10px;
-  border-left: 1px solid var(--line);
-  margin-inline: 4px;
-}
-
 /* Staggered entrance animations */
 /* ponytail: fast entrance animation completes well under 1s so hero content is never blank */
 .hero-enter {
@@ -1064,10 +1058,7 @@ img {
 }
 
 .agent-layout {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 90px;
-  align-items: center;
+  max-width: 720px;
 }
 
 .agent-layout > div > p {
@@ -1079,90 +1070,6 @@ img {
 
 .agent-layout h2 span {
   color: var(--blue);
-}
-
-.agent-flow-wrap {
-  position: relative;
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  gap: 20px;
-  align-items: stretch;
-  background: #ffffff;
-  padding: 24px 28px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  box-shadow: var(--shadow-card);
-}
-
-.agent-line-track {
-  position: relative;
-  display: flex;
-  justify-content: center;
-  width: 24px;
-}
-
-.agent-line-svg {
-  width: 20px;
-  height: 100%;
-}
-
-.agent-active-line {
-  stroke-dasharray: 200;
-  stroke-dashoffset: 0;
-  transition: stroke-dashoffset 0.15s linear;
-}
-
-.agent-node {
-  transition: fill 0.25s ease, stroke 0.25s ease, r 0.25s ease;
-}
-
-.agent-node.active {
-  stroke: var(--blue);
-  fill: var(--blue);
-}
-
-.agent-flow {
-  display: flex;
-  flex-direction: column;
-}
-
-.agent-step {
-  position: relative;
-  padding: 20px 0 20px 10px;
-  border-bottom: 1px solid var(--line-subtle);
-  transition: transform 0.25s ease, opacity 0.25s ease;
-}
-
-.agent-step:last-child {
-  border-bottom: 0;
-}
-
-.step-num {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--muted-light);
-  margin-bottom: 4px;
-  display: block;
-  transition: color 0.25s ease;
-}
-
-.agent-step.active .step-num {
-  color: var(--blue);
-}
-
-.agent-step strong {
-  display: block;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ink-deep);
-}
-
-.agent-step p {
-  font-size: 13.5px;
-  color: var(--muted);
-  margin: 6px 0 0;
-  line-height: 1.6;
 }
 
 /* Formats Grid Section */
@@ -1794,19 +1701,6 @@ footer {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
-  }
-
-  .agent-active-line {
-    stroke-dashoffset: 0 !important;
-  }
-
-  .agent-node {
-    fill: var(--blue) !important;
-    stroke: var(--blue) !important;
-  }
-
-  .agent-step {
-    opacity: 1 !important;
   }
 
   .js-ready .reveal {
