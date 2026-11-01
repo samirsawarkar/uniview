@@ -3,16 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>UniView — One home for your files</title>
-  <meta name="description" content="UniView is a simple, private viewer for documents, images, media, code and more. Offline, private, instant.">
+  <title>UniView: Free Offline File Viewer for Windows (PDF, Word, Excel, PowerPoint)</title>
+  <meta name="description" content="Free offline file viewer for Windows. Open PDF, Word, Excel and PowerPoint files, and review Claude Code document changes.">
   <link rel="canonical" href="https://samirsawarkar.github.io/uniview/">
-  <meta property="og:title" content="UniView — One home for your files">
-  <meta property="og:description" content="One private place to open your files, connect your devices, and review your agents’ work. Offline, private, instant.">
+  <meta property="og:title" content="UniView: Free Offline File Viewer for Windows">
+  <meta property="og:description" content="Free offline file viewer for Windows. Open PDF, Word, Excel and PowerPoint files, and review Claude Code document changes.">
   <meta property="og:url" content="https://samirsawarkar.github.io/uniview/">
-  <meta property="og:image" content="https://samirsawarkar.github.io/uniview/devices.png">
+  <meta property="og:image" content="https://samirsawarkar.github.io/uniview/shots/agent-review.png">
+  <meta property="og:image:width" content="1264">
+  <meta property="og:image:height" content="801">
   <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="logo.png">
   <link rel="stylesheet" href="styles.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "UniView",
+    "operatingSystem": "Windows 10, Windows 11",
+    "applicationCategory": "UtilitiesApplication",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "downloadUrl": "https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe",
+    "softwareVersion": "1.0.0",
+    "license": "https://github.com/samirsawarkar/uniview/blob/main/LICENSE",
+    "url": "https://samirsawarkar.github.io/uniview/",
+    "image": "https://samirsawarkar.github.io/uniview/shots/agent-review.png"
+  }
+  </script>
 </head>
 <body>
 <div class="scroll-progress" aria-hidden="true"></div>
@@ -22,6 +40,7 @@
     <a class="brand" href="#top"><img src="logo.png" alt=""><span>UniView</span></a>
     <button class="menu-toggle" aria-expanded="false" aria-controls="site-links" aria-label="Toggle navigation">☰</button>
     <div class="nav-links" id="site-links">
+      <a href="#screenshots">Screenshots</a>
       <a href="#connect">Your devices</a>
       <a href="#features">Features</a>
       <a href="#formats">Formats</a>
@@ -29,7 +48,7 @@
       <a href="#privacy">Privacy</a>
       <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub ↗</a>
     </div>
-    <a class="nav-action" href="getting-started.html">Get started <span aria-hidden="true">↗</span></a>
+    <a class="nav-action" href="https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe">Download</a>
   </nav>
 </header>
 
@@ -44,21 +63,22 @@
     </div>
 
     <div class="hero-copy">
-      <span class="eyebrow hero-enter hero-enter-1"><span class="status-dot"></span> Files · Devices · Agents</span>
-      <h1 class="hero-enter hero-enter-2">All your files.<br><span>Closer than ever.</span></h1>
-      <p class="hero-enter hero-enter-3">One private place to open your files, connect your devices, and review your agents’ work.</p>
+      <span class="eyebrow hero-enter hero-enter-1"><span class="status-dot"></span> Free · Offline · Windows</span>
+      <h1 class="hero-enter hero-enter-2">Open any file.<br><span>Ask your AI agent to change it.</span></h1>
+      <p class="hero-enter hero-enter-3">Free, private file viewer for Windows. PDF, Word, Excel, PowerPoint and more, offline, with no account. Documents from Claude Code open in UniView, and you request changes from inside the app.</p>
       <div class="hero-actions hero-enter hero-enter-4">
-        <a class="button primary" href="getting-started.html">Get started <span aria-hidden="true">↗</span></a>
-        <a class="button secondary" href="#features">Explore UniView <span aria-hidden="true">↓</span></a>
+        <a class="button primary hero-download" href="https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe">Download for Windows</a>
+        <a class="button secondary" href="https://github.com/samirsawarkar/uniview">View on GitHub</a>
       </div>
       <div class="hero-note hero-enter hero-enter-5">
-        <span>✓</span> Offline by design <i></i> <span>✓</span> No account needed
+        <span>Free · v1.0.0 · 120 MB · Windows 10/11</span>
       </div>
+      <p class="hero-warning hero-enter hero-enter-5">The app is unsigned, so Windows shows a warning. Click More info, then Run anyway. <a href="https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/SHA256SUMS.txt">Verify checksum</a></p>
     </div>
 
     <figure class="product-stage hero-enter hero-enter-6">
-      <img src="devices.png" alt="UniView presented on a laptop and Samsung Galaxy S23 Ultra">
-      <figcaption>Device visualization · Android screen based on a real UniView capture</figcaption>
+      <img src="shots/agent-review.png" width="1264" height="801" alt="UniView showing a Markdown file with an AI agent's edit and a box to request the next change">
+      <figcaption>Real screenshot: UniView with Claude Code connected.</figcaption>
     </figure>
   </section>
 
@@ -76,6 +96,50 @@
           </div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- Real Screenshots -->
+  <section id="screenshots" class="section wrap">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Real screenshots</span>
+        <h2>See what opens<br>in the file viewer.</h2>
+      </div>
+      <p>PDF, Word, Excel and PowerPoint files, images, code and more, in one offline viewer.</p>
+    </div>
+    <div class="shots">
+      <figure><img src="shots/home.png" loading="lazy" width="1280" height="800" alt="UniView home screen"><figcaption>Home: your files, one place.</figcaption></figure>
+      <figure><img src="shots/spreadsheet.png" loading="lazy" width="1280" height="800" alt="A spreadsheet open in UniView"><figcaption>A spreadsheet open in UniView.</figcaption></figure>
+      <figure><img src="shots/presentation.png" loading="lazy" width="1280" height="800" alt="A PowerPoint deck open in UniView"><figcaption>A PowerPoint deck open in UniView.</figcaption></figure>
+    </div>
+  </section>
+
+  <!-- How the agent works -->
+  <section id="how-it-works" class="section wrap">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">How the agent works</span>
+        <h2>From document<br>to edit in three steps.</h2>
+      </div>
+      <p>Claude Code is supported today. Codex is a preview, not yet tested end to end.</p>
+    </div>
+    <div class="features">
+      <article>
+        <div class="feature-icon" aria-hidden="true">01</div>
+        <h3>Connect beside Claude Code</h3>
+        <p>Click Connect beside Claude Code in UniView.</p>
+      </article>
+      <article>
+        <div class="feature-icon" aria-hidden="true">02</div>
+        <h3>Ask for a document</h3>
+        <p>Ask Claude Code to show you a document, and it opens in UniView.</p>
+      </article>
+      <article>
+        <div class="feature-icon" aria-hidden="true">03</div>
+        <h3>Type your change</h3>
+        <p>Type your change in the bar under the document, and the agent edits the file and the tab reloads.</p>
+      </article>
     </div>
   </section>
 
@@ -140,8 +204,9 @@
     <div class="connect-copy">
       <span class="eyebrow">Connected devices</span>
       <h2>On your computer.<br>In your hands.</h2>
-      <p>Your computer’s files, ready on your phone. Open a document or stream a video directly over your own Wi-Fi.</p>
+      <p>Your computer’s files, ready on your phone. Open a document or stream a video directly over your own Wi-Fi, only when you turn sharing on.</p>
       <p>Pair your devices, choose the folders to share, and browse them directly. Large videos stream as you watch.</p>
+      <p class="availability-note">Android: not available as a download yet. You can build it from source. macOS and iOS: build from source, not tested for release.</p>
       <div class="benefit-list">
         <span>✓ No cloud upload</span>
         <span>✓ Read-only access</span>
@@ -245,7 +310,8 @@
     <div class="privacy-intro">
       <span class="eyebrow">Privacy is part of the architecture</span>
       <h2>Your files stay<br>in your world.</h2>
-      <p>Open local files without an account or a cloud upload. When you connect your devices, they talk directly over your local network.</p>
+      <p>Open local files without an account or a cloud upload. When you connect your devices, they talk directly over your local network, and only while you have sharing turned on.</p>
+      <p>Sharing with a phone is local Wi-Fi only. The AI agent you connect runs under your own account, so what it sends is between you and that provider.</p>
       <a class="text-link" href="privacy.html">Read about privacy ↗</a>
     </div>
     <div class="privacy-points">
@@ -253,7 +319,7 @@
         <span>01</span>
         <div>
           <h3>Local by default</h3>
-          <p>Your documents are rendered on the device. No telemetry or cloud processing.</p>
+          <p>Your documents are rendered on the device. No account, no telemetry, and it works offline.</p>
         </div>
       </article>
       <article>
@@ -293,6 +359,10 @@
         <div class="details-content"><p>Device browsing works on the same local network. It does not use a cloud relay or provide remote internet access.</p></div>
       </details>
       <details>
+        <summary>Which AI agents work with UniView?</summary>
+        <div class="details-content"><p>Claude Code is supported. Codex is a preview, not yet tested end to end.</p></div>
+      </details>
+      <details>
         <summary>Does UniView have its own AI model?</summary>
         <div class="details-content"><p>UniView connects to external coding agents through MCP or the CLI. It displays their work and provides a human review workspace.</p></div>
       </details>
@@ -315,8 +385,9 @@
     <h2>Open a little more simply.</h2>
     <p>UniView brings a familiar, focused home to the files you already have.</p>
     <div id="get-started" class="availability">
-      <p>UniView targets Windows, macOS, Android, and iOS. See the project README for build and installation instructions.</p>
-      <a class="button primary" href="getting-started.html">Choose your platform <span aria-hidden="true">↗</span></a>
+      <a class="button primary hero-download" href="https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe">Download for Windows</a>
+      <p>Free · v1.0.0 · Windows installer only. Android is not available as a download yet: you can build it from source. macOS and iOS: build from source, not tested for release.</p>
+      <p>The app is unsigned, so Windows shows a warning. Click More info, then Run anyway. <a href="https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/SHA256SUMS.txt">Verify checksum</a></p>
     </div>
   </section>
 </main>
