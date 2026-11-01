@@ -38,7 +38,6 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  overflow-x: hidden;
 }
 
 a {
@@ -992,6 +991,7 @@ img {
   transform: translateY(-3px);
   border-color: #cbd5e1;
   box-shadow: var(--shadow-card);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease, border-color 0.22s ease;
 }
 
 .feature-icon {
@@ -1174,6 +1174,8 @@ img {
   transform: translateY(-4px);
   border-color: #cbd5e1;
   box-shadow: 0 10px 24px -4px rgba(36, 108, 229, 0.08), 0 4px 8px -2px rgba(15, 23, 42, 0.04);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease, border-color 0.22s ease;
+  transition-delay: 0s;
 }
 
 .format-card:active {
@@ -1390,10 +1392,6 @@ img {
   margin: 32px auto 0;
 }
 
-.availability > strong {
-  display: none;
-}
-
 .availability p {
   font-size: 13px;
   color: var(--muted);
@@ -1542,15 +1540,30 @@ footer {
 
 /* Scroll reveal utility (JS enabled) */
 .js-ready .reveal {
-  opacity: 0;
-  transform: translateY(18px);
   transition: opacity 0.65s cubic-bezier(0.16, 1, 0.3, 1), transform 0.65s cubic-bezier(0.16, 1, 0.3, 1);
   will-change: opacity, transform;
 }
 
+.js-ready .reveal:not(.visible) {
+  opacity: 0;
+  transform: translateY(18px);
+}
+
 .js-ready .reveal.visible {
   opacity: 1;
-  transform: translateY(0);
+}
+
+.format-card.reveal {
+  transition-delay: calc(var(--i) * 60ms);
+}
+
+.format-card:hover,
+.format-card.reveal:hover {
+  transform: translateY(-4px);
+  border-color: #cbd5e1;
+  box-shadow: 0 10px 24px -4px rgba(36, 108, 229, 0.08), 0 4px 8px -2px rgba(15, 23, 42, 0.04);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease, border-color 0.22s ease;
+  transition-delay: 0s;
 }
 
 /* Responsive Media Queries */
