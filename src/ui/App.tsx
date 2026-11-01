@@ -965,6 +965,7 @@ function Home({
 
   return (
     <div className="home">
+      <img className="logo" src={logoUrl} alt="UniView" />
       {/* 1. Drop zone with an Open file button */}
       <div className="home-dropzone" onClick={onPick}>
         <button
