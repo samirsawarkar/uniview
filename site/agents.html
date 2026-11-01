@@ -20,10 +20,10 @@
     <a class="brand" href="index.html"><img src="logo.png" alt=""><span>UniView</span></a>
     <button class="menu-toggle" aria-expanded="false" aria-controls="site-links" aria-label="Toggle navigation">☰</button>
     <div class="nav-links" id="site-links">
-      <a href="index.html#connect">Your devices</a>
+      <a href="index.html#connect">Phone</a>
       <a href="index.html#formats">Formats</a>
       <a href="agents.html" class="active">For agents</a>
-      <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub ↗</a>
+      <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
     </div>
     <a class="nav-action" href="https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe">Download</a>
   </nav>
@@ -34,27 +34,32 @@
   <h1>A clearer handoff.</h1>
   <p class="doc-lead">Bring files, structured views, and review requests from your coding agent into a workspace you can inspect.</p>
 
-  <h2>Supported agents</h2>
-  <p>Claude Code is supported. Codex is a preview, not yet tested end to end.</p>
+  <h2>Install, connect, ask</h2>
+  <ol>
+    <li>Install UniView on Windows from the download on the home page.</li>
+    <li>On the Home screen, click <strong>Connect</strong> beside Claude Code and confirm. UniView adds itself to Claude Code's settings using Claude Code's own command.</li>
+    <li>Ask Claude Code to show you a document. It opens in a UniView tab. The first time, approve the agent in the prompt UniView shows.</li>
+    <li>Type the change you want in the bar under the document and send it. Claude Code receives it and edits the file.</li>
+    <li>Press <strong>Ctrl+R</strong> to reload the tab and see the edited file.</li>
+  </ol>
+  <p>Codex can be connected the same way, but it is a preview, not yet tested end to end.</p>
 
-  <h2>Show the work</h2>
-  <p>Agents can open local files or render structured view specifications containing tables, metrics, trees, and diffs.</p>
+  <h2>What agents can show</h2>
+  <p>Local files in viewer tabs, and structured view specifications with text, tables, metrics, trees, code, diffs, images, and charts.</p>
 
   <h2>Request a human decision</h2>
-  <p>A review receipt describes the completed work and changed files. UniView verifies file hashes when the person approves or requests changes, then returns a decision record to the agent.</p>
+  <p>A review receipt describes the completed work and the changed files with SHA-256 hashes. When the person clicks Approve or Request changes, UniView verifies the hashes and returns a decision record to the agent.</p>
 
-  <h2>Connect through MCP</h2>
-  <p>The desktop app includes a stdio MCP server. Windows packaged builds provide a launcher at <code>resources\uniview-mcp.cmd</code>. Add that launcher as a local MCP server in your agent client.</p>
-
-  <h2>Or use the command line</h2>
+  <h2>Manual setup</h2>
+  <p>The Connect button on Home is the short path. Setting the connection up by hand is optional.</p>
+  <p>Through MCP: the desktop app includes a stdio MCP server. Windows packaged builds provide a launcher at <code>resources\uniview-mcp.cmd</code>. Add that launcher as a local MCP server in your agent client.</p>
   <pre><code>UniView open report.pdf
 UniView open --wait --receipt review.receipt.json</code></pre>
 
   <h2>Manage access</h2>
-  <p>The Agents panel shows connected sessions, enrolled clients, and activity. Revoke enrolled clients from the same panel. Names reported by agents are not proof of identity; the integration trusts the local OS user account.</p>
-  <p>Review decisions are made in the desktop app. The Android app reads a paired computer's folders over Wi-Fi and has no download yet.</p>
+  <p>The Agents panel shows connected sessions, enrolled clients, and activity. Revoke enrolled clients from the same panel. An enrolled client authenticates with the key UniView stored when you allowed it; the name in that first prompt is only what the client reports.</p>
 
-  <a class="text-link" href="https://github.com/samirsawarkar/uniview/blob/main/docs/AGENTS.md" target="_blank" rel="noopener">Complete technical reference ↗</a>
+  <a class="text-link" href="https://github.com/samirsawarkar/uniview/blob/main/docs/AGENTS.md" target="_blank" rel="noopener">Complete technical reference <span aria-hidden="true">↗</span></a>
 </main>
 <footer>
   <div class="wrap footer-inner">
