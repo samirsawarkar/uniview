@@ -1740,6 +1740,28 @@ footer {
   color: var(--muted);
 }
 
+/* Launch video */
+.film {
+  margin: 40px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--paper-soft);
+  box-shadow: var(--shadow-card);
+}
+
+.film video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.film figcaption {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* Screenshot gallery */
 .shots {
   display: grid;

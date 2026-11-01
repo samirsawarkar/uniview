@@ -8,6 +8,10 @@ Free, private, offline file viewer for Windows: open PDF, Word, Excel, PowerPoin
 
 [![Latest release](https://img.shields.io/github/v/release/samirsawarkar/uniview)](https://github.com/samirsawarkar/uniview/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+[![Watch the UniView launch video](site/video/uniview-launch-poster.jpg)](https://samirsawarkar.github.io/uniview/#film)
+
+**[▶ Watch the 50-second launch video](https://samirsawarkar.github.io/uniview/#film)**
+
 ![UniView showing an AI agent's edit and a box to request the next change](site/shots/agent-review.png)
 
 UniView is one simple, Chrome-like app for viewing documents, spreadsheets, presentations, books, images, audio, video, code and archives. Files stay on the device: no account, no telemetry, and it works offline. When you connect an AI agent, the agent uses its own network access; phone sharing uses local Wi-Fi only when you turn it on.
