@@ -2,7 +2,26 @@
   "name": "uniview",
   "productName": "UniView",
   "version": "1.0.0",
-  "description": "Open any file. Offline, simple, fast.",
+  "description": "Free, private, offline file viewer for Windows: open PDF, Word, Excel, PowerPoint, images, video, code and more.",
+  "keywords": [
+    "file viewer",
+    "document viewer",
+    "pdf viewer",
+    "docx",
+    "xlsx",
+    "pptx",
+    "epub reader",
+    "offline",
+    "windows",
+    "electron",
+    "claude code",
+    "mcp"
+  ],
+  "homepage": "https://samirsawarkar.github.io/uniview/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/samirsawarkar/uniview.git"
+  },
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",

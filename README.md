@@ -1,8 +1,29 @@
+<p align="center"><img src="src/ui/assets/logo.png" width="96" alt="UniView logo"></p>
+
 # UniView
 
-Open any file. Offline, private, instant.
+Free, private, offline file viewer for Windows: open PDF, Word, Excel, PowerPoint, images, video, code and more. Documents from Claude Code open in UniView, and you request changes from inside the app.
 
-UniView is one simple, Chrome-like app for viewing documents, spreadsheets, presentations, books, images, audio, video, code and archives on Windows, macOS, Android and iOS. Everything runs on the device: there is no account, no telemetry and no network access.
+**[Download for Windows](https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe)** · [Website](https://samirsawarkar.github.io/uniview/) · [Checksums](https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/SHA256SUMS.txt)
+
+[![Latest release](https://img.shields.io/github/v/release/samirsawarkar/uniview)](https://github.com/samirsawarkar/uniview/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+![UniView showing an AI agent's edit and a box to request the next change](site/shots/agent-review.png)
+
+UniView is one simple, Chrome-like app for viewing documents, spreadsheets, presentations, books, images, audio, video, code and archives. Files stay on the device: no account, no telemetry, and it works offline. When you connect an AI agent, the agent uses its own network access; phone sharing uses local Wi-Fi only when you turn it on.
+
+## Install
+
+The Windows build is unsigned, so Windows warns before it runs: click **More info**, then **Run anyway**. Compare the download against [SHA256SUMS.txt](https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/SHA256SUMS.txt) first, or skip the installer and build from source.
+
+| Platform or feature | Status |
+|---|---|
+| Windows | Download available |
+| Android | No download yet; build from source |
+| macOS | Build from source; not tested for release |
+| iOS | Build from source; not tested for release |
+| Claude Code | Supported |
+| Codex | Preview, not yet tested end to end |
 
 ## What it opens
 
@@ -32,7 +53,7 @@ UniView is one simple, Chrome-like app for viewing documents, spreadsheets, pres
 
 ## Measured
 
-`npm run bench` (see [docs/BENCHMARK.md](docs/BENCHMARK.md)): app start to interactive 108 ms; open-to-first-view p50 41 ms warm, about 355 ms the first time a format is opened (the viewer's code loads once); a 5.8 MB, 50,000-row workbook opens in 291 ms warm.
+`npm run bench` (see [docs/BENCHMARK.md](docs/BENCHMARK.md)): app start to interactive 84 ms; open-to-first-view p50 42 ms warm, 356 ms the first time a format is opened (the viewer's code loads once); a 5.8 MB, 50,000-row workbook opens in 325 ms warm.
 
 ## Develop
 
@@ -79,17 +100,16 @@ android/ ios/  Capacitor projects with native "Open with" / Share handling
 
 ## Security model
 
-- **Offline by construction.** Desktop: the session cancels every request that is not to the app's own schemes. Web/mobile: the Content Security Policy allows no remote hosts. On Android the INTERNET permission is used only for direct, end-to-end encrypted connections to computers you paired with on your local network; the page itself still cannot reach any remote host.
+- **No remote content.** Desktop: the session cancels every request that is not to the app's own schemes. Web/mobile: the Content Security Policy allows no remote hosts. On Android the INTERNET permission is used only for direct, end-to-end encrypted connections to computers you paired with on your local network; the page itself still cannot reach any remote host. Agents you connect and phone sharing use their own network access, not the app page's.
 - **Desktop isolation.** Sandboxed renderer, context isolation, no Node.js in the page, navigation and new windows denied, IPC accepted only from the app's top-level page. Files are served from `uniview-file://<token>/` with HTTP range support, where the 128-bit token exists only for files the user opened (picker, drop, file association, typed path).
 - **Untrusted documents.** EPUB chapters run in a sandboxed iframe without scripts, with their own CSP and sanitized HTML; Markdown is sanitized with DOMPurify; SVG is shown through `<img>`; DOCX embedded HTML is never rendered. ZIP-based formats have per-entry (512 MB) and per-package (1 GB) decompression limits.
 - **Agent security boundary.** The agent bridge trust boundary is the local OS user account (same-user processes can open local regular files for display or reuse enrolled agent keys; file contents cannot be read back and approvals always require human interaction; enrollments can be revoked in the Agents panel).
 
 ## Decisions and reviews
 
-Recorded in Obsidian (`uniview`) and in `.aes/`:
+Recorded in Obsidian (`uniview`):
 
 - Shell: Electron + Capacitor behind a ShellBridge, accepted by the CEO (triage `dec-67e7d1c9` TYPE 1, debate `dec-9a21f812` unanimous). **Gate before code signing:** a 3-day Tauri v2 prototype against the same benchmark; migrate only if p50 time-to-first-view improves ≥25% or installer size drops ≥50% with no format regression.
-- Reuse-first scout: `.aes/scout/scout-080e764a.md` (with CTO verification and licence exceptions).
 - Licensing: CEO decision (2026-10-25) confirms V1 ships purely permissive (native OOXML renderer + `emf-converter`); the optional second PowerPoint engine (@aiden0z/pptx-renderer) is deferred to V1.1 as an isolated chunk.
 - Independent reviews: Codex (GPT) and pi (Gemini); the author was Claude.
 

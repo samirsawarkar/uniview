@@ -33,3 +33,9 @@ keystore.properties
 *.pem
 .env
 .env.*
+
+# internal agent records
+.aes/
+
+# stale receipts recreated at the repo root by tests
+/*.receipt.json.decision.json
