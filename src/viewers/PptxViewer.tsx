@@ -119,9 +119,12 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
   const go = useCallback((n: number) => {
     const i = Math.max(0, Math.min(slides.length - 1, n));
     pinned.current = i;
+    // A click that causes no scroll would otherwise pin forever.
+    clearTimeout(settle.current);
+    settle.current = window.setTimeout(unpin, 150);
     setCurrent(i);
     if (!presenting) main.current?.querySelector(`[data-slide="${i}"]`)?.scrollIntoView({ block: "start", behavior: "auto" });
-  }, [slides.length, presenting]);
+  }, [slides.length, presenting, unpin]);
 
   const startPresenting = useCallback(() => {
     const entry = findPresenterEntrySlide(slides, current);

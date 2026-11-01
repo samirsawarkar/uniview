@@ -111,6 +111,23 @@ test("rail click on a deck of short slides keeps the clicked slide", async ({ pa
   await expect(page.getByText("Conclusion")).toBeVisible();
 });
 
+test("rail click with no scroll still releases the pin", async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 0) <= 760, "the slide rail is hidden below 760px");
+  // A short panel makes the three-slide deck overflow.
+  await page.setViewportSize({ width: 1280, height: 420 });
+  await open(page, "hard.pptx");
+  const main = panel(page).locator(".pptx-main");
+  await expect(main.locator("[data-slide]")).toHaveCount(3);
+  // Park the deck where clicking slide 1 lands, so that click scrolls nowhere.
+  await main.evaluate((el) => el.querySelector("[data-slide]")?.scrollIntoView({ block: "start" }));
+  await page.waitForTimeout(300);
+  await panel(page).getByRole("button", { name: "Slide 1", exact: true }).click();
+  await page.waitForTimeout(300);
+  // Nothing ever settles the pin, so a later drag would leave the rail stuck.
+  await main.evaluate((el) => (el.scrollTop = el.scrollHeight));
+  await expect(panel(page).getByRole("button", { name: "Slide 3", exact: true })).toHaveClass(/active/);
+});
+
 test("ZIP entries open in new tabs", async ({ page }) => {
   await open(page, "bundle.zip");
   await panel(page).getByRole("button", { name: "data/report.md" }).click();
