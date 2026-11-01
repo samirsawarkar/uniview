@@ -52,8 +52,7 @@ function scanHeaders(lines) {
   let inML = null;
   for (let i = 0; i < lines.length; i++) {
     const body = lines[i].replace(/\r?\n$/, "");
-    const wasOpen = inML !== null;
-    const openAtStart = inML;
+    const startedInML = inML !== null;
     let p = 0;
     while (p < body.length) {
       if (inML) {
@@ -81,7 +80,7 @@ function scanHeaders(lines) {
         p = j;
       } else p++;
     }
-    if (wasOpen || openAtStart !== null) continue;
+    if (startedInML) continue;
     const t = body.trimStart();
     // An array-of-tables header ([[x]]) is never one of ours, so it reports no name.
     const m = /^\[(\[?)([^\[\]\n]*)\]\]?/.exec(t);
@@ -215,10 +214,9 @@ export function createAgentConnect({
     await fs.rename(tmp, file);
   }
 
-  async function backupOnce(file) {
+  async function backupOnce(file, text) {
     try {
-      const previous = await fs.readFile(file, "utf8").catch(() => "");
-      await fs.writeFile(file + ".uniview-backup", previous, { encoding: "utf8", flag: "wx" });
+      await fs.writeFile(file + ".uniview-backup", text, { encoding: "utf8", flag: "wx" });
     } catch (err) {
       if (err && err.code === "EEXIST") return;
       throw err;
@@ -279,7 +277,7 @@ export function createAgentConnect({
       if (read.error) return fail(read.error);
       const next = applyCodexBlock(read.text, exePath, entryPath);
       if (next.error) return fail(next.error);
-      await backupOnce(codexConfig);
+      await backupOnce(codexConfig, read.text);
       await writeAtomic(codexConfig, next.text);
       return { ok: true };
     } catch (err) {

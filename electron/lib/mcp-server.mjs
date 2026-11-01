@@ -58,10 +58,10 @@ export const SERVER_INSTRUCTIONS =
   "After editing, call open_files with the same path, then post_message with one short sentence, then wait again. " +
   "Stop only when status is closed.";
 
-export function parseMaxWait(envVal, defaultVal = 50) {
-  if (envVal === undefined || envVal === null || envVal === "") return defaultVal;
+export function parseMaxWait(envVal) {
+  if (envVal === undefined || envVal === null || envVal === "") return 50;
   const n = Number(envVal);
-  if (!Number.isInteger(n) || n < 1 || n > 3000) return defaultVal;
+  if (!Number.isInteger(n) || n < 1 || n > 3000) return 50;
   return n;
 }
 
@@ -432,7 +432,7 @@ export function runMcp({
   env = process.env,
 }) {
   const splitter = new LineSplitter();
-  const maxWait = parseMaxWait(env?.UNIVIEW_MAX_WAIT, 50);
+  const maxWait = parseMaxWait(env?.UNIVIEW_MAX_WAIT);
   let activeUserWait = null;
   let unreadUserMessage = null;
   /** "new" -> "initializing" (initialize answered) -> "ready" (notifications/initialized) */
@@ -806,6 +806,8 @@ export function runMcp({
         const timeoutMs = waitSeconds * 1000;
 
         let progressTimer = null;
+        let guard = null;
+        let ticks = 0;
         const progressToken = meta?.progressToken;
         if (progressToken !== undefined) {
           const armProgress = () => {
@@ -814,7 +816,7 @@ export function runMcp({
                 send({
                   jsonrpc: "2.0",
                   method: "notifications/progress",
-                  params: { progressToken },
+                  params: { progressToken, progress: ++ticks, total: waitSeconds },
                 });
                 armProgress();
               }
@@ -825,13 +827,16 @@ export function runMcp({
 
         const stop = new Promise((resolve) => {
           entry.cancel = () => resolve("cancelled");
+          // Guard: an unanswered bridge wait must not leave the session stuck on busy.
+          guard = setTimer(() => resolve("timeout"), timeoutMs + MCP_LIMITS.WAIT_GRACE_MS);
         });
 
         try {
           const waited = call("session.waitMessage", { timeoutMs }, undefined, { wait: true });
           waited.catch(() => {});
           const outcome = await Promise.race([waited, stop]);
-          if (outcome === "cancelled") {
+          if (outcome === "cancelled" || outcome === "timeout") {
+            // Only the wait ends; the session keeps the mailbox.
             const b = bridge;
             if (b) b.request("session.cancelWaitMessage", {}).catch(() => {});
             waited.then((late) => {
@@ -842,7 +847,7 @@ export function runMcp({
                 };
               }
             }).catch(() => {});
-            return SUPPRESS;
+            return outcome === "cancelled" ? SUPPRESS : { status: "waiting" };
           }
           if (outcome && typeof outcome === "object") {
             if (outcome.status === "message") {
@@ -861,6 +866,7 @@ export function runMcp({
         } finally {
           if (activeUserWait === waitId) activeUserWait = null;
           clearTimer(progressTimer);
+          clearTimer(guard);
           entry.cancel = null;
         }
       };

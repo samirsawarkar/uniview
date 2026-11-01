@@ -691,7 +691,10 @@ export function createAgentHost(deps) {
     }
     try {
       await ui.postMessage?.({ sessionId: state.sessionId, text: rawText });
-    } catch {}
+    } catch {
+      // The renderer was not told, so the tool must not claim it was.
+      throw err("app_unavailable");
+    }
     log("post_message", state);
     return { result: { posted: true } };
   }
@@ -1061,9 +1064,11 @@ export function createAgentHost(deps) {
   function sessionOpenedPath(sessionId, documentPath) {
     const state = sessions.get(sessionId);
     if (!state || typeof documentPath !== "string") return false;
-    const norm = path.normalize(documentPath).toLowerCase();
+    // Case-insensitive filesystems only: a case-only difference is a different file elsewhere.
+    const fold = process.platform === "win32" || process.platform === "darwin";
+    const norm = fold ? path.normalize(documentPath).toLowerCase() : path.normalize(documentPath);
     for (const p of state.openedPaths) {
-      if (path.normalize(p).toLowerCase() === norm) return true;
+      if ((fold ? path.normalize(p).toLowerCase() : path.normalize(p)) === norm) return true;
     }
     return false;
   }
@@ -1077,16 +1082,14 @@ export function createAgentHost(deps) {
     if (typeof text !== "string" || text.length < 1 || text.length > 8000) {
       throw new Error("Message text must be 1 to 8000 characters");
     }
-    if (documentPath) {
-      if (typeof documentPath !== "string") throw new Error("Invalid documentPath");
-      if (!sessionOpenedPath(sessionId, documentPath)) {
-        throw new Error("Session isolation: this session did not open this document");
-      }
+    if (typeof documentPath !== "string" || !documentPath) throw new Error("Invalid documentPath");
+    if (!sessionOpenedPath(sessionId, documentPath)) {
+      throw new Error("Session isolation: this session did not open this document");
     }
     if (state.inbox.length >= 100) {
       throw new Error("Inbox is full (maximum 100 messages)");
     }
-    state.inbox.push({ text, documentPath: documentPath || null });
+    state.inbox.push({ text, documentPath });
     if (state.activeWait) {
       const msg = state.inbox.shift();
       const waiter = state.activeWait;
