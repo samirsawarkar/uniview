@@ -142,8 +142,19 @@ for (const htmlFile of htmlFiles) {
   }
 }
 const indexFile = path.join(siteDir, 'index.html');
-if (!fs.readFileSync(indexFile, 'utf-8').includes(INSTALLER_URL)) {
+const indexHtml = fs.readFileSync(indexFile, 'utf-8');
+if (!indexHtml.includes(INSTALLER_URL)) {
   errors.push('site/index.html: missing the exact installer URL');
+}
+const ldJson = indexHtml.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+if (!ldJson) {
+  errors.push('site/index.html: missing JSON-LD block');
+} else {
+  try {
+    JSON.parse(ldJson[1]);
+  } catch (err) {
+    errors.push(`site/index.html: JSON-LD does not parse (${err.message})`);
+  }
 }
 
 if (errors.length > 0) {
