@@ -95,6 +95,22 @@ test("EPUB renders chapters without running book scripts", async ({ page }) => {
   expect(hacked).toBeNull();
 });
 
+test("rail click on a deck of short slides keeps the clicked slide", async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 0) <= 760, "the slide rail is hidden below 760px");
+  await open(page, "hard.pptx");
+  const main = panel(page).locator(".pptx-main");
+  const height = await main.evaluate((el) => el.clientHeight);
+  // Slides shorter than half the panel: the scroll a click causes used to re-pick slide 2.
+  const short = Math.round(height * 0.36);
+  await page.addStyleTag({ content: `.pptx-main .slide, .pptx-main .slide-holder > div { height: ${short}px !important; }` });
+  const lastSlide = panel(page).getByRole("button", { name: "Slide 3", exact: true });
+  await lastSlide.click();
+  await expect.poll(() => main.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(lastSlide).toHaveClass(/active/);
+  await panel(page).getByRole("button", { name: /Present/ }).click();
+  await expect(page.getByText("Conclusion")).toBeVisible();
+});
+
 test("ZIP entries open in new tabs", async ({ page }) => {
   await open(page, "bundle.zip");
   await panel(page).getByRole("button", { name: "data/report.md" }).click();

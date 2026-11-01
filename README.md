@@ -28,7 +28,7 @@ UniView is one simple, Chrome-like app for viewing documents, spreadsheets, pres
 - **Windows:** Ctrl+N opens a new window with its own tabs on desktop.
 - **Tabs:** Ctrl+T new tab, Ctrl+W close, Ctrl+Tab / Ctrl+Shift+Tab switch, Ctrl+1…9 jump, middle-click closes.
 - **Omnibox (Ctrl+L):** search open tabs and recent files; on desktop, paste a file path and press Enter.
-- **AI agents:** in Home, click **Connect** beside Claude Code or Codex; when the agent shows a document it opens in UniView. Type a change request in the bar under the document and the same agent session makes the edit and the tab reloads. Your terminal shows the agent waiting, and Esc there takes back control. Manual setup (`resources\uniview-mcp.cmd`, or `ELECTRON_RUN_AS_NODE=1` because Electron's main process on Windows closes stdin in GUI mode) is in [docs/AGENTS.md](docs/AGENTS.md).
+- **AI agents:** in Home, click **Connect** beside Claude Code or Codex; when the agent shows a document it opens in UniView. Type a change request in the bar under the document and the same agent session makes the edit and the tab reloads. Your terminal shows the agent waiting, and Esc there takes back control. Claude Code or Codex must already be installed; UniView only adds its own MCP entry. Click **Disconnect** before uninstalling UniView, otherwise the agent keeps a broken entry. Manual setup (`resources\uniview-mcp.cmd`, or `ELECTRON_RUN_AS_NODE=1` because Electron's main process on Windows closes stdin in GUI mode) is in [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Measured
 

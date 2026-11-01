@@ -72,6 +72,34 @@ describe("Home UI", () => {
     });
   });
 
+  it("shows Not installed and no Connect button for a client that is not installed", async () => {
+    (window as any).uniview = {
+      connectStatus: async () => ({
+        ok: true,
+        claude: { installed: false, connected: false, stale: false },
+        codex: { installed: true, connected: false, stale: false },
+      }),
+    };
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const row = container.querySelector('[aria-label="AI agents"]')!;
+    const items = Array.from(row.querySelectorAll(".home-agent-item")) as HTMLElement[];
+    const claude = items.find((el) => el.textContent?.includes("Claude Code"))!;
+    const codex = items.find((el) => el.textContent?.includes("Codex"))!;
+    expect(claude.querySelector(".home-agent-state")?.textContent).toBe("Not installed");
+    expect(Array.from(claude.querySelectorAll("button")).map((b) => b.textContent)).toEqual([]);
+    // An installed client keeps its Connect button.
+    expect(Array.from(codex.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Connect"]);
+
+    delete (window as any).uniview;
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("applies the theme delivered by the View > Theme menu", async () => {
     const handlers: ((t: string) => void)[] = [];
     (window as any).uniview = {
