@@ -255,7 +255,8 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
         <div className="scroll pptx-main" ref={main} onScroll={(e) => {
           const el = e.currentTarget;
           const items = el.querySelectorAll<HTMLElement>("[data-slide]");
-          for (const it of items) if (it.offsetTop + it.offsetHeight / 2 > el.scrollTop) { setCurrent(Number(it.dataset.slide)); break; }
+          const mid = el.scrollTop + el.clientHeight / 2;
+          for (const it of items) if (it.offsetTop + it.offsetHeight > mid) { setCurrent(Number(it.dataset.slide)); break; }
         }}>
           {slides.map((s, i) => (
             <section key={i} className="slide-frame" data-slide={i} aria-label={`Slide ${i + 1}`}>
