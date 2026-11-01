@@ -317,8 +317,17 @@ function openNewWindow() {
   return createWindow();
 }
 
+// Theme lives in the renderer's localStorage; this only remembers the session's menu choice.
+// ponytail: the radio shows System after a restart even if the stored theme is Dark. Upgrade: send
+// the renderer's stored theme back on ready and rebuild the menu from it.
+let theme = "system";
+
 function buildMenu() {
   const isMac = process.platform === "darwin";
+  const pickTheme = (value) => {
+    theme = value;
+    (BrowserWindow.getFocusedWindow() || win)?.webContents.send("view:theme", value);
+  };
   const template = [
     ...(isMac ? [{ role: "appMenu" }] : []),
     { label: "File", submenu: [{ label: "New Window", accelerator: "CommandOrControl+N", click: () => { void openNewWindow(); } }] },
@@ -338,6 +347,14 @@ function buildMenu() {
             const target = BrowserWindow.getFocusedWindow() || win;
             target?.webContents.send("view:agents");
           },
+        },
+        {
+          label: "Theme",
+          submenu: [
+            { label: "System", type: "radio", checked: theme === "system", click: () => pickTheme("system") },
+            { label: "Light", type: "radio", checked: theme === "light", click: () => pickTheme("light") },
+            { label: "Dark", type: "radio", checked: theme === "dark", click: () => pickTheme("dark") },
+          ],
         },
         ...(app.isPackaged ? [] : [{ role: "toggleDevTools" }]),
       ],

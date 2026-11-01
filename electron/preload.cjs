@@ -10,6 +10,7 @@ const closeTabListeners = new Set();
 const agentMessageListeners = new Set();
 const agentSessionStateListeners = new Set();
 const openAgentsListeners = new Set();
+const themeListeners = new Set();
 
 ipcRenderer.on("open-files", (_e, files) => {
   if (!Array.isArray(files)) return;
@@ -43,6 +44,10 @@ ipcRenderer.on("agent:session-state", (_e, state) => {
 
 ipcRenderer.on("view:agents", () => {
   for (const cb of openAgentsListeners) cb();
+});
+
+ipcRenderer.on("view:theme", (_e, theme) => {
+  for (const cb of themeListeners) cb(theme);
 });
 
 contextBridge.exposeInMainWorld("uniview", {
@@ -133,6 +138,11 @@ contextBridge.exposeInMainWorld("uniview", {
     if (typeof cb !== "function") return () => {};
     openAgentsListeners.add(cb);
     return () => openAgentsListeners.delete(cb);
+  },
+  onTheme: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    themeListeners.add(cb);
+    return () => themeListeners.delete(cb);
   },
 
   // Review tab desktop IPC. Receipts are named by the grant token of a file the person opened, never by a

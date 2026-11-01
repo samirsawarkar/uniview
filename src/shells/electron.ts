@@ -118,6 +118,7 @@ export interface ElectronApi {
   connect?(client: "claude" | "codex" | string): Promise<AgentConnectResult>;
   disconnect?(client: "claude" | "codex" | string): Promise<AgentConnectResult>;
   onOpenAgents?(cb: () => void): () => void;
+  onTheme?(cb: (theme: string) => void): () => void;
   sendMessage?(args: { sessionId: string; text: string; documentPath?: string }): Promise<{ ok: boolean; error?: string }>;
   endSession?(sessionId: string): Promise<{ ok: boolean; error?: string }>;
   onAgentMessage?(cb: (msg: { sessionId: string; text: string }) => void): () => void;

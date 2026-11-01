@@ -34,7 +34,7 @@ describe("Home UI", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders logo img, open-button and connect-computer before Recent heading in DOM order, and no share without share", async () => {
+  it("renders open-button and the AI agents row before the Recent heading, with no sharing and no theme choice on Home", async () => {
     // The Recent section only appears when there are recent files.
     localStorage.setItem("uniview.recents.v1", JSON.stringify([{ name: "notes.pdf", size: 10, openedAt: 1 }]));
     const root = createRoot(container);
@@ -42,16 +42,15 @@ describe("Home UI", () => {
       root.render(<App />);
     });
 
-    const logo = container.querySelector("img.logo");
-    expect(logo).toBeTruthy();
-
     const openBtn = container.querySelector('[data-testid="open-button"]');
-    const connectBtn = container.querySelector('[data-testid="connect-computer"]');
+    const agentsRow = container.querySelector('[aria-label="AI agents"]');
     expect(openBtn).toBeTruthy();
-    expect(connectBtn).toBeTruthy();
+    expect(agentsRow).toBeTruthy();
 
     const shareBtn = container.querySelector('[data-testid="open-sharing"]');
     expect(shareBtn).toBeNull();
+    // Theme is chosen in the View > Theme menu, so Home must not show it.
+    expect(container.querySelector('[data-testid^="theme-"]')).toBeNull();
 
     const recentHeading = Array.from(container.querySelectorAll("h2")).find(
       (h) => h.textContent?.trim() === "Recent"
@@ -60,34 +59,41 @@ describe("Home UI", () => {
 
     const all = Array.from(container.querySelectorAll("*"));
     const openIdx = all.indexOf(openBtn!);
-    const connectIdx = all.indexOf(connectBtn!);
+    const agentsIdx = all.indexOf(agentsRow!);
     const recentIdx = all.indexOf(recentHeading!);
     expect(openIdx).toBeGreaterThan(-1);
-    expect(connectIdx).toBeGreaterThan(-1);
+    expect(agentsIdx).toBeGreaterThan(-1);
     expect(recentIdx).toBeGreaterThan(-1);
     expect(openIdx).toBeLessThan(recentIdx);
-    expect(connectIdx).toBeLessThan(recentIdx);
+    expect(agentsIdx).toBeLessThan(recentIdx);
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("clicking theme Dark radio sets data-theme='dark'", async () => {
+  it("applies the theme delivered by the View > Theme menu", async () => {
+    const handlers: ((t: string) => void)[] = [];
+    (window as any).uniview = {
+      onTheme: (cb: (t: string) => void) => {
+        handlers.push(cb);
+        return () => {};
+      },
+    };
     const root = createRoot(container);
     await act(async () => {
       root.render(<App />);
     });
-
-    const darkRadio = container.querySelector<HTMLButtonElement>('[data-testid="theme-dark"]');
-    expect(darkRadio).toBeTruthy();
+    expect(handlers.length).toBe(1);
 
     await act(async () => {
-      darkRadio!.click();
+      handlers[0]!("dark");
     });
 
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem("uniview.theme.v1")).toBe("dark");
 
+    delete (window as any).uniview;
     await act(async () => {
       root.unmount();
     });
@@ -114,6 +120,10 @@ describe("Home UI", () => {
     });
 
     const countBefore = container.querySelectorAll('[role="tab"]').length;
+    // Home is reached from the View-agnostic omnibox (Ctrl+L); the old always-visible home button is gone.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "l", ctrlKey: true, cancelable: true }));
+    });
     const homeBtn = container.querySelector<HTMLButtonElement>('[data-testid="home-button"]');
     expect(homeBtn).toBeTruthy();
 

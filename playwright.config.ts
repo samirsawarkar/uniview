@@ -1,4 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+// Electron tests must not touch the shared default profile in AppData (locked by any other running copy).
+process.env.UNIVIEW_USER_DATA ||= fileURLToPath(new URL("./test-results/electron-profile", import.meta.url));
 
 export default defineConfig({
   testDir: "tests/e2e",

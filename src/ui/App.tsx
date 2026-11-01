@@ -16,7 +16,7 @@ import { disconnect } from "../remote/connections";
 import { reopenRemoteRecent } from "../remote/reopen-recent";
 import type { HostRecord } from "../../shared/remote-client.mjs";
 import logoUrl from "./assets/logo.png";
-import { getTheme, setTheme, type Theme } from "./theme";
+import { setTheme, type Theme } from "./theme";
 import ReviewTab from "../viewers/ReviewTab";
 import { scopeIdOf, hasElectronApi, type AgentConnectStatusResult } from "../shells/electron";
 import { AgentBar, type AgentBarMessage } from "./AgentBar";
@@ -359,6 +359,8 @@ export function App() {
     const electron = (window as any).uniview;
     if (!electron) return;
 
+    const unsubTheme = electron.onTheme?.((t: string) => setTheme(t as Theme));
+
     const unsubMsg = electron.onAgentMessage?.((msg: { sessionId: string; text: string }) => {
       if (!msg?.sessionId || !msg?.text) return;
       setMessagesBySession((prev) => ({
@@ -386,6 +388,7 @@ export function App() {
       unsubMsg?.();
       unsubState?.();
       unsubOpenAgents?.();
+      unsubTheme?.();
     };
   }, [openPage]);
 
@@ -971,7 +974,7 @@ function Home({
           <h2>Recent</h2>
           <ul>
             {recents.slice(0, 12).map((r) => {
-              const canOpen = canReopen && !!r.path;
+              const canOpen = !!r.remote || (canReopen && !!r.path);
               return (
                 <li key={r.path ?? r.name}>
                   <button
@@ -979,7 +982,7 @@ function Home({
                     className="recent plain"
                     disabled={!canOpen}
                     onClick={() => onReopen(r)}
-                    title={canReopen ? r.path : "Reopen by choosing the file again"}
+                    title={canOpen ? r.path : "Reopen by choosing the file again"}
                   >
                     <span className="recent-name">{r.name}</span>
                     <span className="muted small ellipsis">
