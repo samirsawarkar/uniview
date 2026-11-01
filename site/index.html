@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UniView — One home for your files</title>
+  <meta name="description" content="UniView is a simple, private viewer for documents, images, media, code and more. Offline, private, instant.">
+  <link rel="canonical" href="https://samirsawarkar.github.io/uniview/">
+  <meta property="og:title" content="UniView — One home for your files">
+  <meta property="og:description" content="One private place to open your files, connect your devices, and review your agents’ work. Offline, private, instant.">
+  <meta property="og:url" content="https://samirsawarkar.github.io/uniview/">
+  <meta property="og:image" content="https://samirsawarkar.github.io/uniview/devices.png">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="logo.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="scroll-progress" aria-hidden="true"></div>
+
+<header class="site-header">
+  <nav class="nav wrap" aria-label="Main navigation">
+    <a class="brand" href="#top"><img src="logo.png" alt=""><span>UniView</span></a>
+    <button class="menu-toggle" aria-expanded="false" aria-controls="site-links" aria-label="Toggle navigation">☰</button>
+    <div class="nav-links" id="site-links">
+      <a href="#connect">Your devices</a>
+      <a href="#features">Features</a>
+      <a href="#formats">Formats</a>
+      <a href="#agents">For agents</a>
+      <a href="#privacy">Privacy</a>
+      <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+    <a class="nav-action" href="getting-started.html">Get started <span aria-hidden="true">↗</span></a>
+  </nav>
+</header>
+
+<main id="top">
+  <!-- Hero Section with Orbital Animation & Staggered Entrance -->
+  <section class="hero wrap">
+    <div class="orbits" aria-hidden="true">
+      <div class="orbit-track orbit-track-1"><span class="orbit-file orbit-a">PDF</span></div>
+      <div class="orbit-track orbit-track-2"><span class="orbit-file orbit-b">XLS</span></div>
+      <div class="orbit-track orbit-track-3"><span class="orbit-file orbit-c">MCP</span></div>
+      <div class="orbit-track orbit-track-4"><span class="orbit-file orbit-d">DOC</span></div>
+    </div>
+
+    <div class="hero-copy">
+      <span class="eyebrow hero-enter hero-enter-1"><span class="status-dot"></span> Files · Devices · Agents</span>
+      <h1 class="hero-enter hero-enter-2">All your files.<br><span>Closer than ever.</span></h1>
+      <p class="hero-enter hero-enter-3">One private place to open your files, connect your devices, and review your agents’ work.</p>
+      <div class="hero-actions hero-enter hero-enter-4">
+        <a class="button primary" href="getting-started.html">Get started <span aria-hidden="true">↗</span></a>
+        <a class="button secondary" href="#features">Explore UniView <span aria-hidden="true">↓</span></a>
+      </div>
+      <div class="hero-note hero-enter hero-enter-5">
+        <span>✓</span> Offline by design <i></i> <span>✓</span> No account needed
+      </div>
+    </div>
+
+    <figure class="product-stage hero-enter hero-enter-6">
+      <img src="devices.png" alt="UniView presented on a laptop and Samsung Galaxy S23 Ultra">
+      <figcaption>Device visualization · Android screen based on a real UniView capture</figcaption>
+    </figure>
+  </section>
+
+  <!-- Format Marquee Strip: Seamless Loop Pausing on Hover/Focus -->
+  <section class="strip" aria-label="Supported file formats">
+    <div class="wrap strip-inner">
+      <p class="strip-label">MADE FOR THE FILES YOU WORK WITH</p>
+      <div class="marquee-viewport" tabindex="0">
+        <div class="marquee-track">
+          <div class="marquee-group">
+            <span>PDF</span><span>Word</span><span>Excel</span><span>PowerPoint</span><span>Images</span><span>Markdown</span><span>EPUB</span><span>Audio &amp; Video</span><span>Code &amp; JSON</span><span>ZIP Archives</span>
+          </div>
+          <div class="marquee-group" aria-hidden="true">
+            <span>PDF</span><span>Word</span><span>Excel</span><span>PowerPoint</span><span>Images</span><span>Markdown</span><span>EPUB</span><span>Audio &amp; Video</span><span>Code &amp; JSON</span><span>ZIP Archives</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Connection Demo Section: Narrative Animation -->
+  <section id="connect" class="connect-section wrap">
+    <div class="connection-demo" aria-label="Illustration of files opening from a paired computer">
+      <div class="demo-topline">
+        <span class="demo-live"></span> Your private connection <span class="demo-network">Local Wi-Fi</span>
+      </div>
+      <div class="demo-host">
+        <div class="demo-computer">
+          <svg viewBox="0 0 48 40" fill="none" aria-hidden="true">
+            <rect x="7" y="3" width="34" height="24" rx="3" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M2 33h44l-5-6H7l-5 6Z" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div>
+          <strong>Your computer</strong>
+          <small>Only the folders you choose</small>
+        </div>
+        <span class="demo-status">Sharing</span>
+      </div>
+
+      <div class="demo-files">
+        <div class="demo-row demo-row-1">
+          <span class="demo-file pdf">PDF</span>
+          <span>Project brief.pdf<small>Documents</small></span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        </div>
+        <div class="demo-row demo-row-2">
+          <span class="demo-file xls">XLS</span>
+          <span>Quarterly report.xlsx<small>Spreadsheets</small></span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        </div>
+        <div class="demo-row demo-row-3">
+          <span class="demo-file video">VID</span>
+          <span>Weekend film.mp4<small>Stream as you watch</small></span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        </div>
+      </div>
+
+      <div class="demo-route">
+        <span class="route-track track-top"><i></i></span>
+        <span class="route-badge">End-to-end encrypted</span>
+        <span class="route-track track-bottom"><i></i></span>
+      </div>
+
+      <div class="demo-destination">
+        <svg viewBox="0 0 24 32" fill="none" aria-hidden="true">
+          <rect x="4" y="1" width="16" height="30" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10 27h4" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+        <div>
+          <strong>Your phone</strong>
+          <small>Browse. Open. Keep going.</small>
+        </div>
+        <span class="destination-check">✓</span>
+      </div>
+      <span class="demo-caption">Illustrated workflow · Example files</span>
+    </div>
+
+    <div class="connect-copy">
+      <span class="eyebrow">Connected devices</span>
+      <h2>On your computer.<br>In your hands.</h2>
+      <p>Your computer’s files, ready on your phone. Open a document or stream a video directly over your own Wi-Fi.</p>
+      <p>Pair your devices, choose the folders to share, and browse them directly. Large videos stream as you watch.</p>
+      <div class="benefit-list">
+        <span>✓ No cloud upload</span>
+        <span>✓ Read-only access</span>
+        <span>✓ Revoke anytime</span>
+      </div>
+      <a class="text-link" href="getting-started.html">Bring your devices together ↗</a>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="section wrap">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Built for everyday work</span>
+        <h2>Less switching.<br>More seeing.</h2>
+      </div>
+      <p>Less time searching for the right app. More time getting to what matters.</p>
+    </div>
+    <div class="features">
+      <article>
+        <div class="feature-icon" aria-hidden="true">▤</div>
+        <h3>One app, many formats</h3>
+        <p>From documents and books to code and archives, UniView brings your files together in one place.</p>
+      </article>
+      <article>
+        <div class="feature-icon" aria-hidden="true">▢</div>
+        <h3>Comfortably familiar</h3>
+        <p>Open files in tabs, switch between them, and find recent work in an interface that feels natural.</p>
+      </article>
+      <article>
+        <div class="feature-icon" aria-hidden="true">◇</div>
+        <h3>Private by design</h3>
+        <p>Your files stay on your device. No account or telemetry, and no cloud upload required to view them.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- Agents Section with Scroll-Drawn Connecting Line -->
+  <section id="agents" class="agent-section">
+    <div class="wrap agent-layout">
+      <div>
+        <span class="eyebrow">A workspace for agent handoffs</span>
+        <h2>Your agents do the work.<br><span>You stay in the loop.</span></h2>
+        <p>Give your coding agents a place to show their work. UniView opens files and structured views, then brings review requests to you for a clear decision.</p>
+        <a class="button secondary" href="agents.html">Explore agent integration ↗</a>
+      </div>
+
+      <div class="agent-flow-wrap">
+        <div class="agent-line-track" aria-hidden="true">
+          <svg class="agent-line-svg" viewBox="0 0 20 220" fill="none" preserveAspectRatio="none">
+            <line x1="10" y1="20" x2="10" y2="200" stroke="#e2e8f0" stroke-width="2" stroke-linecap="round"/>
+            <path class="agent-active-line" d="M10 20 L10 200" stroke="#246ce5" stroke-width="2" stroke-linecap="round"/>
+            <circle class="agent-node node-1" cx="10" cy="30" r="4" fill="#fff" stroke="#cbd5e1" stroke-width="2"/>
+            <circle class="agent-node node-2" cx="10" cy="110" r="4" fill="#fff" stroke="#cbd5e1" stroke-width="2"/>
+            <circle class="agent-node node-3" cx="10" cy="190" r="4" fill="#fff" stroke="#cbd5e1" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="agent-flow">
+          <div class="agent-step" data-step="1">
+            <span class="step-num">01</span>
+            <strong>Connect your agent</strong>
+            <p>Use MCP or the command line with your coding workflow.</p>
+          </div>
+          <div class="agent-step" data-step="2">
+            <span class="step-num">02</span>
+            <strong>See the work</strong>
+            <p>Open files, dashboards, and review receipts in UniView.</p>
+          </div>
+          <div class="agent-step" data-step="3">
+            <span class="step-num">03</span>
+            <strong>Make the call</strong>
+            <p>Approve or request changes with optional feedback.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Formats Grid with Hover Lift & Staggered Reveal -->
+  <section id="formats" class="formats-section">
+    <div class="wrap formats-layout">
+      <div>
+        <span class="eyebrow">One viewer</span>
+        <h2>A viewer for the<br>files in your day.</h2>
+        <p>Whether it’s a report, a photo, a slide deck, or a line of code, there’s room for it here.</p>
+        <a class="text-link" href="getting-started.html">See how to get started <span>→</span></a>
+      </div>
+      <div class="format-grid">
+        <div class="format-card" style="--i:0"><b class="pdf">PDF</b><strong>Documents</strong><small>PDF, Word, text</small></div>
+        <div class="format-card" style="--i:1"><b class="xls">XLS</b><strong>Spreadsheets</strong><small>Excel, CSV, ODS</small></div>
+        <div class="format-card" style="--i:2"><b class="ppt">PPT</b><strong>Presentations</strong><small>PowerPoint files</small></div>
+        <div class="format-card" style="--i:3"><b class="img">IMG</b><strong>Images &amp; media</strong><small>Photos, audio, video</small></div>
+        <div class="format-card" style="--i:4"><b class="code">&lt;/&gt;</b><strong>Code &amp; data</strong><small>Code, JSON, Markdown</small></div>
+        <div class="format-card" style="--i:5"><b class="zip">ZIP</b><strong>And more</strong><small>Books, archives, fonts</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Privacy Section -->
+  <section id="privacy" class="privacy-section wrap">
+    <div class="privacy-intro">
+      <span class="eyebrow">Privacy is part of the architecture</span>
+      <h2>Your files stay<br>in your world.</h2>
+      <p>Open local files without an account or a cloud upload. When you connect your devices, they talk directly over your local network.</p>
+      <a class="text-link" href="privacy.html">Read about privacy ↗</a>
+    </div>
+    <div class="privacy-points">
+      <article>
+        <span>01</span>
+        <div>
+          <h3>Local by default</h3>
+          <p>Your documents are rendered on the device. No telemetry or cloud processing.</p>
+        </div>
+      </article>
+      <article>
+        <span>02</span>
+        <div>
+          <h3>You choose what’s shared</h3>
+          <p>Only selected folders are accessible to paired devices. Access is read only.</p>
+        </div>
+      </article>
+      <article>
+        <span>03</span>
+        <div>
+          <h3>Control stays with you</h3>
+          <p>Stop sharing, remove a paired device, or revoke an enrolled agent from the app.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- FAQ Section with Smooth Animated Details -->
+  <section id="questions" class="faq-section wrap">
+    <div>
+      <span class="eyebrow">A few useful answers</span>
+      <h2>Before your first file.</h2>
+    </div>
+    <div class="faq-list">
+      <details>
+        <summary>Do I need an account?</summary>
+        <div class="details-content"><p>No. You can open local files without signing in. Device pairing also works without an account.</p></div>
+      </details>
+      <details>
+        <summary>Can I edit documents?</summary>
+        <div class="details-content"><p>UniView is a viewer. Editing and annotation are not currently supported.</p></div>
+      </details>
+      <details>
+        <summary>Can I access my computer from anywhere?</summary>
+        <div class="details-content"><p>Device browsing works on the same local network. It does not use a cloud relay or provide remote internet access.</p></div>
+      </details>
+      <details>
+        <summary>Does UniView have its own AI model?</summary>
+        <div class="details-content"><p>UniView connects to external coding agents through MCP or the CLI. It displays their work and provides a human review workspace.</p></div>
+      </details>
+      <details>
+        <summary>Can I approve agent work on my phone?</summary>
+        <div class="details-content"><p>Review receipts can be read on the phone. Approval and change requests are made on the computer.</p></div>
+      </details>
+      <details>
+        <summary>Does every file render exactly?</summary>
+        <div class="details-content"><p>Supported formats have limits. For example, PowerPoint charts and equations use placeholders, and password-protected PDFs are not supported. Text and hex fallbacks are available when a file cannot be rendered.</p></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- Closing & Availability Section -->
+  <section id="about" class="section wrap closing">
+    <div class="closing-backdrop" aria-hidden="true"><i></i><i></i></div>
+    <img src="logo.png" alt="" class="closing-logo">
+    <span class="eyebrow">Yours, from the first file.</span>
+    <h2>Open a little more simply.</h2>
+    <p>UniView brings a familiar, focused home to the files you already have.</p>
+    <div id="get-started" class="availability">
+      <strong>Get started with UniView</strong>
+      <p>UniView targets Windows, macOS, Android, and iOS. See the project README for build and installation instructions.</p>
+      <a class="button primary" href="getting-started.html">Choose your platform <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <a class="brand" href="#top"><img src="logo.png" alt=""><span>UniView</span></a>
+    <p>Open any file. Offline, private, instant.</p>
+    <div class="footer-links">
+      <a href="getting-started.html">Get started</a>
+      <a href="agents.html">Agents</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub</a>
+      <a href="#top">Back to top ↑</a>
+    </div>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

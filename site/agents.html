@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UniView for coding agents — UniView</title>
+  <meta name="description" content="Bring files, structured views, and review requests from your coding agent into a workspace you can inspect.">
+  <link rel="canonical" href="https://samirsawarkar.github.io/uniview/agents.html">
+  <meta property="og:title" content="UniView for coding agents — UniView">
+  <meta property="og:description" content="Bring files, structured views, and review requests from your coding agent into a workspace you can inspect.">
+  <meta property="og:url" content="https://samirsawarkar.github.io/uniview/agents.html">
+  <meta property="og:image" content="https://samirsawarkar.github.io/uniview/logo.png">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="logo.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="document-page">
+<header class="site-header">
+  <nav class="nav wrap" aria-label="Main navigation">
+    <a class="brand" href="index.html"><img src="logo.png" alt=""><span>UniView</span></a>
+    <button class="menu-toggle" aria-expanded="false" aria-controls="site-links" aria-label="Toggle navigation">☰</button>
+    <div class="nav-links" id="site-links">
+      <a href="index.html#connect">Your devices</a>
+      <a href="index.html#formats">Formats</a>
+      <a href="agents.html" class="active">For agents</a>
+      <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+    <a class="nav-action" href="getting-started.html">Get started <span aria-hidden="true">↗</span></a>
+  </nav>
+</header>
+<main class="doc-content wrap">
+  <a class="text-link" href="index.html">← Back to UniView</a>
+  <span class="eyebrow">UniView for coding agents</span>
+  <h1>A clearer handoff.</h1>
+  <p class="doc-lead">Bring files, structured views, and review requests from your coding agent into a workspace you can inspect.</p>
+
+  <h2>Show the work</h2>
+  <p>Agents can open local files or render structured view specifications containing tables, metrics, trees, and diffs.</p>
+
+  <h2>Request a human decision</h2>
+  <p>A review receipt describes the completed work and changed files. UniView verifies file hashes when the person approves or requests changes, then returns a decision record to the agent.</p>
+
+  <h2>Connect through MCP</h2>
+  <p>The desktop app includes a stdio MCP server. Windows packaged builds provide a launcher at <code>resources\uniview-mcp.cmd</code>. Add that launcher as a local MCP server in your agent client.</p>
+
+  <h2>Or use the command line</h2>
+  <pre><code>UniView open report.pdf
+UniView open --wait --receipt review.receipt.json</code></pre>
+
+  <h2>Manage access</h2>
+  <p>The Agents panel shows connected sessions, enrolled clients, and activity. Revoke enrolled clients from the same panel. Names reported by agents are not proof of identity; the integration trusts the local OS user account.</p>
+  <p>Review decisions are made on the desktop. Phone receipt views are read only.</p>
+
+  <a class="text-link" href="https://github.com/samirsawarkar/uniview/blob/main/docs/AGENTS.md" target="_blank" rel="noopener">Complete technical reference ↗</a>
+</main>
+<footer>
+  <div class="wrap footer-inner">
+    <a class="brand" href="index.html"><img src="logo.png" alt=""><span>UniView</span></a>
+    <p>Open any file. Offline, private, instant.</p>
+    <div class="footer-links">
+      <a href="getting-started.html">Get started</a>
+      <a href="agents.html">Agents</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/samirsawarkar/uniview" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</footer>
+<script src="script.js"></script>
+</body>
+</html>
