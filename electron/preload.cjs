@@ -10,6 +10,7 @@ const closeTabListeners = new Set();
 const agentMessageListeners = new Set();
 const agentSessionStateListeners = new Set();
 const openAgentsListeners = new Set();
+const openShareListeners = new Set();
 const themeListeners = new Set();
 
 ipcRenderer.on("open-files", (_e, files) => {
@@ -44,6 +45,10 @@ ipcRenderer.on("agent:session-state", (_e, state) => {
 
 ipcRenderer.on("view:agents", () => {
   for (const cb of openAgentsListeners) cb();
+});
+
+ipcRenderer.on("view:share", () => {
+  for (const cb of openShareListeners) cb();
 });
 
 ipcRenderer.on("view:theme", (_e, theme) => {
@@ -138,6 +143,11 @@ contextBridge.exposeInMainWorld("uniview", {
     if (typeof cb !== "function") return () => {};
     openAgentsListeners.add(cb);
     return () => openAgentsListeners.delete(cb);
+  },
+  onOpenShare: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    openShareListeners.add(cb);
+    return () => openShareListeners.delete(cb);
   },
   onTheme: (cb) => {
     if (typeof cb !== "function") return () => {};

@@ -25,16 +25,19 @@ describe("Home UI", () => {
   beforeEach(() => {
     localStorage.clear();
     delete document.documentElement.dataset.theme;
+    delete (window as any).uniview;
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
+    delete (window as any).uniview;
     container.remove();
     vi.restoreAllMocks();
   });
 
   it("renders open-button and the AI agents row before the Recent heading, with no sharing and no theme choice on Home", async () => {
+    (window as any).uniview = {};
     // The Recent section only appears when there are recent files.
     localStorage.setItem("uniview.recents.v1", JSON.stringify([{ name: "notes.pdf", size: 10, openedAt: 1 }]));
     const root = createRoot(container);
@@ -133,6 +136,60 @@ describe("Home UI", () => {
 
     const countAfter = container.querySelectorAll('[role="tab"]').length;
     expect(countAfter).toBe(countBefore);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows connect-computer button without the Electron bridge", async () => {
+    delete (window as any).uniview;
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const connectBtn = container.querySelector('[data-testid="connect-computer"]');
+    expect(connectBtn).toBeTruthy();
+    expect(container.querySelector('[aria-label="AI agents"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not show connect-computer button with the Electron bridge", async () => {
+    (window as any).uniview = {};
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const connectBtn = container.querySelector('[data-testid="connect-computer"]');
+    expect(connectBtn).toBeNull();
+    expect(container.querySelector('[aria-label="AI agents"]')).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows paired computers under connect-computer button when paired without Electron bridge", async () => {
+    delete (window as any).uniview;
+    localStorage.setItem(
+      "uniview.remote.hosts.v1",
+      JSON.stringify([{ hostId: "host-1", hostName: "Office Desktop", hostPub: "pub-key" }])
+    );
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(container.querySelector('[data-testid="connect-computer"]')).toBeTruthy();
+    const paired = Array.from(container.querySelectorAll("li")).find((el) =>
+      el.textContent?.includes("Office Desktop")
+    );
+    expect(paired).toBeTruthy();
 
     await act(async () => {
       root.unmount();

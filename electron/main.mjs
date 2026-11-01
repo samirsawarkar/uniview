@@ -349,6 +349,13 @@ function buildMenu() {
           },
         },
         {
+          label: "Share with phone",
+          click: () => {
+            const target = BrowserWindow.getFocusedWindow() || win;
+            target?.webContents.send("view:share");
+          },
+        },
+        {
           label: "Theme",
           submenu: [
             { label: "System", type: "radio", checked: theme === "system", click: () => pickTheme("system") },

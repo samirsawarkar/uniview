@@ -383,10 +383,15 @@ export function App() {
       openPage({ kind: "agents" }, false);
     });
 
+    const unsubOpenShare = electron.onOpenShare?.(() => {
+      openPage({ kind: "sharing" }, false);
+    });
+
     return () => {
       unsubMsg?.();
       unsubState?.();
       unsubOpenAgents?.();
+      unsubOpenShare?.();
       unsubTheme?.();
     };
   }, [openPage]);
@@ -631,9 +636,16 @@ export function App() {
               <Home
                 recents={recents}
                 canReopen={!!bridge.openPath}
+                hosts={hosts}
                 onPick={pick}
                 onReopen={reopenRecent}
                 onForget={(r) => setRecents(forgetRecent(r))}
+                onConnect={() => setPairing(true)}
+                onOpenHost={(h) => openPage({ kind: "remote", hostId: h.hostId, location: { path: "" } }, true)}
+                onForgetHost={(hostId) => {
+                  disconnect(hostId);
+                  setHosts(forgetHost(hostId));
+                }}
               />
             )}
             {t.source && t.sessionId && (
@@ -785,15 +797,23 @@ function pageTitle(t: Tab, hosts: HostRecord[]): string {
 function Home({
   recents,
   canReopen,
+  hosts = [],
   onPick,
   onReopen,
   onForget,
+  onConnect,
+  onOpenHost,
+  onForgetHost,
 }: {
   recents: Recent[];
   canReopen: boolean;
+  hosts?: HostRecord[];
   onPick: () => void;
   onReopen: (r: Recent) => void;
   onForget: (r: Recent) => void;
+  onConnect?: () => void;
+  onOpenHost?: (h: HostRecord) => void;
+  onForgetHost?: (hostId: string) => void;
 }) {
   const [connectStatus, setConnectStatus] = useState<AgentConnectStatusResult | null>(null);
   const [confirmClient, setConfirmClient] = useState<"claude" | "codex" | null>(null);
@@ -954,18 +974,57 @@ function Home({
         <span className="muted small">or drop files anywhere</span>
       </div>
 
-      {/* 2. Compact AI agents row */}
-      <div className="home-agents-row" aria-label="AI agents">
-        <div className="home-agents-clients">
-          {renderClientItem("claude", "Claude Code")}
-          {renderClientItem("codex", "Codex")}
-        </div>
-        {connectError && !confirmClient && (
-          <div className="home-agent-error" role="alert">
-            {connectError}
+      {/* 2. Connect to a computer (phone and non-Electron shell) */}
+      {!hasElectronApi() && (
+        <section className="computers recents" aria-label="Paired computers">
+          <button
+            type="button"
+            onClick={onConnect}
+            data-testid="connect-computer"
+          >
+            Connect to a computer
+          </button>
+          {/* ponytail: plain host list without connection status probe; upgrade: ping host on mount if live status is desired */}
+          {hosts.length > 0 && (
+            <ul>
+              {hosts.map((h) => (
+                <li key={h.hostId}>
+                  <button
+                    type="button"
+                    className="recent plain"
+                    onClick={() => onOpenHost?.(h)}
+                  >
+                    <span className="recent-name">{h.hostName}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="link small"
+                    onClick={() => onForgetHost?.(h.hostId)}
+                    aria-label={`Forget ${h.hostName}`}
+                  >
+                    Forget
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {/* 3. Compact AI agents row (Electron only) */}
+      {hasElectronApi() && (
+        <div className="home-agents-row" aria-label="AI agents">
+          <div className="home-agents-clients">
+            {renderClientItem("claude", "Claude Code")}
+            {renderClientItem("codex", "Codex")}
           </div>
-        )}
-      </div>
+          {connectError && !confirmClient && (
+            <div className="home-agent-error" role="alert">
+              {connectError}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 3. Plain recent files list, no thumbnails */}
       {recents.length > 0 && (

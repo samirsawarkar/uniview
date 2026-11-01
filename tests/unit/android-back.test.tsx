@@ -63,8 +63,6 @@ describe("Android back event handling", () => {
   });
 
   it("verifies home unhandled, dismisses pairing dialog, and closes opened files with release", async () => {
-    // The pairing dialog lost its UI entry points (phone features out of scope), so reach it the way the e2e harness does.
-    (window as any).uniview = { e2eHooks: true };
     await act(async () => {
       root.render(<App />);
     });
@@ -77,8 +75,10 @@ describe("Android back event handling", () => {
     expect(homeBack.defaultPrevented).toBe(false);
 
     // 2. Open the pairing dialog, then a back event dismisses it and prevents default
+    const connectBtn = container.querySelector<HTMLButtonElement>('[data-testid="connect-computer"]');
+    expect(connectBtn).not.toBeNull();
     act(() => {
-      (window as any).__univiewSetPairing(true);
+      connectBtn!.click();
     });
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 
@@ -118,7 +118,6 @@ describe("Android back event handling", () => {
       window.dispatchEvent(finalBack);
     });
     expect(finalBack.defaultPrevented).toBe(false);
-    delete (window as any).uniview;
   });
 
   it("gives viewer first chance to handle back event before closing file tab", async () => {
