@@ -886,14 +886,15 @@ function Home({
       }
     }
 
-    const showConnect = !st || !st.connected || st.stale;
+    // A client that is not installed gets no Connect button: there is nothing to connect to yet.
+    const showConnect = !!st?.installed && (!st.connected || st.stale);
     const isConfirming = confirmClient === client;
 
     return (
       <div key={client} className="home-agent-item-wrap">
         <div className="home-agent-item">
           <span className="home-agent-name">{name}</span>
-          {showConnect ? (
+          {!st?.installed ? null : showConnect ? (
             <button
               type="button"
               className="link small"

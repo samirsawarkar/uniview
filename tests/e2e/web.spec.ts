@@ -95,6 +95,39 @@ test("EPUB renders chapters without running book scripts", async ({ page }) => {
   expect(hacked).toBeNull();
 });
 
+test("rail click on a deck of short slides keeps the clicked slide", async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 0) <= 760, "the slide rail is hidden below 760px");
+  await open(page, "hard.pptx");
+  const main = panel(page).locator(".pptx-main");
+  const height = await main.evaluate((el) => el.clientHeight);
+  // Slides shorter than half the panel: the scroll a click causes used to re-pick slide 2.
+  const short = Math.round(height * 0.36);
+  await page.addStyleTag({ content: `.pptx-main .slide, .pptx-main .slide-holder > div { height: ${short}px !important; }` });
+  const lastSlide = panel(page).getByRole("button", { name: "Slide 3", exact: true });
+  await lastSlide.click();
+  await expect.poll(() => main.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(lastSlide).toHaveClass(/active/);
+  await panel(page).getByRole("button", { name: /Present/ }).click();
+  await expect(page.getByText("Conclusion")).toBeVisible();
+});
+
+test("rail click with no scroll still releases the pin", async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 0) <= 760, "the slide rail is hidden below 760px");
+  // A short panel makes the three-slide deck overflow.
+  await page.setViewportSize({ width: 1280, height: 420 });
+  await open(page, "hard.pptx");
+  const main = panel(page).locator(".pptx-main");
+  await expect(main.locator("[data-slide]")).toHaveCount(3);
+  // Park the deck where clicking slide 1 lands, so that click scrolls nowhere.
+  await main.evaluate((el) => el.querySelector("[data-slide]")?.scrollIntoView({ block: "start" }));
+  await page.waitForTimeout(300);
+  await panel(page).getByRole("button", { name: "Slide 1", exact: true }).click();
+  await page.waitForTimeout(300);
+  // Nothing ever settles the pin, so a later drag would leave the rail stuck.
+  await main.evaluate((el) => (el.scrollTop = el.scrollHeight));
+  await expect(panel(page).getByRole("button", { name: "Slide 3", exact: true })).toHaveClass(/active/);
+});
+
 test("ZIP entries open in new tabs", async ({ page }) => {
   await open(page, "bundle.zip");
   await panel(page).getByRole("button", { name: "data/report.md" }).click();

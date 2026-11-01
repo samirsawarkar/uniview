@@ -4,7 +4,7 @@ import { parsePptx, type Fill, type Paragraph, type Presentation, type Slide, ty
 import { readZipEntries } from "../core/zip";
 import { extOf } from "../core/detect";
 import { Loading, Spacer, Toolbar, readAllChecked, useReady, useViewerBack } from "./common";
-import { findPresenterEntrySlide, findNextSlide, findPrevSlide } from "./pptx-navigation";
+import { findPresenterEntrySlide, findNextSlide, findPrevSlide, findVisibleSlide } from "./pptx-navigation";
 import type { ViewerProps } from "./types";
 
 const IMAGE_MIME: Record<string, string> = {
@@ -81,6 +81,10 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
   const [showNotes, setShowNotes] = useState(false);
   const urls = useImageUrls(pres);
   const main = useRef<HTMLDivElement>(null);
+  // A rail click scrolls the deck; that scroll must not steal the selection it came from.
+  const pinned = useRef(-1);
+  const settle = useRef(0);
+  const unpin = useCallback(() => { pinned.current = -1; }, []);
   useReady(!!thumb || !!pres, onReady);
 
   useEffect(() => {
@@ -114,9 +118,13 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
   const slides = useMemo(() => pres?.slides ?? [], [pres]);
   const go = useCallback((n: number) => {
     const i = Math.max(0, Math.min(slides.length - 1, n));
+    pinned.current = i;
+    // A click that causes no scroll would otherwise pin forever.
+    clearTimeout(settle.current);
+    settle.current = window.setTimeout(unpin, 150);
     setCurrent(i);
     if (!presenting) main.current?.querySelector(`[data-slide="${i}"]`)?.scrollIntoView({ block: "start", behavior: "auto" });
-  }, [slides.length, presenting]);
+  }, [slides.length, presenting, unpin]);
 
   const startPresenting = useCallback(() => {
     const entry = findPresenterEntrySlide(slides, current);
@@ -127,6 +135,7 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest("input, textarea")) return;
+      unpin();
       if (presenting && e.key === "Escape") return setPresenting(false);
       if (["ArrowRight", "PageDown", " "].includes(e.key) && presenting) {
         e.preventDefault();
@@ -142,7 +151,7 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [presenting, current, slides, startPresenting]);
+  }, [presenting, current, slides, startPresenting, unpin]);
 
   useViewerBack(active && presenting, () => setPresenting(false));
 
@@ -252,11 +261,24 @@ export default function PptxViewer({ source, onReady, active = true }: ViewerPro
             </button>
           ))}
         </nav>
-        <div className="scroll pptx-main" ref={main} onScroll={(e) => {
-          const el = e.currentTarget;
-          const items = el.querySelectorAll<HTMLElement>("[data-slide]");
-          for (const it of items) if (it.offsetTop + it.offsetHeight / 2 > el.scrollTop) { setCurrent(Number(it.dataset.slide)); break; }
-        }}>
+        <div
+          className="scroll pptx-main"
+          ref={main}
+          onWheel={unpin}
+          onTouchStart={unpin}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            if (pinned.current >= 0) {
+              // Hold the click's selection until this scroll settles.
+              clearTimeout(settle.current);
+              settle.current = window.setTimeout(unpin, 150);
+              return;
+            }
+            const boxes = Array.from(el.querySelectorAll<HTMLElement>("[data-slide]"), (it) => ({ top: it.offsetTop, height: it.offsetHeight }));
+            const i = findVisibleSlide(boxes, el.scrollTop, el.clientHeight);
+            if (i >= 0) setCurrent(i);
+          }}
+        >
           {slides.map((s, i) => (
             <section key={i} className="slide-frame" data-slide={i} aria-label={`Slide ${i + 1}`}>
               <ResponsiveSlide pres={pres} slide={s} urls={urls} />
