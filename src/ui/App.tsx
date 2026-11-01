@@ -21,6 +21,8 @@ import ReviewTab from "../viewers/ReviewTab";
 import { scopeIdOf, hasElectronApi, type AgentConnectStatusResult } from "../shells/electron";
 import { AgentBar, type AgentBarMessage } from "./AgentBar";
 
+const MAX_LINES_PER_SESSION = 200;
+
 type Page = { kind: "sharing" } | { kind: "agents" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
 interface Tab {
@@ -81,17 +83,15 @@ export function App() {
       if (existingIdx >= 0) {
         const oldTab = next[existingIdx]!;
         if (oldTab.source) toRelease.push(oldTab.source);
-        const isAgent = Boolean(
-          oldTab.agentSupplied &&
-            (oldTab.detection?.kind === "viewspec" || oldTab.detection?.kind === "receipt")
-        );
+        // A viewspec or receipt tab keeps its detection across a reload; a plain file tab lets TabView re-detect.
+        const keepDetection =
+          oldTab.detection?.kind === "viewspec" || oldTab.detection?.kind === "receipt";
         next[existingIdx] = {
           ...oldTab,
           source: f,
-          detection: isAgent ? oldTab.detection : undefined,
+          detection: keepDetection ? oldTab.detection : undefined,
           scopeId: (f as any).scopeId ?? scopeIdOf(f),
           sessionId,
-          agentSupplied: true,
         };
         focusedId = oldTab.id;
       } else {
@@ -100,7 +100,6 @@ export function App() {
           source: f,
           scopeId: (f as any).scopeId ?? scopeIdOf(f),
           sessionId,
-          agentSupplied: Boolean(sessionId),
         });
       }
     }
@@ -231,14 +230,12 @@ export function App() {
       setTabs((prev) =>
         prev.map((t) => {
           if (t.id !== activeId) return t;
-          const isAgent = Boolean(
-            t.agentSupplied &&
-              (t.detection?.kind === "viewspec" || t.detection?.kind === "receipt")
-          );
+          const keepDetection =
+            t.detection?.kind === "viewspec" || t.detection?.kind === "receipt";
           return {
             ...t,
             source: fresh,
-            detection: isAgent ? t.detection : undefined,
+            detection: keepDetection ? t.detection : undefined,
           };
         })
       );
@@ -369,7 +366,7 @@ export function App() {
         [msg.sessionId]: [
           ...(prev[msg.sessionId] || []),
           { id: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`, sender: "agent", text: msg.text },
-        ],
+        ].slice(-MAX_LINES_PER_SESSION) as AgentBarMessage[],
       }));
     });
 
@@ -392,7 +389,9 @@ export function App() {
     };
   }, [openPage]);
 
+  // Test-only hooks: the preload exposes e2eHooks only under UNIVIEW_E2E=1, so the shipped app never gets them.
   useEffect(() => {
+    if (!(window as any).uniview?.e2eHooks) return;
     (window as any).__univiewOpenPage = openPage;
     (window as any).__univiewSetPairing = setPairing;
   }, [openPage, setPairing]);

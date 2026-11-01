@@ -124,6 +124,8 @@ contextBridge.exposeInMainWorld("uniview", {
     return () => agentSessionStateListeners.delete(cb);
   },
   ready: () => ipcRenderer.send("uniview:ready"),
+  // Test-only capability: renderer test hooks stay off unless the harness opts in.
+  e2eHooks: process.env.UNIVIEW_E2E === "1",
   connectStatus: () => ipcRenderer.invoke("agents:connect-status"),
   connect: (client) => ipcRenderer.invoke("agents:connect", String(client)),
   disconnect: (client) => ipcRenderer.invoke("agents:disconnect", String(client)),

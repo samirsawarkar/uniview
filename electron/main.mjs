@@ -56,6 +56,7 @@ if (early.isMcp) {
     ipcMain,
     fromApp,
     getWindow: () => win,
+    getWindows: () => BrowserWindow.getAllWindows(),
     userDataDir: app.getPath("userData"),
     userGrants: grants,
   });

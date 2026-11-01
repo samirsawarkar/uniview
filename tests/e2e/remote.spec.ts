@@ -6,7 +6,7 @@ import { join } from "node:path";
 const FX = join(process.cwd(), "fixtures", "generated");
 
 async function launch(profile: string, env: Record<string, string> = {}): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await electron.launch({ args: ["."], cwd: process.cwd(), env: { ...process.env, UNIVIEW_USER_DATA: profile, ...env } as Record<string, string> });
+  const app = await electron.launch({ args: ["."], cwd: process.cwd(), env: { ...process.env, UNIVIEW_USER_DATA: profile, UNIVIEW_E2E: "1", ...env } as Record<string, string> });
   const page = await app.firstWindow();
   await page.getByTestId("open-button").waitFor();
   return { app, page };
