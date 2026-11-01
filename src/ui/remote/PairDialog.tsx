@@ -36,7 +36,7 @@ export function PairDialog({ transport, canScan, onClose, onPaired }: {
       <div className="modal" data-testid="pair-dialog">
         <h2 id="pair-title">Connect a computer</h2>
         <p className="muted small">
-          On the computer, open UniView, choose <strong>Share with your devices</strong>, turn sharing on and click <strong>Pair a device</strong>.
+          On the computer, open UniView, click <strong>Share with phone</strong>, turn sharing on and click <strong>Pair a device</strong>.
         </p>
         {scanning && !busy && <QrScanner onCode={(t) => { setScanning(false); setCode(t); void submit(t); }} onUnavailable={() => setScanning(false)} />}
         <label className="field">

@@ -81,6 +81,24 @@ export interface ReviewApi {
   refresh(reviewId: string): Promise<{ ok: boolean; files?: Array<{ path: string; expectedSha256: string; observedSha256: string | null; state: FileState }>; verifiedAt?: string; error?: string }>;
 }
 
+export interface AgentConnectClientStatus {
+  installed: boolean;
+  connected: boolean;
+  stale: boolean;
+}
+
+export interface AgentConnectStatusResult {
+  ok: boolean;
+  error?: string;
+  claude?: AgentConnectClientStatus;
+  codex?: AgentConnectClientStatus;
+}
+
+export interface AgentConnectResult {
+  ok: boolean;
+  error?: string;
+}
+
 /** What electron/preload.cjs exposes on window.uniview. Keep in sync with the preload. */
 export interface ElectronApi {
   pickFiles(): Promise<GrantedFile[]>;
@@ -89,12 +107,23 @@ export interface ElectronApi {
   reveal(token: string): void;
   onOpenFiles(cb: (files: GrantedFile[]) => void): () => void;
   ready(): void;
+  newWindow?(): void;
   tabClosed?(scopeId: string): void;
   thumbnail(token: string, size: number, scopeId?: string): Promise<Uint8Array | null>;
   share: ShareApi;
   remotePost(host: string, port: number, path: string, body: Uint8Array, type: string, timeoutMs?: number): Promise<{ status: number; body: Uint8Array }>;
   review?: ReviewApi;
   agents?: AgentsApi;
+  connectStatus?(): Promise<AgentConnectStatusResult>;
+  connect?(client: "claude" | "codex" | string): Promise<AgentConnectResult>;
+  disconnect?(client: "claude" | "codex" | string): Promise<AgentConnectResult>;
+  onOpenAgents?(cb: () => void): () => void;
+  onOpenShare?(cb: () => void): () => void;
+  onTheme?(cb: (theme: string) => void): () => void;
+  sendMessage?(args: { sessionId: string; text: string; documentPath?: string }): Promise<{ ok: boolean; error?: string }>;
+  endSession?(sessionId: string): Promise<{ ok: boolean; error?: string }>;
+  onAgentMessage?(cb: (msg: { sessionId: string; text: string }) => void): () => void;
+  onAgentSessionState?(cb: (state: { sessionId: string; state: string }) => void): () => void;
   onAgentShowView?(cb: (item: any) => void): () => void;
   onAgentShowReview?(cb: (item: any) => void): () => void;
   onAgentCloseTab?(cb: (scopeId: string) => void): () => void;
@@ -108,6 +137,7 @@ export interface GrantedFile {
   path: string;
   size: number;
   scopeId?: string;
+  sessionId?: string;
 }
 
 export function hasElectronApi(): boolean {
@@ -189,6 +219,9 @@ export function toSource(f: GrantedFile, ownsScope = true): FileSource {
   if (f.scopeId) {
     scopes.set(source, f.scopeId);
     (source as any).scopeId = f.scopeId;
+  }
+  if (f.sessionId) {
+    (source as any).sessionId = f.sessionId;
   }
   return source;
 }

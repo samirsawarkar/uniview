@@ -51,6 +51,23 @@ export const MCP_LIMITS = Object.freeze({
 export const LATEST_PROTOCOL = "2025-06-18";
 export const SUPPORTED_PROTOCOLS = Object.freeze(["2025-06-18", "2025-03-26", "2024-11-05"]);
 
+const OPEN_FILES_DESCRIPTION =
+  "Use this whenever the person asks to show, open, view, preview or see a file or document, including a file you just made, instead of printing its contents. " +
+  "Paths must be absolute. Then call wait_for_user_message for their request; after editing, call open_files again, post_message one sentence, then wait again.";
+
+export const SERVER_INSTRUCTIONS =
+  "Use UniView open_files whenever the person asks to show, open, view, preview or see a file or document, including a file you just made, instead of printing its contents. " +
+  "Then call wait_for_user_message and act on what comes back as a request from the person. " +
+  "After editing, call open_files with the same path, then post_message with one short sentence, then wait again. " +
+  "Stop only when status is closed.";
+
+export function parseMaxWait(envVal) {
+  if (envVal === undefined || envVal === null || envVal === "") return 50;
+  const n = Number(envVal);
+  if (!Number.isInteger(n) || n < 1 || n > 3000) return 50;
+  return n;
+}
+
 const PARSE_ERROR = -32700;
 const INVALID_REQUEST = -32600;
 const METHOD_NOT_FOUND = -32601;
@@ -129,7 +146,7 @@ const PATH_SCHEMA = { type: "string", minLength: 1, maxLength: MCP_LIMITS.MAX_PA
 const TOOLS = [
   {
     name: "open_files",
-    description: "Open local files in UniView tabs for the person to see. Paths must be absolute.",
+    description: OPEN_FILES_DESCRIPTION,
     inputSchema: {
       type: "object",
       properties: {
@@ -215,6 +232,59 @@ const TOOLS = [
         additionalProperties: false,
       },
     ),
+  },
+  {
+    name: "wait_for_user_message",
+    description: "Wait for a change request or message from the person in UniView. Returns message text, waiting if timed out, or closed if ended.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        waitSeconds: { type: "integer" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: outputSchema(
+      {
+        type: "object",
+        required: ["status", "text"],
+        properties: {
+          status: { const: "message" },
+          text: { type: "string" },
+          documentPath: { type: ["string", "null"] },
+        },
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        required: ["status"],
+        properties: { status: { const: "waiting" } },
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        required: ["status"],
+        properties: { status: { const: "closed" } },
+        additionalProperties: false,
+      },
+    ),
+  },
+  {
+    name: "post_message",
+    description: "Post a short one-sentence reply or status to the person in UniView.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", minLength: 1, maxLength: 4000 },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    outputSchema: outputSchema({
+      type: "object",
+      required: ["posted"],
+      properties: { posted: { const: true } },
+      additionalProperties: false,
+    }),
   },
 ];
 
@@ -362,8 +432,12 @@ export function runMcp({
   maxQueuedOutputBytes = MCP_LIMITS.MAX_QUEUED_OUTPUT_BYTES,
   maxQueuedInputLines = MCP_LIMITS.MAX_QUEUED_INPUT_LINES,
   maxQueuedInputBytes = MCP_LIMITS.MAX_QUEUED_INPUT_BYTES,
+  env = process.env,
 }) {
   const splitter = new LineSplitter();
+  const maxWait = parseMaxWait(env?.UNIVIEW_MAX_WAIT);
+  let activeUserWait = null;
+  let unreadUserMessage = null;
   /** "new" -> "initializing" (initialize answered) -> "ready" (notifications/initialized) */
   let phase = "new";
   let revision = LATEST_PROTOCOL;
@@ -704,6 +778,113 @@ export function runMcp({
       }
       return async () => reviewOutcome(await call("review.get", { reviewId }));
     },
+
+    async wait_for_user_message(args, entry, meta) {
+      checkKeys(args, ["waitSeconds"]);
+      if (activeUserWait) {
+        throw new ToolFailure("busy");
+      }
+      let waitSeconds;
+      if (args.waitSeconds === undefined) {
+        waitSeconds = maxWait;
+      } else {
+        if (typeof args.waitSeconds !== "number" || !Number.isInteger(args.waitSeconds)) {
+          throw new ParamsError("waitSeconds must be an integer");
+        }
+        waitSeconds = Math.max(1, Math.min(maxWait, args.waitSeconds));
+      }
+      return async () => {
+        if (unreadUserMessage) {
+          const msg = unreadUserMessage;
+          unreadUserMessage = null;
+          return {
+            status: "message",
+            text: msg.text ?? "",
+            documentPath: msg.documentPath ?? null,
+          };
+        }
+        if (activeUserWait) throw new ToolFailure("busy");
+        const waitId = Symbol("wait");
+        activeUserWait = waitId;
+        const timeoutMs = waitSeconds * 1000;
+
+        let progressTimer = null;
+        let guard = null;
+        let ticks = 0;
+        const progressToken = meta?.progressToken;
+        if (progressToken !== undefined) {
+          const armProgress = () => {
+            progressTimer = setTimer(() => {
+              if (activeUserWait === waitId && !entry.cancelled && !closed) {
+                send({
+                  jsonrpc: "2.0",
+                  method: "notifications/progress",
+                  params: { progressToken, progress: ++ticks, total: waitSeconds },
+                });
+                armProgress();
+              }
+            }, 20_000);
+          };
+          armProgress();
+        }
+
+        const stop = new Promise((resolve) => {
+          entry.cancel = () => resolve("cancelled");
+          // Guard: an unanswered bridge wait must not leave the session stuck on busy.
+          guard = setTimer(() => resolve("timeout"), timeoutMs + MCP_LIMITS.WAIT_GRACE_MS);
+        });
+
+        try {
+          const waited = call("session.waitMessage", { timeoutMs }, undefined, { wait: true });
+          waited.catch(() => {});
+          const outcome = await Promise.race([waited, stop]);
+          if (outcome === "cancelled" || outcome === "timeout") {
+            // Only the wait ends; the session keeps the mailbox.
+            const b = bridge;
+            if (b) b.request("session.cancelWaitMessage", {}).catch(() => {});
+            waited.then((late) => {
+              if (late && late.status === "message") {
+                unreadUserMessage = {
+                  text: late.text ?? "",
+                  documentPath: late.documentPath ?? null,
+                };
+              }
+            }).catch(() => {});
+            return outcome === "cancelled" ? SUPPRESS : { status: "waiting" };
+          }
+          if (outcome && typeof outcome === "object") {
+            if (outcome.status === "message") {
+              return {
+                status: "message",
+                text: outcome.text ?? "",
+                documentPath: outcome.documentPath ?? null,
+              };
+            }
+            if (outcome.status === "closed") {
+              return { status: "closed" };
+            }
+            return { status: "waiting" };
+          }
+          return { status: "waiting" };
+        } finally {
+          if (activeUserWait === waitId) activeUserWait = null;
+          clearTimer(progressTimer);
+          clearTimer(guard);
+          entry.cancel = null;
+        }
+      };
+    },
+
+    async post_message(args) {
+      checkKeys(args, ["text"]);
+      if (typeof args.text !== "string" || args.text.length < 1 || args.text.length > 4000) {
+        throw new ParamsError("text must be a string of 1 to 4000 characters");
+      }
+      return async () => {
+        await call("session.postMessage", { text: args.text });
+        return { posted: true };
+      };
+    },
   };
 
   async function toolsCall(id, params) {
@@ -719,13 +900,15 @@ export function runMcp({
         }
         const args = params.arguments === undefined ? {} : params.arguments;
         if (!isPlainObject(args)) throw new ParamsError("arguments must be an object");
-        run = await handlers[params.name](args, entry);
+        run = await handlers[params.name](args, entry, params._meta);
       } catch (err) {
         if (err instanceof ParamsError) {
           fail(id, INVALID_PARAMS, `Invalid params: ${err.message}`);
           return;
         }
-        throw err;
+        const failure = toolFailureFrom(err);
+        reply(id, toolError(failure.code, failure.message));
+        return;
       }
       let result;
       try {
@@ -746,7 +929,7 @@ export function runMcp({
   function handleCancelled(params) {
     if (!isPlainObject(params) || !isValidId(params.requestId)) return;
     const entry = inflight.get(idKey(params.requestId));
-    if (!entry || entry.tool !== "request_review") return;
+    if (!entry || (entry.tool !== "request_review" && entry.tool !== "wait_for_user_message")) return;
     entry.cancelled = true;
     if (entry.cancel) entry.cancel();
   }
@@ -803,6 +986,7 @@ export function runMcp({
         protocolVersion: revision,
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: clientInfo.name, version: clientInfo.version },
+        instructions: SERVER_INSTRUCTIONS,
       });
       return;
     }

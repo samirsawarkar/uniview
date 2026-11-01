@@ -6,7 +6,6 @@ import { formatBytes } from "../core/errors";
 import { TabView } from "./TabView";
 import { badgeFor, KindBadge } from "./badges";
 import { loadRecents, rememberRecent, forgetRecent, type Recent } from "./recents";
-import { RecentThumb, captureRecentThumb } from "./recent-thumbs";
 import { SharingPanel } from "./remote/SharingPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { PairDialog } from "./remote/PairDialog";
@@ -16,9 +15,12 @@ import { disconnect } from "../remote/connections";
 import { reopenRemoteRecent } from "../remote/reopen-recent";
 import type { HostRecord } from "../../shared/remote-client.mjs";
 import logoUrl from "./assets/logo.png";
-import { getTheme, setTheme, type Theme } from "./theme";
+import { setTheme, type Theme } from "./theme";
 import ReviewTab from "../viewers/ReviewTab";
-import { scopeIdOf, hasElectronApi } from "../shells/electron";
+import { scopeIdOf, hasElectronApi, type AgentConnectStatusResult } from "../shells/electron";
+import { AgentBar, type AgentBarMessage } from "./AgentBar";
+
+const MAX_LINES_PER_SESSION = 200;
 
 type Page = { kind: "sharing" } | { kind: "agents" } | { kind: "remote"; hostId: string; location: RemoteLocation };
 
@@ -30,6 +32,7 @@ interface Tab {
   scopeId?: string;
   agentReview?: any;
   agentSupplied?: boolean;
+  sessionId?: string;
 }
 
 const homeTab = (): Tab => ({ id: `home-${Math.random().toString(36).slice(2)}`, source: null });
@@ -43,31 +46,82 @@ declare global {
 export function App() {
   const bridge = useMemo(() => getBridge(), []);
   const [tabs, setTabs] = useState<Tab[]>(() => [homeTab()]);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const [activeId, setActiveId] = useState(() => tabs[0]!.id);
   const [dragging, setDragging] = useState(false);
   const [recents, setRecents] = useState<Recent[]>(() => loadRecents());
   const [notice, setNotice] = useState<string | null>(null);
   const [hosts, setHosts] = useState<HostRecord[]>(() => loadHosts());
   const [pairing, setPairing] = useState(false);
+  const [sessionStates, setSessionStates] = useState<Record<string, string>>({});
+  const [messagesBySession, setMessagesBySession] = useState<Record<string, AgentBarMessage[]>>({});
+  const [draftsBySession, setDraftsBySession] = useState<Record<string, string>>({});
+  const [errorsBySession, setErrorsBySession] = useState<Record<string, string | null>>({});
+  const [showOmnibox, setShowOmnibox] = useState(false);
   const dragDepth = useRef(0);
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
 
   const openFiles = useCallback((files: FileSource[], replaceHome = true) => {
     if (!files.length) return;
-    setTabs((prev) => {
-      const next = [...prev];
-      const created = files.map((f) => ({
-        id: f.id,
-        source: f,
-        scopeId: (f as any).scopeId ?? scopeIdOf(f),
-      }));
+    const current = tabsRef.current;
+    const next = [...current];
+    const created: Tab[] = [];
+    const toRelease: FileSource[] = [];
+    let focusedId: string | null = null;
+
+    const norm = (p: string) => p.toLowerCase();
+
+    for (const f of files) {
+      const sessionId = (f as any).sessionId;
+      const fPath = f.path;
+      // Only reload in place for agent opens (has sessionId); compare case-insensitively like Windows.
+      const existingIdx = sessionId && fPath
+        ? next.findIndex((t) => t.source?.path && norm(t.source.path) === norm(fPath))
+        : -1;
+      if (existingIdx >= 0) {
+        const oldTab = next[existingIdx]!;
+        if (oldTab.source) toRelease.push(oldTab.source);
+        // A viewspec or receipt tab keeps its detection across a reload; a plain file tab lets TabView re-detect.
+        const keepDetection =
+          oldTab.detection?.kind === "viewspec" || oldTab.detection?.kind === "receipt";
+        next[existingIdx] = {
+          ...oldTab,
+          source: f,
+          detection: keepDetection ? oldTab.detection : undefined,
+          scopeId: (f as any).scopeId ?? scopeIdOf(f),
+          sessionId,
+        };
+        focusedId = oldTab.id;
+      } else {
+        created.push({
+          id: f.id,
+          source: f,
+          scopeId: (f as any).scopeId ?? scopeIdOf(f),
+          sessionId,
+        });
+      }
+    }
+
+    if (created.length > 0) {
       const idx = next.findIndex((t) => t.id === activeId);
       // Opening from the home tab replaces it, like typing a URL into Chrome's new tab page.
       if (replaceHome && idx >= 0 && next[idx]!.source === null) next.splice(idx, 1, ...created);
       else next.splice(idx + 1, 0, ...created);
-      return next;
-    });
-    setActiveId(files[files.length - 1]!.id);
+      focusedId = created[created.length - 1]!.id;
+    }
+
+    // Release old scopes outside the updater so release runs exactly once.
+    for (const s of toRelease) {
+      try {
+        s.release();
+      } catch {}
+    }
+
+    setTabs(next);
+    if (focusedId) setActiveId(focusedId);
+    else if (next.length > 0) setActiveId(next[next.length - 1]!.id);
+
     for (const f of files) {
       if (f.remote) {
         setRecents(rememberRecent({ name: f.name, size: f.size, remote: f.remote }));
@@ -175,14 +229,12 @@ export function App() {
       setTabs((prev) =>
         prev.map((t) => {
           if (t.id !== activeId) return t;
-          const isAgent = Boolean(
-            t.agentSupplied &&
-              (t.detection?.kind === "viewspec" || t.detection?.kind === "receipt")
-          );
+          const keepDetection =
+            t.detection?.kind === "viewspec" || t.detection?.kind === "receipt";
           return {
             ...t,
             source: fresh,
-            detection: isAgent ? t.detection : undefined,
+            detection: keepDetection ? t.detection : undefined,
           };
         })
       );
@@ -301,6 +353,90 @@ export function App() {
     };
   }, [activeId]);
 
+  // Agent subscriptions for message, session state, and View > Agents (subscribed once)
+  useEffect(() => {
+    const electron = (window as any).uniview;
+    if (!electron) return;
+
+    const unsubTheme = electron.onTheme?.((t: string) => setTheme(t as Theme));
+
+    const unsubMsg = electron.onAgentMessage?.((msg: { sessionId: string; text: string }) => {
+      if (!msg?.sessionId || !msg?.text) return;
+      setMessagesBySession((prev) => ({
+        ...prev,
+        [msg.sessionId]: [
+          ...(prev[msg.sessionId] || []),
+          { id: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`, sender: "agent", text: msg.text },
+        ].slice(-MAX_LINES_PER_SESSION) as AgentBarMessage[],
+      }));
+    });
+
+    const unsubState = electron.onAgentSessionState?.((st: { sessionId: string; state: string }) => {
+      if (!st?.sessionId || !st?.state) return;
+      setSessionStates((prev) => ({
+        ...prev,
+        [st.sessionId]: st.state,
+      }));
+    });
+
+    const unsubOpenAgents = electron.onOpenAgents?.(() => {
+      openPage({ kind: "agents" }, false);
+    });
+
+    const unsubOpenShare = electron.onOpenShare?.(() => {
+      openPage({ kind: "sharing" }, false);
+    });
+
+    return () => {
+      unsubMsg?.();
+      unsubState?.();
+      unsubOpenAgents?.();
+      unsubOpenShare?.();
+      unsubTheme?.();
+    };
+  }, [openPage]);
+
+  // Test-only hooks: the preload exposes e2eHooks only under UNIVIEW_E2E=1, so the shipped app never gets them.
+  useEffect(() => {
+    if (!(window as any).uniview?.e2eHooks) return;
+    (window as any).__univiewOpenPage = openPage;
+    (window as any).__univiewSetPairing = setPairing;
+  }, [openPage, setPairing]);
+
+  const handleAgentSend = useCallback(async (sessionId: string, text: string, documentPath?: string) => {
+    const electron = (window as any).uniview;
+    if (!electron?.sendMessage) {
+      throw new Error("Agent messaging not available");
+    }
+    setErrorsBySession((prev) => ({ ...prev, [sessionId]: null }));
+    const res = await electron.sendMessage({ sessionId, text, documentPath });
+    if (res && res.ok === false) {
+      const errMsg = res.error || "Failed to send message";
+      setErrorsBySession((prev) => ({ ...prev, [sessionId]: errMsg }));
+      throw new Error(errMsg);
+    }
+    setMessagesBySession((prev) => ({
+      ...prev,
+      [sessionId]: [
+        ...(prev[sessionId] || []),
+        { id: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`, sender: "person", text },
+      ],
+    }));
+  }, []);
+
+  const handleAgentEnd = useCallback(async (sessionId: string) => {
+    const electron = (window as any).uniview;
+    if (!electron?.endSession) return;
+    try {
+      await electron.endSession(sessionId);
+    } catch (err: unknown) {
+      setErrorsBySession((prev) => ({
+        ...prev,
+        [sessionId]: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }, []);
+
   // External open errors from the OS (e.g. unreadable shared files).
   useEffect(() => bridge.onExternalOpenError?.((err) => setNotice(err)), [bridge]);
 
@@ -312,9 +448,17 @@ export function App() {
       const k = e.key.toLowerCase();
       if (k === "o") { e.preventDefault(); void pick(); }
       else if (k === "t") { e.preventDefault(); newTab(); }
+      else if (k === "n") {
+        e.preventDefault();
+        (window as unknown as { uniview?: { newWindow?: () => void } }).uniview?.newWindow?.();
+      }
       else if (k === "w") { e.preventDefault(); closeTab(activeId); }
       else if (k === "r") { e.preventDefault(); void reloadActiveTab(); }
-      else if (k === "l") { e.preventDefault(); document.getElementById("omnibox")?.focus(); }
+      else if (k === "l") {
+        e.preventDefault();
+        setShowOmnibox((prev) => !prev);
+        setTimeout(() => document.getElementById("omnibox")?.focus(), 50);
+      }
       else if (e.key === "Tab") {
         e.preventDefault();
         const i = tabs.findIndex((t) => t.id === activeId);
@@ -433,19 +577,21 @@ export function App() {
             </div>
           ))}
           <button className="tab-new" onClick={newTab} aria-label="New tab" title="New tab (Ctrl+T)">+</button>
+          <button className="top-open" onClick={pick} title="Open files (Ctrl+O)">Open</button>
         </div>
-        <Omnibox
-          active={active}
-          tabs={tabs}
-          recents={recents}
-          canOpenPath={!!bridge.openPath}
-          onPick={pick}
-          onSwitch={setActiveId}
-          onOpenPath={openPath}
-          onReveal={active.source && bridge.revealInFolder ? () => bridge.revealInFolder!(active.source!) : undefined}
-          onHome={goHome}
-          onAgents={bridge.agents ? () => openPage({ kind: "agents" }, false) : undefined}
-        />
+        {showOmnibox && (
+          <Omnibox
+            active={active}
+            tabs={tabs}
+            recents={recents}
+            canOpenPath={!!bridge.openPath}
+            onPick={pick}
+            onSwitch={(id) => { setActiveId(id); setShowOmnibox(false); }}
+            onOpenPath={(p) => { openPath(p); setShowOmnibox(false); }}
+            onReveal={active.source && bridge.revealInFolder ? () => bridge.revealInFolder!(active.source!) : undefined}
+            onHome={() => { goHome(); setShowOmnibox(false); }}
+          />
+        )}
       </header>
       {notice && (
         <div className="banner warn" role="alert">
@@ -458,6 +604,7 @@ export function App() {
           <div key={t.id} className="tab-panel" hidden={t.id !== activeId} role="tabpanel">
             {t.agentReview && t.source ? (
               <ReviewTab
+                key={t.source.id}
                 source={t.source}
                 active={t.id === activeId}
                 initialReview={t.agentReview}
@@ -465,15 +612,16 @@ export function App() {
               />
             ) : t.source ? (
               <TabView
+                key={t.source.id}
                 source={t.source}
                 detection={t.agentSupplied ? t.detection : undefined}
-                onDetected={(d) => { onDetected(t.id, d); if (!t.source!.remote) void captureRecentThumb(bridge, t.source!, d.kind); }}
+                onDetected={(d) => { onDetected(t.id, d); }}
                 onReady={(ms) => onReady(t, ms)}
                 onOpen={(f) => openFiles(f, false)}
                 active={t.id === activeId}
               />
-            ) : t.page?.kind === "sharing" && bridge.share ? (
-              <SharingPanel share={bridge.share} />
+            ) : t.page?.kind === "sharing" && (bridge.share || (window as any).uniview?.share) ? (
+              <SharingPanel share={bridge.share || (window as any).uniview?.share} />
             ) : t.page?.kind === "agents" ? (
               <AgentsPanel agents={bridge.agents} />
             ) : t.page?.kind === "remote" && bridge.remoteTransport && hostFor(t.page.hostId) ? (
@@ -488,19 +636,32 @@ export function App() {
               <Home
                 recents={recents}
                 canReopen={!!bridge.openPath}
-                canReopenRemote={!!bridge.remoteTransport}
+                hosts={hosts}
+                canShare={Boolean(hasElectronApi() && (bridge.share || (window as any).uniview?.share))}
                 onPick={pick}
                 onReopen={reopenRecent}
                 onForget={(r) => setRecents(forgetRecent(r))}
-                hosts={bridge.remoteTransport ? hosts : null}
                 onConnect={() => setPairing(true)}
-                onBrowse={(h) => openPage({ kind: "remote", hostId: h.hostId, location: { path: "" } }, true)}
-                onForgetHost={(h) => {
-                  disconnect(h.hostId);
-                  setHosts(forgetHost(h.hostId));
+                onOpenHost={(h) => openPage({ kind: "remote", hostId: h.hostId, location: { path: "" } }, true)}
+                onForgetHost={(hostId) => {
+                  disconnect(hostId);
+                  setHosts(forgetHost(hostId));
                 }}
-                onShare={bridge.share ? () => openPage({ kind: "sharing" }, true) : undefined}
-                onAgents={bridge.agents ? () => openPage({ kind: "agents" }, true) : undefined}
+                onOpenSharing={() => openPage({ kind: "sharing" }, true)}
+              />
+            )}
+            {t.source && t.sessionId && (
+              <AgentBar
+                sessionId={t.sessionId}
+                documentPath={t.source.path}
+                state={sessionStates[t.sessionId]}
+                isKnown={sessionStates[t.sessionId] !== "disconnected"}
+                messages={messagesBySession[t.sessionId] ?? []}
+                draft={draftsBySession[t.sessionId] ?? ""}
+                onDraftChange={(d) => setDraftsBySession((prev) => ({ ...prev, [t.sessionId!]: d }))}
+                onSend={(text) => handleAgentSend(t.sessionId!, text, t.source?.path)}
+                onEnd={() => handleAgentEnd(t.sessionId!)}
+                error={errorsBySession[t.sessionId]}
               />
             )}
           </div>
@@ -635,197 +796,295 @@ function pageTitle(t: Tab, hosts: HostRecord[]): string {
   return "New tab";
 }
 
-function Home({ recents, canReopen, canReopenRemote, onPick, onReopen, onForget, hosts, onConnect, onBrowse, onForgetHost, onShare, onAgents }: {
+function Home({
+  recents,
+  canReopen,
+  hosts = [],
+  canShare,
+  onPick,
+  onReopen,
+  onForget,
+  onConnect,
+  onOpenHost,
+  onForgetHost,
+  onOpenSharing,
+}: {
   recents: Recent[];
   canReopen: boolean;
-  canReopenRemote?: boolean;
+  hosts?: HostRecord[];
+  canShare?: boolean;
   onPick: () => void;
   onReopen: (r: Recent) => void;
   onForget: (r: Recent) => void;
-  hosts: HostRecord[] | null;
-  onConnect: () => void;
-  onBrowse: (h: HostRecord) => void;
-  onForgetHost: (h: HostRecord) => void;
-  onShare?: () => void;
-  onAgents?: () => void;
+  onConnect?: () => void;
+  onOpenHost?: (h: HostRecord) => void;
+  onForgetHost?: (hostId: string) => void;
+  onOpenSharing?: () => void;
 }) {
-  const [theme, setThemeState] = useState<Theme>(() => getTheme());
-  const handleTheme = (t: Theme) => {
-    setTheme(t);
-    setThemeState(t);
+  const [connectStatus, setConnectStatus] = useState<AgentConnectStatusResult | null>(null);
+  const [confirmClient, setConfirmClient] = useState<"claude" | "codex" | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [busyClient, setBusyClient] = useState<string | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    const electron = (window as any).uniview;
+    if (electron?.connectStatus) {
+      try {
+        const res = await electron.connectStatus();
+        setConnectStatus(res);
+      } catch {
+        setConnectStatus(null);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  const handleConnect = async (client: "claude" | "codex") => {
+    const electron = (window as any).uniview;
+    if (!electron?.connect) return;
+    setBusyClient(client);
+    setConnectError(null);
+    try {
+      const res = await electron.connect(client);
+      if (!res.ok) {
+        setConnectError(res.error || `Failed to connect ${client}`);
+      } else {
+        setConfirmClient(null);
+        await refreshStatus();
+      }
+    } catch (err: unknown) {
+      setConnectError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyClient(null);
+    }
+  };
+
+  const handleDisconnect = async (client: "claude" | "codex") => {
+    const electron = (window as any).uniview;
+    if (!electron?.disconnect) return;
+    setBusyClient(client);
+    setConnectError(null);
+    try {
+      const res = await electron.disconnect(client);
+      if (!res.ok) {
+        setConnectError(res.error || `Failed to disconnect ${client}`);
+      } else {
+        await refreshStatus();
+      }
+    } catch (err: unknown) {
+      setConnectError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyClient(null);
+    }
+  };
+
+  const renderClientItem = (client: "claude" | "codex", name: string) => {
+    const st = connectStatus?.[client];
+    let stateLabel = "";
+    if (st) {
+      if (!st.installed) {
+        stateLabel = "Not installed";
+      } else if (st.connected) {
+        stateLabel = st.stale ? "Reconnect (stale)" : "Connected";
+      }
+    }
+
+    // A client that is not installed gets no Connect button: there is nothing to connect to yet.
+    const showConnect = !!st?.installed && (!st.connected || st.stale);
+    const isConfirming = confirmClient === client;
+
+    return (
+      <div key={client} className="home-agent-item-wrap">
+        <div className="home-agent-item">
+          <span className="home-agent-name">{name}</span>
+          {!st?.installed ? null : showConnect ? (
+            <button
+              type="button"
+              className="link small"
+              onClick={() => {
+                setConnectError(null);
+                setConfirmClient(isConfirming ? null : client);
+              }}
+              disabled={busyClient === client}
+            >
+              Connect
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="link small"
+              onClick={() => void handleDisconnect(client)}
+              disabled={busyClient === client}
+            >
+              Disconnect
+            </button>
+          )}
+          {stateLabel && <span className="home-agent-state">{stateLabel}</span>}
+        </div>
+
+        {isConfirming && (
+          <div className="home-agent-confirm" role="region" aria-label={`Connect ${name}`}>
+            <p className="home-agent-confirm-text">
+              {client === "claude"
+                ? "This adds UniView to Claude Code's user settings using its own command."
+                : "This adds a UniView section to your Codex config.toml, and keeps a backup."}
+            </p>
+            {connectError && (
+              <div className="home-agent-error" role="alert">
+                {connectError}
+              </div>
+            )}
+            <div className="home-agent-confirm-actions">
+              <button
+                type="button"
+                className="primary small"
+                disabled={busyClient === client}
+                onClick={() => void handleConnect(client)}
+              >
+                Connect
+              </button>
+              <button
+                type="button"
+                className="small"
+                onClick={() => {
+                  setConfirmClient(null);
+                  setConnectError(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
     <div className="home">
-      <div className="home-hero">
-        <img className="logo" src={logoUrl} alt="" />
-        <h1>UniView</h1>
-        <p className="muted">Open any file. Offline, private, instant.</p>
-      </div>
-
-      <div className="home-actions">
-        <button className="action-card primary" onClick={onPick} data-testid="open-button">
-          <span className="action-card-icon" aria-hidden="true">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-          </span>
-          <strong className="action-card-title">Open files</strong>
-          <span className="muted small action-card-sub">
-            {canReopen ? "PDF, Office, images, video and more · or drop files anywhere · Ctrl+O" : "PDF, Office, images, video and more"}
-          </span>
+      {/* 1. Drop zone with an Open file button */}
+      <div className="home-dropzone" onClick={onPick}>
+        <button
+          type="button"
+          className="primary big"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPick();
+          }}
+          data-testid="open-button"
+        >
+          Open file
         </button>
-
-        {hosts !== null && (
-          <button className="action-card" onClick={onConnect} data-testid="connect-computer">
-            <span className="action-card-icon" aria-hidden="true">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                <line x1="2" y1="20" x2="22" y2="20" />
-              </svg>
-            </span>
-            <strong className="action-card-title">Connect a computer</strong>
-            <span className="muted small action-card-sub">Browse a PC or Mac on your Wi-Fi</span>
-          </button>
-        )}
-
-        {onShare && (
-          <button className="action-card" onClick={onShare} data-testid="open-sharing">
-            <span className="action-card-icon" aria-hidden="true">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="18" cy="5" r="3" />
-                <circle cx="6" cy="12" r="3" />
-                <circle cx="18" cy="19" r="3" />
-                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
-                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-              </svg>
-            </span>
-            <strong className="action-card-title">Share this computer</strong>
-            <span className="muted small action-card-sub">Let your phone browse folders you choose</span>
-          </button>
-        )}
-
-        {onAgents && (
-          <button className="action-card" onClick={onAgents} data-testid="open-agents">
-            <span className="action-card-icon" aria-hidden="true">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="10" rx="2" />
-                <circle cx="12" cy="5" r="2" />
-                <path d="M12 7v4" />
-                <line x1="8" y1="16" x2="8" y2="16" />
-                <line x1="16" y1="16" x2="16" y2="16" />
-              </svg>
-            </span>
-            <strong className="action-card-title">Agents</strong>
-            <span className="muted small action-card-sub">Connected sessions, enrolled tools and activity</span>
-          </button>
-        )}
+        <span className="muted small">or drop files anywhere</span>
       </div>
 
-      {hosts && hosts.length > 0 && (
-        <section className="recents computers" aria-label="Your computers">
-          <div className="section-head">
-            <h2>Your computers</h2>
-          </div>
-          <ul>
-            {hosts.map((h) => (
-              <li key={h.hostId}>
-                <button className="recent" onClick={() => onBrowse(h)} data-testid="browse-host">
-                  <span className="recent-name">🖥 {h.hostName}</span>
-                  <span className="muted small ellipsis">Browse shared folders · end-to-end encrypted</span>
-                </button>
-                <button
-                  className="link danger small"
-                  onClick={() => onForgetHost(h)}
-                  data-testid={`pair-forget-${h.hostId}`}
-                  aria-label={`Forget ${h.hostName}`}
-                  title="Forget this computer"
-                >
-                  Forget
-                </button>
-              </li>
-            ))}
-          </ul>
+      {/* 2. Connect to a computer (phone and non-Electron shell) */}
+      {!hasElectronApi() && (
+        <section className="computers recents" aria-label="Paired computers">
+          <button
+            type="button"
+            onClick={onConnect}
+            data-testid="connect-computer"
+          >
+            Connect to a computer
+          </button>
+          {/* ponytail: plain host list without connection status probe; upgrade: ping host on mount if live status is desired */}
+          {hosts.length > 0 && (
+            <ul>
+              {hosts.map((h) => (
+                <li key={h.hostId}>
+                  <button
+                    type="button"
+                    className="recent plain"
+                    onClick={() => onOpenHost?.(h)}
+                  >
+                    <span className="recent-name">{h.hostName}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="link small"
+                    onClick={() => onForgetHost?.(h.hostId)}
+                    aria-label={`Forget ${h.hostName}`}
+                  >
+                    Forget
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
 
+      {/* 3. Compact AI agents row (Electron only) */}
+      {hasElectronApi() && (
+        <div className="home-agents-row" aria-label="AI agents">
+          <div className="home-agents-clients">
+            {renderClientItem("claude", "Claude Code")}
+            {renderClientItem("codex", "Codex")}
+          </div>
+          {connectError && !confirmClient && (
+            <div className="home-agent-error" role="alert">
+              {connectError}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ponytail: Phone sharing row does not probe network or active peer count on Home; upgrade: show live connected phone badge if desired */}
+      {(canShare ?? Boolean(hasElectronApi() && (window as any).uniview?.share)) && onOpenSharing && (
+        <div className="home-agents-row" aria-label="Phone">
+          <div className="home-agent-item">
+            <span className="home-agent-name">Phone</span>
+            <button
+              type="button"
+              className="link small"
+              onClick={onOpenSharing}
+              data-testid="open-sharing"
+            >
+              Share with phone
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Plain recent files list, no thumbnails */}
       {recents.length > 0 && (
-        <section className="recents">
+        <section className="recents" aria-label="Recent files">
           <h2>Recent</h2>
           <ul>
             {recents.slice(0, 12).map((r) => {
-              const host = r.remote ? hosts?.find((h) => h.hostId === r.remote!.hostId) : undefined;
-              const computerName = host?.hostName ?? "Computer";
-              const canOpen = r.remote ? !!canReopenRemote : (canReopen && !!r.path);
+              const canOpen = !!r.remote || (canReopen && !!r.path);
               return (
-                <li key={r.remote ? `${r.remote.hostId}:${r.remote.rootId}:${r.remote.path}` : (r.path ?? "") + r.name}>
+                <li key={r.path ?? r.name}>
                   <button
-                    className="recent"
+                    type="button"
+                    className="recent plain"
                     disabled={!canOpen}
                     onClick={() => onReopen(r)}
-                    title={
-                      r.remote
-                        ? `${r.name} on ${computerName}`
-                        : canReopen
-                          ? r.path
-                          : "Reopen by choosing the file again"
-                    }
+                    title={canOpen ? r.path : "Reopen by choosing the file again"}
                   >
-                    <RecentThumb recent={r} />
                     <span className="recent-name">{r.name}</span>
                     <span className="muted small ellipsis">
-                      {r.remote ? `🖥 ${computerName}` : (r.path ?? formatBytes(r.size))}
+                      {r.path ?? formatBytes(r.size)}
                     </span>
                   </button>
-                  <button className="link small" onClick={() => onForget(r)} aria-label={`Remove ${r.name} from recent`}>Remove</button>
+                  <button
+                    type="button"
+                    className="link small"
+                    onClick={() => onForget(r)}
+                    aria-label={`Remove ${r.name} from recent`}
+                  >
+                    Remove
+                  </button>
                 </li>
               );
             })}
           </ul>
         </section>
       )}
-
-      <div className="home-formats" aria-label="Supported formats">
-        {(["pdf", "docx", "sheet", "pptx", "epub", "image", "video", "audio", "markdown", "text", "zip", "font"] as FormatKind[]).map((k) => (
-          <span key={k} className="format-chip"><KindBadge kind={k} small /> {badgeFor(k).name}</span>
-        ))}
-      </div>
-
-      <div className="theme-control" role="radiogroup" aria-label="Appearance">
-        <span className="muted small">Appearance</span>
-        <div className="theme-segmented">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={theme === "light"}
-            className={theme === "light" ? "active" : ""}
-            data-testid="theme-light"
-            onClick={() => handleTheme("light")}
-          >
-            Light
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={theme === "dark"}
-            className={theme === "dark" ? "active" : ""}
-            data-testid="theme-dark"
-            onClick={() => handleTheme("dark")}
-          >
-            Dark
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={theme === "system"}
-            className={theme === "system" ? "active" : ""}
-            data-testid="theme-system"
-            onClick={() => handleTheme("system")}
-          >
-            System
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

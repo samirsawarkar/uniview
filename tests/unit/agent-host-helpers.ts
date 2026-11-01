@@ -74,7 +74,7 @@ export function makeFakeFs() {
 }
 
 export function makeUi() {
-  const calls = { openFile: [] as any[], showView: [] as any[], showReview: [] as any[], closeTab: [] as string[] };
+  const calls = { openFile: [] as any[], showView: [] as any[], showReview: [] as any[], closeTab: [] as string[], postMessage: [] as any[], sessionState: [] as any[] };
   const ui = {
     calls,
     failWith: null as null | { code?: string },
@@ -108,6 +108,12 @@ export function makeUi() {
     },
     async closeTab(id: string) {
       calls.closeTab.push(id);
+    },
+    async postMessage(p: any) {
+      calls.postMessage.push(p);
+    },
+    async sessionState(p: any) {
+      calls.sessionState.push(p);
     },
   };
   return ui;

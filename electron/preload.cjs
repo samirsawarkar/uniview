@@ -7,6 +7,11 @@ const shareListeners = new Set();
 const viewListeners = new Set();
 const reviewListeners = new Set();
 const closeTabListeners = new Set();
+const agentMessageListeners = new Set();
+const agentSessionStateListeners = new Set();
+const openAgentsListeners = new Set();
+const openShareListeners = new Set();
+const themeListeners = new Set();
 
 ipcRenderer.on("open-files", (_e, files) => {
   if (!Array.isArray(files)) return;
@@ -28,6 +33,26 @@ ipcRenderer.on("agent:show-review", (_e, item) => {
 
 ipcRenderer.on("agent:close-tab", (_e, scopeId) => {
   for (const cb of closeTabListeners) cb(scopeId);
+});
+
+ipcRenderer.on("agent:message", (_e, msg) => {
+  for (const cb of agentMessageListeners) cb(msg);
+});
+
+ipcRenderer.on("agent:session-state", (_e, state) => {
+  for (const cb of agentSessionStateListeners) cb(state);
+});
+
+ipcRenderer.on("view:agents", () => {
+  for (const cb of openAgentsListeners) cb();
+});
+
+ipcRenderer.on("view:share", () => {
+  for (const cb of openShareListeners) cb();
+});
+
+ipcRenderer.on("view:theme", (_e, theme) => {
+  for (const cb of themeListeners) cb(theme);
 });
 
 contextBridge.exposeInMainWorld("uniview", {
@@ -95,7 +120,40 @@ contextBridge.exposeInMainWorld("uniview", {
     closeTabListeners.add(cb);
     return () => closeTabListeners.delete(cb);
   },
+  newWindow: () => ipcRenderer.send("uniview:new-window"),
+  sendMessage: (args) => ipcRenderer.invoke("agent:send-message", args),
+  endSession: (sessionId) => ipcRenderer.invoke("agent:end-session", String(sessionId)),
+  onAgentMessage: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    agentMessageListeners.add(cb);
+    return () => agentMessageListeners.delete(cb);
+  },
+  onAgentSessionState: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    agentSessionStateListeners.add(cb);
+    return () => agentSessionStateListeners.delete(cb);
+  },
   ready: () => ipcRenderer.send("uniview:ready"),
+  // Test-only capability: renderer test hooks stay off unless main passed the flag (never in a packaged build).
+  e2eHooks: process.argv.includes("--uniview-e2e"),
+  connectStatus: () => ipcRenderer.invoke("agents:connect-status"),
+  connect: (client) => ipcRenderer.invoke("agents:connect", String(client)),
+  disconnect: (client) => ipcRenderer.invoke("agents:disconnect", String(client)),
+  onOpenAgents: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    openAgentsListeners.add(cb);
+    return () => openAgentsListeners.delete(cb);
+  },
+  onOpenShare: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    openShareListeners.add(cb);
+    return () => openShareListeners.delete(cb);
+  },
+  onTheme: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    themeListeners.add(cb);
+    return () => themeListeners.delete(cb);
+  },
 
   // Review tab desktop IPC. Receipts are named by the grant token of a file the person opened, never by a
   // path; main resolves the token itself. Only the known fields are forwarded, with their types checked.

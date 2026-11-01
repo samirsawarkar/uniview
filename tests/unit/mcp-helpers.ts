@@ -16,6 +16,8 @@ export interface FakeBridge {
   connects: number;
   closes: number;
   connect: () => Promise<any>;
+  onWaitMessage?: (params: any) => Promise<any> | any;
+  waitingResolve?: ((v: any) => void) | null;
 }
 
 export const decisionFor = (reviewId: string) => ({
@@ -95,6 +97,20 @@ export function createFakeBridge(): FakeBridge {
           const r = reviews.get(params.reviewId);
           if (!r) throw new BridgeError("not_found");
           return { result: r.decided ? { status: "decided", decision: decisionFor(params.reviewId) } : { status: "pending" } };
+        }
+        case "session.waitMessage": {
+          if (fake.onWaitMessage) return fake.onWaitMessage(params);
+          return new Promise((resolve) => {
+            fake.waitingResolve = resolve;
+          });
+        }
+        case "session.cancelWaitMessage": {
+          fake.waitingResolve?.({ result: { status: "waiting" } });
+          fake.waitingResolve = null;
+          return { result: {} };
+        }
+        case "session.postMessage": {
+          return { result: { posted: true } };
         }
         default:
           throw new BridgeError("bad_frame");

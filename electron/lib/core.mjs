@@ -188,3 +188,6 @@ export function makeThumbnailPng({ nativeImage, stat }) {
     return new Uint8Array(img.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: "good" }).toPNG());
   };
 }
+
+export { isNewWindowShortcut, hasOtherLiveWindows, shouldStopAppAgentsOnRenderProcessGone } from "./window-lifecycle.mjs";
+
