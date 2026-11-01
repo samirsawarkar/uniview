@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://samirsawarkar.github.io/uniview/sitemap.xml
