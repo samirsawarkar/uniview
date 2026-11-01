@@ -569,7 +569,8 @@ describe("review-ipc handlers", () => {
       const res = await handlers.get("review:open")!({}, {});
       expect(res.ok).toBe(false);
       expect(JSON.stringify(res)).not.toContain("secret");
-    });
+      // registerReviewIpc's first dynamic import("electron") is 4 ms warm but >5 s when the CI runner is cold/loaded.
+    }, 20000);
   });
 
   describe("preload bridge", () => {

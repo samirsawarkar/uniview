@@ -148,7 +148,8 @@ describe("Packet P17c: app-agents wiring factory", () => {
     expect(res2.ok).toBe(true);
     const keyStat = await fs.stat(keyPath);
     expect(keyStat.isFile()).toBe(true);
-  });
+    // Real first-touch fs work (temp dir, then start(): bridge dir, key, socket) takes >5 s on a loaded CI runner.
+  }, 20000);
 
   it("tab-queue bound 32/33: queues 32 requests while renderer not ready, 33rd is busy", async () => {
     // Mutation: unbounded queue, or queue cap off-by-one (e.g. 31 or 33)
