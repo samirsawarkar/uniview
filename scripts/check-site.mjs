@@ -128,6 +128,24 @@ for (const cssFile of cssFiles) {
   }
 }
 
+const INSTALLER_URL = 'https://github.com/samirsawarkar/uniview/releases/download/v1.0.0/UniView-Setup-1.0.0.exe';
+
+// Deploy-blocking content checks
+for (const htmlFile of htmlFiles) {
+  const relFile = path.relative(process.cwd(), htmlFile).replace(/\\/g, '/');
+  const content = fs.readFileSync(htmlFile, 'utf-8');
+  if (/devices\.png/i.test(content)) {
+    errors.push(`${relFile}: references the removed devices.png`);
+  }
+  if (/not published yet/i.test(content)) {
+    errors.push(`${relFile}: contains "not published yet"`);
+  }
+}
+const indexFile = path.join(siteDir, 'index.html');
+if (!fs.readFileSync(indexFile, 'utf-8').includes(INSTALLER_URL)) {
+  errors.push('site/index.html: missing the exact installer URL');
+}
+
 if (errors.length > 0) {
   console.error(`check-site failed with ${errors.length} error(s):`);
   for (const err of errors) {
